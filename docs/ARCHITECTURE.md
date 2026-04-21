@@ -1,0 +1,207 @@
+# Service.AI — Architecture
+
+## 1. Stack
+
+| Layer | Choice | Reason |
+|---|---|---|
+| Language | TypeScript (strict) | Single language across API, web, voice, mobile |
+| Monorepo | pnpm workspaces + Turborepo | Fast incremental builds, shared types |
+| API | Fastify 5 + Zod + tRPC-style shared contracts via ts-rest | Mature, fast, rich plugin ecosystem, shared schemas without tRPC lock-in |
+| Frontend | Next.js 15 (App Router) + React 19 + Server Components | Fast, progressive rendering, matches Joey's existing muscle memory |
+| UI | Tailwind + shadcn/ui | Same as OPENDC portal; franchise-brandable via CSS variables |
+| Mobile | PWA (v1) → React Native v2 | Ship fast, no app stores; keep tech UI mobile-first so RN port is a shell |
+| Database | Postgres 16 (DO Managed) | Franchise tenancy with row-level scoping, proven at this scale |
+| ORM | Drizzle | Type-safe, migrations in SQL, no magic |
+| Cache / queue | Redis 7 (DO Managed) + BullMQ | Job queue for AI tasks, collections, royalty calculations |
+| Voice | Fastify WS server + Twilio Media Streams + Deepgram (streaming ASR) + ElevenLabs (TTS) | Greenfield but same providers as Donna PA |
+| AI router | Custom thin layer over Anthropic SDK + xAI SDK (OpenAI-compat) | Per-capability routing; swap-friendly |
+| AI reasoning | Claude (Opus 4.7 default, Sonnet 4.6 for bulk) | Tool-use strength, instruction-following |
+| AI bulk / web-context | Grok (via xAI API) | Cost-efficient summarization, real-time X/web lookups if ever needed |
+| Vision | Claude Sonnet 4.6 vision | Photo-to-quote, door identification |
+| Vector store | Postgres + pgvector | One fewer service; works for v1 scale |
+| Auth | Better Auth (self-hosted) | Schema-owned, plays with Drizzle, handles 4-level hierarchy |
+| Payments | Stripe Connect Standard | Franchisee owns merchant relationship; application_fee_amount = royalty |
+| SMS / Voice infra | Twilio | Provisioned numbers per franchisee, Media Streams for voice WS |
+| Maps | Google Maps (Places API + Geocoding + Distance Matrix) | Address autocomplete mid-call is the killer feature |
+| Storage | DO Spaces (S3-compatible) | Photos, call recordings |
+| Email | Resend | Transactional + collections |
+| Observability | Axiom (logs) + Sentry (errors) + OpenTelemetry | Low ops, good signal-to-noise |
+| CI/CD | GitHub Actions → DO App Platform auto-deploy on push to main | Matches OPENDC pattern |
+| Testing | Vitest (unit + integration) + Playwright (E2E) + k6 (perf) | Fast, TS-native |
+
+## 2. Service topology
+
+Three deployable services (one repo, one shared package):
+
+```
+servicetitan-clone/
+├── apps/
+│   ├── web/          Next.js 15 — office UI, dispatch board, franchisor console
+│   ├── api/          Fastify API — business logic, auth, Stripe, jobs, AI orchestration
+│   └── voice/        Fastify WS — Twilio Media Streams + Deepgram + ElevenLabs
+├── packages/
+│   ├── db/           Drizzle schema + migrations
+│   ├── contracts/    Zod schemas + ts-rest route definitions shared by api + web
+│   ├── ai/           Multi-provider LLM router, prompt library, RAG client
+│   ├── auth/         Better Auth config + middleware
+│   └── ui/           shadcn component library
+└── tools/            scripts, seeds, migrations tooling
+```
+
+Web talks to API only via the ts-rest contracts in `packages/contracts`. Voice talks to API for business actions (create job, update status). No direct DB access from web or voice — API is the only writer.
+
+## 3. Data model (key tables)
+
+### Tenancy & auth
+- `franchisors(id, name, brand_config, created_at)`
+- `franchisees(id, franchisor_id, legal_name, stripe_account_id, twilio_number, created_at)`
+- `locations(id, franchisee_id, name, territory_zipcodes[], timezone, created_at)`
+- `users(id, email, name, phone, created_at)` — global identity
+- `memberships(id, user_id, scope_type, scope_id, role, created_at)` — scope_type ∈ (platform, franchisor, franchisee, location); one user can have memberships at multiple scopes
+- `sessions`, `accounts`, `verifications` — Better Auth tables
+- `audit_log(id, actor_user_id, actor_scope, target_table, target_id, action, franchisor_id, franchisee_id, metadata, created_at)` — every franchisor cross-tenant read captured
+
+### Core (trade-agnostic)
+- `customers(id, franchisee_id, location_id, name, phone, email, address, lat, lng, notes, created_at)`
+- `jobs(id, franchisee_id, location_id, customer_id, tech_user_id, status, scheduled_at, arrived_at, completed_at, summary, metadata_jsonb, created_at)`
+- `job_status_log(id, job_id, from_status, to_status, actor, at)` — state machine history
+- `job_photos(id, job_id, url, kind, taken_at)` — kind ∈ (arrival, during, completion)
+
+### Pricebook
+- `service_catalog_templates(id, franchisor_id, name, published_at)` — HQ-blessed
+- `service_items(id, template_id, franchisee_id, sku, name, description, category, base_price, floor_price, ceiling_price, trade)` — template_id set = HQ item; franchisee_id set = local override
+- `pricebook_overrides(id, franchisee_id, service_item_id, price, active)` — explicit overrides for published templates
+
+### Invoicing & payments
+- `invoices(id, franchisee_id, job_id, customer_id, subtotal, tax, total, status, stripe_payment_intent_id, created_at)`
+- `invoice_line_items(id, invoice_id, service_item_id, description, qty, unit_price, total)`
+- `payments(id, invoice_id, stripe_payment_intent_id, amount, application_fee_amount, status, paid_at)`
+- `refunds(id, payment_id, stripe_refund_id, amount, reason, created_at)`
+
+### Royalty
+- `franchise_agreements(id, franchisor_id, franchisee_id, signed_at, effective_at, terminated_at, terms_jsonb)`
+- `royalty_rules(id, agreement_id, rule_type, config_jsonb, active)` — rule_type ∈ (percentage, flat_per_job, tiered, minimum_floor)
+- `royalty_statements(id, franchisee_id, period_start, period_end, revenue, royalty_owed, adjustments, transferred_at, stripe_transfer_id, status)`
+
+### AI
+- `ai_conversations(id, kind, franchisee_id, initiator_user_id, metadata_jsonb, started_at, ended_at)` — kind ∈ (voice_csr, dispatcher_suggestion, tech_assist, collections_draft)
+- `ai_messages(id, conversation_id, role, content, tool_calls_jsonb, provider, model, tokens_in, tokens_out, created_at)`
+- `ai_actions(id, conversation_id, action_type, target_table, target_id, status, confidence, human_reviewed_by, reviewed_at)` — status ∈ (pending, auto_approved, human_approved, rejected, reverted)
+- `kb_docs(id, franchisor_id, source_kind, title, content, embedding vector(1536), metadata_jsonb)` — pgvector; source_kind ∈ (manual, brand_manual, install_guide, franchisee_note)
+
+### Voice & telephony
+- `phone_numbers(id, franchisee_id, twilio_sid, e164, provisioned_at, active)`
+- `call_sessions(id, franchisee_id, phone_number_id, from_e164, to_e164, direction, ai_conversation_id, recording_url, duration_sec, outcome, started_at, ended_at)`
+
+## 4. API contract style
+
+- **REST + OpenAPI**, generated from ts-rest route definitions in `packages/contracts`.
+- All endpoints namespaced `/api/v1/...`. Every endpoint returns `{ ok: true, data }` or `{ ok: false, error: { code, message, details? } }`.
+- Auth: `Authorization: Bearer <session_token>` (Better Auth). Franchisor impersonation via `X-Impersonate-Franchisee: <id>` header, validated and audit-logged.
+- Pagination: cursor-based, `limit` + `cursor`, response includes `nextCursor`.
+- Idempotency: every POST accepts `Idempotency-Key` header; enforced via Redis 24h TTL.
+- Rate limits: per-user per-endpoint via Fastify rate-limit plugin + Redis.
+
+## 5. Auth & RBAC
+
+Better Auth manages sessions. Authorization is a middleware that resolves the effective scope from the membership table + any impersonation header.
+
+### Roles (enum, strictest first)
+- `platform_admin` — scope=platform
+- `franchisor_admin` — scope=franchisor
+- `franchisee_owner` — scope=franchisee
+- `location_manager` — scope=location
+- `dispatcher`, `tech`, `csr` — scope=location
+- `customer` — scope=franchisee (their franchisee), read-only self
+
+### Scoping rules
+- Every tenant-scoped query includes `WHERE franchisee_id = $current` at minimum.
+- Location-scoped roles additionally filter `location_id = $current`.
+- Franchisor admin can read any franchisee's data via impersonation; writes produce `audit_log` entries.
+- Platform admin can read anything; writes are rare and flagged.
+
+### Request context
+On every request the API builds a `RequestScope` struct: `{ user_id, roles, franchisor_id?, franchisee_id?, location_id?, impersonating?: franchisee_id }`. Query builders receive this struct and compose the WHERE clause.
+
+## 6. Multi-tenancy (rows, not schemas)
+
+Single database, single schema, row-level scoping enforced in query layer. Reasons:
+- Cross-franchise analytics for franchisor is first-class — schemas would make that painful
+- One fewer ops dimension (no N schemas to migrate)
+- Postgres row-level security (RLS) is enabled as a **defense in depth** layer: policies reference session GUCs `app.franchisee_id` etc., set by the API on every connection checkout
+
+## 7. AI layer
+
+### Router (`packages/ai`)
+- Single `AI.call(capability, input)` interface. Capability examples: `csr.intent`, `dispatcher.suggest`, `tech.photoQuote`, `collections.draft`, `kb.retrieve`.
+- Each capability has a default provider + fallback list + prompt template + tool list + cost target.
+- Token counting, retry with backoff, cost metering per franchisee.
+- All calls persist to `ai_conversations` + `ai_messages` for auditing and later training.
+
+### Three-layer learning
+1. **Global domain KB** (franchisor-published) — garage-door parts catalog, install procedures, common issues. Versioned, franchisor-edited, RAG'd at inference.
+2. **Per-franchisee memory** — every job outcome, customer note, photo+quote pair is embedded and retrievable at inference for that franchisee only.
+3. **HQ aggregate training set** (v1.5+) — franchisor can export anonymized aggregate training data across franchisees for offline fine-tuning. v1 collects and retains; training is a later phase.
+
+### Guardrails (configurable per franchisee)
+- Confidence threshold per capability (default 0.8 auto-applies, below queues for human review)
+- Dollar cap (default $500 per quote — above requires human approval)
+- Undo window (default 15 min on AI-booked appointments)
+- Monthly AI spend cap per franchisee
+
+## 8. Payments (Stripe Connect Standard)
+
+- Franchisor has a Stripe platform account.
+- Each franchisee completes Standard Connect onboarding → stores `stripe_account_id` on `franchisees`.
+- Every customer payment is a `PaymentIntent` on the franchisee's account with `application_fee_amount` set per the active `royalty_rule`.
+- Refunds reverse the application fee proportionally.
+- Royalty engine: at month-end, produces statement per franchisee; reconciles expected-vs-actual application-fee totals; any delta handled via `Transfer` adjustments.
+
+## 9. Voice
+
+Greenfield WS server in `apps/voice`. Flow:
+
+```
+Twilio ──HTTP──▶ /voice/inbound (webhook, TwiML → start Media Stream)
+     │
+     └──WS──▶ apps/voice:8080/call
+             │
+             ├─▶ Deepgram streaming ASR (async generator)
+             ├─▶ Claude intent loop with tool list [createJob, checkAvailability,
+             │     lookupCustomer, quoteLineItems, transferToHuman]
+             ├─▶ Tool calls hit apps/api via internal JWT
+             ├─▶ ElevenLabs TTS → µ-law 8kHz back to Twilio
+             └─▶ Writes ai_conversations, call_sessions, audit events
+```
+
+Voice service is stateless per call; all persistence via API.
+
+## 10. Deployment
+
+- **DigitalOcean App Platform**, 3 components: `web`, `api`, `voice`. Each auto-deploys from `main` on push.
+- **DO Managed Postgres 16**, backups nightly + 7-day PITR.
+- **DO Managed Redis**, persistence on.
+- **DO Spaces** for photos + recordings.
+- **Environment**: `dev` (local compose), `staging` (DO App Platform), `prod` (DO App Platform, separate project).
+- **Secrets**: DO App Platform env vars for each service; never committed.
+- **Migrations**: run automatically on deploy via a pre-start hook (`drizzle-kit migrate`).
+
+## 11. Observability
+
+- **Logs**: structured JSON via pino → Axiom.
+- **Errors**: Sentry (web + api + voice).
+- **Traces**: OpenTelemetry, OTLP → Axiom.
+- **Metrics**: per-franchisee dashboards built from Axiom — revenue, job throughput, AI spend, call count, close rate.
+- **Alerts**: Axiom monitors → ntfy.sh + email for sev1; weekly digest for sev2.
+
+## 12. Key decisions (and their tombstones)
+
+| # | Decision | Why | What would reverse it |
+|---|---|---|---|
+| 1 | Single DB, row-level tenancy | Franchisor analytics, ops simplicity | >100 franchisees with strict data-isolation demands → schema-per-franchise |
+| 2 | REST over tRPC | External API for franchisee integrations later | Never need external integrations (unlikely) |
+| 3 | PWA before RN | Ship fast | Tech UX breaks down on PWA (camera, offline, push) |
+| 4 | Stripe Connect Standard, not Express | Franchisee owns merchant relationship — matches franchise law | Franchisees hate Stripe onboarding friction (we'll hear about it) |
+| 5 | Claude + Grok multi-provider | Cost + capability diversity | One becomes clearly superior everywhere |
+| 6 | Better Auth over Clerk | Schema control for 4-level hierarchy | Clerk ships multi-level orgs natively |
+| 7 | DO App Platform | Matches Donna target, simple | Need multi-region → Fly.io |

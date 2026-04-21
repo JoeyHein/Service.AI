@@ -121,12 +121,22 @@ for phase in $PHASES; do
 
   notify "📦 [$PHASE_NUM/$TOTAL_PHASES] Starting phase: $phase" "default"
 
-  # ---- Stage 0: Write gate criteria ----
-  run_claude "You are the planner. Read docs/PHASES.md and docs/TASKS.md. \
-Write phases/${phase}_GATE.md with measurable exit criteria for phase '$phase'. \
-Include sections: Must Pass (BLOCKERS), Must Improve Over Previous Phase, and \
-Verification Method for each criterion. Every checkbox must be verifiable by \
-running a specific command or reading a specific file." \
+  # ---- Stage 0: Write gate criteria + decompose tasks if only anchors exist ----
+  run_claude "You are the planner. Read docs/PHASES.md, docs/TASKS.md, docs/LESSONS.md, and CLAUDE.md. \
+First, write phases/${phase}_GATE.md with measurable exit criteria for phase '$phase' per the \
+phases/PHASE_TEMPLATE.md structure. Include Must Pass (BLOCKERS), Must Improve Over Previous Phase, \
+and Verification Method for each criterion. Every checkbox must be verifiable by running a specific \
+command or reading a specific file. \
+\
+Second, inspect docs/TASKS.md for phase '$phase'. If the phase has only anchor task stubs \
+(single-line bullets under a '<phase> anchors' heading), fully decompose it into atomic tasks using \
+the planner format: each task gets its own section with Phase, Depends on, Estimated LOC, \
+Description, Acceptance criteria, and Out of scope. Each task must be 200-500 LOC and have \
+checkable assertions as acceptance criteria. Replace the anchors section with the full task list \
+in docs/TASKS.md. Commit the expansion with message 'docs(tasks): decompose $phase'. \
+\
+If the phase already has full task detail (like phase_foundation or phase_tenancy_franchise), \
+only write the gate file and do not modify tasks." \
     "$phase_log"
 
   # ---- Stage 1: Build all tasks in phase ----
