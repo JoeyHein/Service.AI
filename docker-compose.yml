@@ -1,0 +1,74 @@
+version: '3.9'
+
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: servicetitan-builder
+    volumes:
+      - ./:/workspace
+      - builder-home:/home/builder
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+      - SLACK_WEBHOOK=${SLACK_WEBHOOK:-}
+      - DATABASE_URL=postgresql://builder:builder@postgres:5432/servicetitan
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=development
+      - AUTO_APPROVE_PHASES=${AUTO_APPROVE_PHASES:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - build-net
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    command: /bin/bash -c "tail -f /dev/null"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: servicetitan-postgres
+    environment:
+      - POSTGRES_USER=builder
+      - POSTGRES_PASSWORD=builder
+      - POSTGRES_DB=servicetitan
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - build-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U builder -d servicetitan"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: servicetitan-redis
+    ports:
+      - "6380:6379"
+    networks:
+      - build-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+volumes:
+  builder-home:
+  postgres-data:
+  redis-data:
+
+networks:
+  build-net:
+    driver: bridge

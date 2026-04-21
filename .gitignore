@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+coverage/
+*.log
+
+# Runtime state
+.build.pid
+.approve-next
+.stop-build
+logs/*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Claude
+.claude/cache/
+.claude/projects/
+
+# Database dumps
+*.sql.gz
+*.dump
+
+# Temporary
+tmp/
+temp/
+*.tmp
