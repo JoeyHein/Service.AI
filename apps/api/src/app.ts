@@ -16,6 +16,7 @@ import rateLimit from '@fastify/rate-limit';
 import compress from '@fastify/compress';
 import pg from 'pg';
 import { Redis } from 'ioredis';
+import { z } from 'zod';
 
 const { Pool } = pg;
 
@@ -125,6 +126,40 @@ export function buildApp(opts: AppOptions = {}) {
     return reply
       .code(ok ? 200 : 503)
       .send({ ok, db: dbStatus, redis: redisStatus });
+  });
+
+  /**
+   * POST /api/v1/echo
+   *
+   * Validates the request body against EchoInputSchema and returns the
+   * submitted message wrapped in the standard { ok: true, data: { echo } }
+   * envelope. Returns 400 with a structured error envelope on invalid input.
+   *
+   * This endpoint validates the ts-rest contract layer end-to-end during
+   * the foundation phase. It does not touch DB or Redis.
+   *
+   * Response 200: { ok: true, data: { echo: string } }
+   * Response 400: { ok: false, error: { code: string, message: string } }
+   */
+  const EchoInputSchema = z.object({
+    message: z.string().min(1),
+  });
+
+  app.post('/api/v1/echo', async (request, reply) => {
+    const result = EchoInputSchema.safeParse(request.body);
+    if (!result.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: result.error.message,
+        },
+      });
+    }
+    return reply.code(200).send({
+      ok: true,
+      data: { echo: result.data.message },
+    });
   });
 
   return app;
