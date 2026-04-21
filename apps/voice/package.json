@@ -2,16 +2,26 @@
   "name": "@service-ai/voice",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "description": "Service.AI voice WS server — Twilio Media Streams, Deepgram ASR, ElevenLabs TTS",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@fastify/websocket": "^11.0.0",
+    "fastify": "^5.0.0"
+  },
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0",
+    "ws": "^8.0.0"
   }
 }
