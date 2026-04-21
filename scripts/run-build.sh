@@ -165,12 +165,20 @@ check logs. Be brutally honest. Write phases/${phase}_AUDIT_${cycle}.md per your
 output format. End with 'Verdict: PASS' or 'Verdict: FAIL'." \
       "$phase_log"
 
-    # Parse verdict
+    # Parse verdict — look at the LAST Verdict line in the audit file and check for PASS.
+    # Uses awk to avoid bash-expansion landmines; only considers lines matching "verdict"
+    # (case-insensitive) and picks the final occurrence so per-criterion "Status: PASS" lines
+    # never bleed into the overall phase verdict.
     audit_file="phases/${phase}_AUDIT_${cycle}.md"
-    if [ -f "$audit_file" ] && grep -qE "^Verdict:\s*PASS|^##\s*Verdict\s*$[[:space:]]*PASS|Verdict\s*\*\*?\s*:\s*PASS" "$audit_file"; then
-      notify "✅ Phase $phase audit PASSED on cycle $cycle" "default"
-      PASSED=true
-      break
+    if [ ! -f "$audit_file" ]; then
+      notify "⚠️  Phase $phase audit file missing — treating cycle $cycle as FAIL" "default"
+    else
+      last_verdict_line=$(awk 'BEGIN{IGNORECASE=1} tolower($0) ~ /verdict/ { last=$0 } END { print last }' "$audit_file")
+      if [ -n "$last_verdict_line" ] && echo "$last_verdict_line" | grep -qi 'PASS' && ! echo "$last_verdict_line" | grep -qi 'FAIL'; then
+        notify "✅ Phase $phase audit PASSED on cycle $cycle" "default"
+        PASSED=true
+        break
+      fi
     fi
 
     notify "⚠️  Phase $phase audit FAILED cycle $cycle — correcting" "default"
