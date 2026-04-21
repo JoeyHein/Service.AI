@@ -465,3 +465,42 @@ describe('TASK-FND-03 / unknown route handling', () => {
     expect(() => response.json()).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Suite 10 — Logger wiring regression (AUDIT-2 / B4)
+// ---------------------------------------------------------------------------
+
+describe('AUDIT-2 / B4 regression / logger wiring', () => {
+  it('buildApp() without opts.logger boots without throwing (uses loggerInstance path)', async () => {
+    // This test would fail before the fix if buildApp passed the pino logger
+    // instance directly to Fastify's logger option, which Fastify 5 rejects
+    // with "logger options only accepts a configuration object".
+    // After the fix, buildApp uses loggerInstance to inject the pre-built pino
+    // instance from logger.ts so the app boots cleanly.
+    const app = buildApp();
+    await expect(app.ready()).resolves.not.toThrow();
+    await app.close();
+  });
+
+  it('buildApp() without opts.logger exposes a functioning log object', async () => {
+    const app = buildApp();
+    await app.ready();
+
+    // The app.log object must be present and callable regardless of the logger
+    // path taken. Without this test, a silent regression could leave the API
+    // booting with no logger at all.
+    expect(app.log).toBeTruthy();
+    expect(typeof app.log.info).toBe('function');
+    expect(typeof app.log.error).toBe('function');
+    expect(typeof app.log.warn).toBe('function');
+
+    await app.close();
+  });
+
+  it('buildApp({ logger: false }) suppresses logging without error (test helper path)', async () => {
+    // Tests use logger:false to suppress noise. This path must not throw.
+    const app = buildApp({ logger: false });
+    await expect(app.ready()).resolves.not.toThrow();
+    await app.close();
+  });
+});

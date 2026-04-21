@@ -158,12 +158,12 @@ describe('TASK-FND-06 / contracts package / input schema', () => {
 describe('TASK-FND-06 / contracts package / response schema', () => {
   it('200 response schema is defined', async () => {
     const { echoContract } = await import('../echo.js');
-    expect(echoContract.echo.responses).toHaveProperty(200);
+    expect(echoContract.echo.responses).toHaveProperty([200]);
   });
 
   it('200 response schema accepts { ok: true, data: { echo: "hello" } }', async () => {
     const { echoContract } = await import('../echo.js');
-    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200];
+    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200] as unknown as z.ZodTypeAny;
 
     const result = responseSchema.safeParse({
       ok: true,
@@ -174,7 +174,7 @@ describe('TASK-FND-06 / contracts package / response schema', () => {
 
   it('200 response schema rejects a response missing the data.echo field', async () => {
     const { echoContract } = await import('../echo.js');
-    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200];
+    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200] as unknown as z.ZodTypeAny;
 
     const result = responseSchema.safeParse({ ok: true, data: {} });
     expect(result.success).toBe(false);
@@ -182,7 +182,7 @@ describe('TASK-FND-06 / contracts package / response schema', () => {
 
   it('200 response schema rejects a response where data.echo is not a string', async () => {
     const { echoContract } = await import('../echo.js');
-    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200];
+    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200] as unknown as z.ZodTypeAny;
 
     const result = responseSchema.safeParse({
       ok: true,
@@ -195,7 +195,7 @@ describe('TASK-FND-06 / contracts package / response schema', () => {
     // The 200 response must always carry ok: true; error cases use a different
     // status code in the contract.
     const { echoContract } = await import('../echo.js');
-    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200];
+    const responseSchema: z.ZodTypeAny = echoContract.echo.responses[200] as unknown as z.ZodTypeAny;
 
     const result = responseSchema.safeParse({
       ok: false,

@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Service.AI shared contracts — Zod schemas and ts-rest route definitions",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",

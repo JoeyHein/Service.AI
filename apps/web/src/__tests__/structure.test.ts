@@ -212,3 +212,40 @@ describe('src/app/layout.tsx content', () => {
     expect(content).toContain('export default');
   });
 });
+
+// ---------------------------------------------------------------------------
+// AUDIT-2 / B3 regression — ts-rest typed client wiring
+// ---------------------------------------------------------------------------
+
+describe('AUDIT-2 / B3 regression / ts-rest typed client', () => {
+  it('@service-ai/contracts is listed as a dependency in package.json', () => {
+    // Without this dependency the web app cannot import the ts-rest contract
+    // and type drift in the contract will not be caught at build time.
+    const pkg = JSON.parse(readWebFile('package.json')) as {
+      dependencies?: Record<string, string>;
+    };
+    const contractsDep = pkg.dependencies?.['@service-ai/contracts'] ?? '';
+    expect(contractsDep).not.toBe('');
+  });
+
+  it('@ts-rest/core is listed as a dependency in package.json', () => {
+    // The ts-rest client (initClient) comes from @ts-rest/core.
+    const pkg = JSON.parse(readWebFile('package.json')) as {
+      dependencies?: Record<string, string>;
+    };
+    const tsDep = pkg.dependencies?.['@ts-rest/core'] ?? '';
+    expect(tsDep).not.toBe('');
+  });
+
+  it('page.tsx imports @service-ai/contracts (ts-rest contract must be used)', () => {
+    // If this import is absent, the typed client is not wired and a contract
+    // change will not cause a compile error in the web app.
+    const content = readWebFile('src/app/page.tsx');
+    expect(content).toContain('@service-ai/contracts');
+  });
+
+  it('page.tsx imports from @ts-rest/core (client initialisation required)', () => {
+    const content = readWebFile('src/app/page.tsx');
+    expect(content).toContain('@ts-rest/core');
+  });
+});
