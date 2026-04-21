@@ -81,30 +81,42 @@ importers:
 
   apps/voice:
     dependencies:
+      '@fastify/cors':
+        specifier: ^10
+        version: 10.1.0
+      '@fastify/helmet':
+        specifier: ^12
+        version: 12.0.1
+      '@fastify/sensible':
+        specifier: ^6
+        version: 6.0.4
       '@fastify/websocket':
-        specifier: ^11.0.0
+        specifier: ^11
         version: 11.2.0
       fastify:
-        specifier: ^5.0.0
+        specifier: ^5
         version: 5.8.5
+      pino:
+        specifier: ^9
+        version: 9.14.0
     devDependencies:
       '@types/node':
-        specifier: ^22.0.0
+        specifier: ^22
         version: 22.19.17
       '@types/ws':
-        specifier: ^8.0.0
+        specifier: ^8
         version: 8.18.1
       tsx:
-        specifier: ^4.0.0
+        specifier: ^4
         version: 4.21.0
       typescript:
-        specifier: ^5.4.0
+        specifier: ^5
         version: 5.9.3
       vitest:
-        specifier: ^3.0.0
+        specifier: ^3
         version: 3.2.4(@types/node@22.19.17)(lightningcss@1.32.0)
       ws:
-        specifier: ^8.0.0
+        specifier: ^8
         version: 8.20.0
 
   apps/web:
@@ -161,6 +173,12 @@ importers:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.17)(lightningcss@1.32.0)
+      zod:
+        specifier: ^3.22.0
+        version: 3.25.76
 
   packages/db:
     dependencies:
@@ -3224,6 +3242,9 @@ packages:
     resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
     engines: {node: '>=10'}
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
 snapshots:
 
   '@alloc/quick-lru@5.2.0': {}
@@ -5818,3 +5839,5 @@ snapshots:
   yaml@2.8.3: {}
 
   yocto-queue@0.1.0: {}
+
+  zod@3.25.76: {}
