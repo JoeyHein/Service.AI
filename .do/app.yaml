@@ -1,0 +1,87 @@
+name: service-ai
+
+region: nyc
+
+services:
+  - name: web
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: your-org/service-ai
+    build_command: pnpm --filter @service-ai/web build
+    run_command: pnpm --filter @service-ai/web start
+    http_port: 3000
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /
+    envs:
+      - key: NEXT_PUBLIC_API_URL
+        value: ${api.PUBLIC_URL}
+      - key: SENTRY_DSN
+        scope: RUN_AND_BUILD_TIME
+        value: ${SENTRY_DSN}
+      - key: NODE_ENV
+        value: production
+
+  - name: api
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: your-org/service-ai
+    build_command: pnpm --filter @service-ai/api build
+    run_command: pnpm --filter @service-ai/api start
+    http_port: 3001
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /api
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        value: ${service-ai-db.DATABASE_URL}
+      - key: REDIS_URL
+        scope: RUN_AND_BUILD_TIME
+        value: ${service-ai-redis.REDIS_URL}
+      - key: AXIOM_TOKEN
+        scope: RUN_AND_BUILD_TIME
+        value: ${AXIOM_TOKEN}
+      - key: AXIOM_DATASET
+        value: service-ai
+      - key: SENTRY_DSN
+        scope: RUN_AND_BUILD_TIME
+        value: ${SENTRY_DSN}
+      - key: NODE_ENV
+        value: production
+
+  - name: voice
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: your-org/service-ai
+    build_command: pnpm --filter @service-ai/voice build
+    run_command: pnpm --filter @service-ai/voice start
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /voice
+    envs:
+      - key: SENTRY_DSN
+        scope: RUN_AND_BUILD_TIME
+        value: ${SENTRY_DSN}
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: service-ai-db
+    engine: PG
+    version: "16"
+    production: false
+    cluster_name: service-ai-postgres
+
+  - name: service-ai-redis
+    engine: REDIS
+    version: "7"
+    production: false
+    cluster_name: service-ai-redis
