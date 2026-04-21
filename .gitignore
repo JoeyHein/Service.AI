@@ -12,6 +12,9 @@ build/
 coverage/
 *.log
 
+# pnpm store (local package cache, never committed)
+.pnpm-store/
+
 # Runtime state
 .build.pid
 .approve-next

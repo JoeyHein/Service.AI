@@ -66,29 +66,13 @@ export interface AppOptions {
  * @returns    A Fastify instance ready to be awaited with .ready() or .listen().
  */
 export function buildApp(opts: AppOptions = {}) {
-  // Build the Fastify constructor options. Fastify 5 only accepts a boolean
-  // or config object in the `logger` option — passing a pre-built pino instance
-  // directly causes a runtime error. Use `loggerInstance` for that case.
-  //
-  // Tests pass `opts.logger = false` to suppress all output. In production
-  // (opts.logger === undefined) we inject the shared pino instance from
-  // logger.ts which fans out to Axiom when AXIOM_TOKEN is set.
-  //
-  // We use `import type` from fastify to get the correct options type and avoid
-  // the Http2/Https overload being inferred when the options object is built
-  // outside the Fastify() call itself.
-  // Build the Fastify constructor options. Fastify 5 only accepts a boolean
-  // or config object in the `logger` option — passing a pre-built pino instance
-  // directly causes a runtime error. Use `loggerInstance` for that case.
-  //
-  // Tests pass `opts.logger = false` to suppress all output. In production
-  // (opts.logger === undefined) we inject the shared pino instance from
-  // logger.ts which fans out to Axiom when AXIOM_TOKEN is set.
-  //
-  // When `loggerInstance` is used, Fastify infers a different Logger generic
-  // that is incompatible with `FastifyBaseLogger`. We cast the result to the
-  // standard HTTP FastifyInstance type so callers and tests see a uniform
-  // return type regardless of which logger path is taken at runtime.
+  // Fastify 5 only accepts a boolean or config object in the `logger` option —
+  // passing a pre-built pino instance directly causes a runtime error; use
+  // `loggerInstance` for that case. When `loggerInstance` is used, Fastify
+  // infers a different Logger generic incompatible with `FastifyBaseLogger`, so
+  // we cast the result to the standard HTTP FastifyInstance type so callers and
+  // tests see a uniform return type. Tests pass `opts.logger = false` to
+  // suppress output; production uses the shared pino instance from logger.ts.
   type App = FastifyInstance<Server, IncomingMessage, ServerResponse>;
 
   const commonOpts = {

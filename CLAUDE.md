@@ -104,6 +104,17 @@ servicetitan-clone/
 - No `any` types without a line comment explaining the choice.
 - Pure functions wherever possible. Side effects are named and documented.
 
+### Testing infrastructure
+- Every `vitest.config.ts` in a package that builds to `dist/` must include `include: ['src/**/*.test.ts']` and `exclude: ['dist/**', 'node_modules/**']` — otherwise Vitest runs compiled test files from `dist/` with broken path resolution.
+- Stub packages with no tests yet must use `"test": "echo 'No tests in stub package' && exit 0"`. Never declare `"test": "vitest run"` without vitest in devDependencies.
+
+### Observability wiring
+- Any logger module created must be immediately imported and wired into the framework instance — a logger file with zero imports elsewhere is a defect.
+- Next.js App Router apps using Sentry must include `src/app/global-error.tsx` (Client Component, renders own `<html>`/`<body>`, calls `Sentry.captureException`) so React render errors are captured.
+
+### Security
+- After adding any major dependency, run `pnpm audit --audit-level=high`. Pin transitive CVEs with `pnpm.overrides` in root `package.json` before merging. Document the CVE ID in a comment next to the override.
+
 ## Forbidden patterns
 
 - No secrets in code or committed config. `.env` is gitignored; env vars via DO App Platform in deployed environments.
