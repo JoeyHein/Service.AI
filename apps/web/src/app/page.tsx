@@ -25,38 +25,32 @@ const apiClient = initClient(echoContract, {
 });
 
 /**
- * Fetch the API health status server-side.
- * Falls back gracefully when the API is unreachable (local dev, build time).
+ * Ping the echo endpoint via the ts-rest typed client.
+ * TypeScript enforces that `result.body.data.echo` matches the contract shape;
+ * if the contract's EchoResponseSchema renames or removes `echo`, this fails to
+ * typecheck before any runtime execution.
  */
-async function getHealth(): Promise<{ ok: boolean } | null> {
+async function getEchoStatus(): Promise<string | null> {
   try {
-    const res = await fetch(
-      process.env.NEXT_PUBLIC_API_URL
-        ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/health`
-        : 'http://localhost:3001/api/v1/health',
-      { cache: 'no-store' }
-    );
-    return res.ok ? (res.json() as Promise<{ ok: boolean }>) : null;
+    const result = await apiClient.echo({ body: { message: 'ping' } });
+    if (result.status === 200) {
+      return result.body.data.echo;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 export default async function Home() {
-  const health = await getHealth();
-
-  // Expose the typed client on the server component so TypeScript enforces
-  // the contract at build time. The client is referenced here — not called —
-  // because the echo endpoint is not invoked on the home page. If the
-  // contract changes incompatibly, the type error surfaces during `next build`.
-  void (apiClient satisfies typeof apiClient);
+  const echo = await getEchoStatus();
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-24">
       <h1 className="text-4xl font-bold text-blue-600">Service.AI</h1>
       <p className="mt-4 text-gray-600">AI-native field service platform</p>
       <div className="mt-8 p-4 bg-gray-100 rounded">
-        <p>API Status: {health?.ok ? 'Online' : 'Offline'}</p>
+        <p>API Status: {echo !== null ? 'Online' : 'Offline'}</p>
       </div>
     </main>
   );
