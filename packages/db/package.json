@@ -2,16 +2,23 @@
   "name": "@service-ai/db",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "description": "Service.AI database package — Drizzle ORM schema and migrations",
   "scripts": {
+    "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql",
+    "db:migrate:down": "psql $DATABASE_URL -f migrations/0001_health_checks.down.sql"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
-    "drizzle-orm": "^0.45.2",
-    "pg": "^8.20.0",
+    "drizzle-kit": "^0.31.1",
     "typescript": "^5.4.0",
     "vitest": "^4.1.5"
   }
