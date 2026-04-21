@@ -33,11 +33,11 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install pnpm and yarn for flexibility
-RUN npm install -g pnpm yarn
+# Install pnpm (yarn is already in the node:20 base image)
+RUN npm install -g pnpm
 
 # Create workspace user
-RUN useradd -m -s /bin/bash -u 1000 builder \
+RUN useradd -m -s /bin/bash -u 1001 builder \
     && mkdir -p /workspace \
     && chown builder:builder /workspace
 
