@@ -1,0 +1,17 @@
+{
+  "name": "@service-ai/api",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Service.AI Fastify API — business logic, auth, Stripe, jobs, AI orchestration",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
