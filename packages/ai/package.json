@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "echo 'No tests in stub package'"
   },
   "dependencies": {},
   "devDependencies": {
