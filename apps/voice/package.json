@@ -13,11 +13,13 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "fastify": "^5",
+    "@axiomhq/pino": "^1",
     "@fastify/websocket": "^11",
     "@fastify/sensible": "^6",
     "@fastify/helmet": "^12",
     "@fastify/cors": "^10",
+    "@sentry/node": "^8",
+    "fastify": "^5",
     "pino": "^9"
   },
   "devDependencies": {

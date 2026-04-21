@@ -8,6 +8,7 @@
  * @module app
  */
 
+import './sentry.js';
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import helmet from '@fastify/helmet';
