@@ -1,0 +1,15 @@
+{
+  "name": "@service-ai/tests-foundation",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Foundation phase test suite for Service.AI",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.5",
+    "typescript": "^5.4.0"
+  }
+}
