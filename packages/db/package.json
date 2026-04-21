@@ -8,8 +8,11 @@
     "lint": "eslint src",
     "test": "vitest run"
   },
-  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.4.0"
+    "@types/pg": "^8.20.0",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.20.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.5"
   }
 }
