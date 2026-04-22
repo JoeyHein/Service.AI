@@ -7,7 +7,7 @@ services:
     github:
       branch: main
       deploy_on_push: true
-      repo: your-org/service-ai
+      repo: JoeyHein/Service.AI
     build_command: pnpm --filter @service-ai/web build
     run_command: pnpm --filter @service-ai/web start
     http_port: 3000
@@ -28,7 +28,7 @@ services:
     github:
       branch: main
       deploy_on_push: true
-      repo: your-org/service-ai
+      repo: JoeyHein/Service.AI
     build_command: pnpm --filter @service-ai/api build
     run_command: pnpm --filter @service-ai/api start
     http_port: 3001
@@ -58,7 +58,7 @@ services:
     github:
       branch: main
       deploy_on_push: true
-      repo: your-org/service-ai
+      repo: JoeyHein/Service.AI
     build_command: pnpm --filter @service-ai/voice build
     run_command: pnpm --filter @service-ai/voice start
     http_port: 8080
