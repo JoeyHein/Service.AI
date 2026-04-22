@@ -119,6 +119,12 @@ for phase in $PHASES; do
   PHASE_NUM=$((PHASE_NUM + 1))
   phase_log="$LOG_DIR/${phase}.log"
 
+  # Skip phases already gated and tagged complete. Resumable across machines/sessions.
+  if git rev-parse --verify "phase-${phase}-complete" >/dev/null 2>&1; then
+    notify "⏭️  [$PHASE_NUM/$TOTAL_PHASES] Skipping $phase — phase-${phase}-complete tag exists" "default"
+    continue
+  fi
+
   notify "📦 [$PHASE_NUM/$TOTAL_PHASES] Starting phase: $phase" "default"
 
   # ---- Stage 0: Write gate criteria + decompose tasks if only anchors exist ----
