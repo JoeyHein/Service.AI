@@ -11,12 +11,16 @@
 import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
 import { mountAuth } from './auth-mount.js';
+import { registerInviteRoutes } from './invites.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
   type FranchiseeLookup,
   type AuditLogWriter,
 } from './request-scope.js';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type * as dbSchema from '@service-ai/db';
+import type { MagicLinkSender } from '@service-ai/auth';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Server, IncomingMessage, ServerResponse } from 'http';
 import sensible from '@fastify/sensible';
@@ -80,6 +84,16 @@ export interface AppOptions {
    * provided; the plugin invokes it once per valid impersonated request.
    */
   auditWriter?: AuditLogWriter;
+  /**
+   * Drizzle database handle for tenant-scoped routes (invitations, later:
+   * customers, jobs, …). When supplied together with magicLinkSender,
+   * /api/v1/invites is mounted.
+   */
+  drizzle?: NodePgDatabase<typeof dbSchema>;
+  /** Email sender for invite links. Required to mount invite routes. */
+  magicLinkSender?: MagicLinkSender;
+  /** Origin used to build invite accept URLs. Defaults to http://localhost:3000. */
+  acceptUrlBase?: string;
 }
 
 /**
@@ -161,6 +175,15 @@ export function buildApp(opts: AppOptions = {}) {
       auditWriter: opts.auditWriter,
     });
     mountAuth(app, opts.auth);
+  }
+
+  // Mount invite routes when a Drizzle handle + sender are wired.
+  if (opts.drizzle && opts.magicLinkSender) {
+    registerInviteRoutes(app, {
+      drizzle: opts.drizzle,
+      magicLinkSender: opts.magicLinkSender,
+      acceptUrlBase: opts.acceptUrlBase ?? 'http://localhost:3000',
+    });
   }
 
   /**

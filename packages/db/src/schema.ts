@@ -244,3 +244,53 @@ export const auditLog = pgTable(
     createdIdx: index('audit_log_created_idx').on(t.createdAt),
   }),
 );
+
+/**
+ * Pending / redeemed / revoked user invitations.
+ *
+ * Only the SHA-256 hash of the token is stored. The raw token lives only in
+ * the invite link emailed to the recipient; if the DB leaks, pending
+ * invites still cannot be redeemed. scopeType + scopeId identify where the
+ * membership will land (franchisor / franchisee / location). franchisorId
+ * is always set for RLS-scoped visibility, even for franchisee-level
+ * invites, so a franchisor_admin can list every outstanding invite across
+ * their franchisees.
+ */
+export const invitations = pgTable(
+  'invitations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tokenHash: text('token_hash').notNull().unique(),
+    email: text('email').notNull(),
+    role: role('role').notNull(),
+    scopeType: scopeType('scope_type').notNull(),
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    franchiseeId: uuid('franchisee_id').references(() => franchisees.id, {
+      onDelete: 'cascade',
+    }),
+    locationId: uuid('location_id').references(() => locations.id, {
+      onDelete: 'set null',
+    }),
+    inviterUserId: text('inviter_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    redeemedAt: timestamp('redeemed_at', { withTimezone: true }),
+    redeemedUserId: text('redeemed_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    emailIdx: index('invitations_email_idx').on(t.email),
+    expiresIdx: index('invitations_expires_idx').on(t.expiresAt),
+    franchisorIdx: index('invitations_franchisor_idx').on(t.franchisorId),
+    franchiseeIdx: index('invitations_franchisee_idx').on(t.franchiseeId),
+    locationIdx: index('invitations_location_idx').on(t.locationId),
+    inviterIdx: index('invitations_inviter_idx').on(t.inviterUserId),
+  }),
+);

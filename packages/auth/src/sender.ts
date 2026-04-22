@@ -28,7 +28,6 @@ export interface MagicLinkSender {
  */
 export const loggingSender: MagicLinkSender = {
   async send({ email, url, purpose }) {
-    // eslint-disable-next-line no-console
     console.log(
       JSON.stringify({
         event: 'magic_link_stub',
