@@ -14,6 +14,8 @@ import { mountAuth } from './auth-mount.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
+  type FranchiseeLookup,
+  type AuditLogWriter,
 } from './request-scope.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Server, IncomingMessage, ServerResponse } from 'http';
@@ -68,6 +70,16 @@ export interface AppOptions {
    * provided. Tests inject a stub; production wires a real DB-backed impl.
    */
   membershipResolver?: MembershipResolver;
+  /**
+   * Validates the target of an X-Impersonate-Franchisee header. Omit to
+   * disable impersonation (any header becomes IMPERSONATION_DISABLED 403).
+   */
+  franchiseeLookup?: FranchiseeLookup;
+  /**
+   * Writes impersonation audit rows. Required when franchiseeLookup is
+   * provided; the plugin invokes it once per valid impersonated request.
+   */
+  auditWriter?: AuditLogWriter;
 }
 
 /**
@@ -145,6 +157,8 @@ export function buildApp(opts: AppOptions = {}) {
     app.register(requestScopePlugin, {
       auth: opts.auth,
       membershipResolver: resolver,
+      franchiseeLookup: opts.franchiseeLookup,
+      auditWriter: opts.auditWriter,
     });
     mountAuth(app, opts.auth);
   }
