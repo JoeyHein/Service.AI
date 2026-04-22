@@ -12,6 +12,8 @@
     "dev": "turbo run dev",
     "db:migrate": "pnpm --filter @service-ai/db run db:migrate",
     "db:migrate:down": "pnpm --filter @service-ai/db run db:migrate:down",
+    "seed": "pnpm --filter @service-ai/db run seed",
+    "seed:reset": "pnpm --filter @service-ai/db run seed:reset",
     "prepare": "husky"
   },
   "devDependencies": {

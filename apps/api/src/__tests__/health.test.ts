@@ -28,6 +28,13 @@ function createTestApp(overrides?: Parameters<typeof buildApp>[0]) {
   return buildApp(overrides);
 }
 
+const mockDb = {
+  query: async (_sql: string): Promise<unknown> => ({ rows: [{ '?column?': 1 }] }),
+};
+const mockRedis = {
+  ping: async (): Promise<string> => 'PONG',
+};
+
 // ---------------------------------------------------------------------------
 // Suite 1 — Application boots without error
 // ---------------------------------------------------------------------------
@@ -67,7 +74,7 @@ describe('TASK-FND-03 / GET /healthz — happy path', () => {
   let app: FastifyInstance;
 
   beforeEach(() => {
-    app = createTestApp();
+    app = createTestApp({ db: mockDb, redis: mockRedis });
   });
 
   afterEach(async () => {
@@ -153,6 +160,7 @@ describe('TASK-FND-03 / GET /healthz — DB unreachable', () => {
           throw new Error('ECONNREFUSED: DB unavailable in test');
         },
       },
+      redis: mockRedis,
     });
   });
 
@@ -322,7 +330,7 @@ describe('TASK-FND-03 / structured logging and request ID', () => {
   let app: FastifyInstance;
 
   beforeEach(() => {
-    app = createTestApp();
+    app = createTestApp({ db: mockDb, redis: mockRedis });
   });
 
   afterEach(async () => {
@@ -371,7 +379,7 @@ describe('TASK-FND-03 / security headers via @fastify/helmet', () => {
   let app: FastifyInstance;
 
   beforeEach(() => {
-    app = createTestApp();
+    app = createTestApp({ db: mockDb, redis: mockRedis });
   });
 
   afterEach(async () => {
@@ -409,7 +417,7 @@ describe('TASK-FND-03 / CORS via @fastify/cors', () => {
   let app: FastifyInstance;
 
   beforeEach(() => {
-    app = createTestApp();
+    app = createTestApp({ db: mockDb, redis: mockRedis });
   });
 
   afterEach(async () => {
@@ -439,7 +447,7 @@ describe('TASK-FND-03 / unknown route handling', () => {
   let app: FastifyInstance;
 
   beforeEach(() => {
-    app = createTestApp();
+    app = createTestApp({ db: mockDb, redis: mockRedis });
   });
 
   afterEach(async () => {

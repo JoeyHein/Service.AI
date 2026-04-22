@@ -116,7 +116,7 @@ describe('app.close() graceful drain', () => {
     ).catch(() => null);
 
     // Give the request a head-start before closing.
-    await new Promise<void>((r) => setTimeout(r, 10));
+    await new Promise<void>((r) => setTimeout(r, 80));
 
     // Close while request is likely in-flight. Must not throw.
     await expect(app.close()).resolves.toBeUndefined();

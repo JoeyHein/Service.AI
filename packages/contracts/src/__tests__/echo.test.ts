@@ -14,7 +14,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+
+const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 // ---------------------------------------------------------------------------
 // Suite 1 — File existence
@@ -24,7 +28,7 @@ describe('TASK-FND-06 / contracts package / file existence', () => {
   it('echo.ts source file exists at the expected path', () => {
     // The builder must create this file. Until then this test fails (red).
     expect(
-      existsSync('/workspace/packages/contracts/src/echo.ts'),
+      existsSync(resolve(PKG_ROOT, 'src/echo.ts')),
     ).toBe(true);
   });
 
@@ -32,7 +36,7 @@ describe('TASK-FND-06 / contracts package / file existence', () => {
     // packages/contracts/src/index.ts must exist (it already does) and
     // we will verify it exports echoContract after the dynamic import below.
     expect(
-      existsSync('/workspace/packages/contracts/src/index.ts'),
+      existsSync(resolve(PKG_ROOT, 'src/index.ts')),
     ).toBe(true);
   });
 });
