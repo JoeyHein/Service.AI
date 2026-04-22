@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "seed": "tsx src/seed/index.ts",
+    "seed:reset": "tsx src/seed/index.ts --reset"
   },
   "dependencies": {
     "@axiomhq/pino": "^1",

@@ -3,6 +3,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     globals: true,
+    // Run test files serially. Live integration tests (live-auth, live-seed,
+    // live-invites) share a single docker Postgres and would race on row
+    // inserts + truncates if vitest ran files in parallel. Unit-only suites
+    // don't benefit meaningfully from parallelism at this size.
+    fileParallelism: false,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
