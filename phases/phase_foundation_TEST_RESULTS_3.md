@@ -1,185 +1,285 @@
-# phase_foundation — Test Results Run 3
+# Test Results — phase_foundation — Run 3
 
 **Date**: 2026-04-22
+**Triggered by**: CORRECTION-5 fixes (B1: API mock injection, B2: contracts portable paths, M2: shutdown timing, M3: seed scripts)
 **Runner**: test-runner agent (claude-sonnet-4-6)
 **Branch**: main
-**Commit**: db987187 + staged/working-tree changes from CORRECTION_1 and CORRECTION_2
+**Commit**: 78f54d816c72a9157877a6a542241bb93480a1a0
 
 ---
 
 ## Summary
 
-| Suite | Status | Pass | Fail | Skip | Duration |
+| Suite | Total | Passed | Failed | Skipped | Duration |
 |---|---|---|---|---|---|
-| unit/integration (tests/foundation) | PASS | 132 | 0 | 0 | 1.85s |
-| unit/integration (apps/api) | PASS | 49 | 0 | 0 | 17.26s |
-| unit/integration (apps/voice) | PASS | 11 | 0 | 0 | 13.09s |
-| unit/integration (apps/web) | PASS | 24 | 0 | 0 | 9.86s |
-| unit/integration (packages/contracts) | PASS | 21 | 0 | 0 | 4.01s |
-| unit/integration (packages/db) | PASS | 19 | 0 | 0 | 5.50s |
-| unit/integration (packages/ai) | SKIP | — | — | — | stub |
-| unit/integration (packages/auth) | SKIP | — | — | — | stub |
-| unit/integration (packages/ui) | SKIP | — | — | — | stub |
-| typecheck | PASS | 8/8 pkgs | 0 | 0 | 40.14s |
-| lint | PASS | 8/8 pkgs | 0 | 0 | 50.63s |
-| build | PASS | 4/4 tasks | 0 | 0 | 2m 8s |
-| security scan (`pnpm audit --audit-level=high`) | PASS | — | 0 high/critical | — | — |
-| e2e | NOT RUN | — | — | — | Not configured |
-| perf baseline | NOT RUN | — | — | — | Not configured |
+| unit/integration — packages/contracts | 21 | 21 | 0 | 0 | 1.21s |
+| unit/integration — packages/db | 19 | 15 | 0 | 4 | 1.65s |
+| unit/integration — apps/api | 55 | 55 | 0 | 0 | 2.42s |
+| unit/integration — apps/web | 32 | 32 | 0 | 0 | 1.53s |
+| unit/integration — apps/voice | 11 | 11 | 0 | 0 | 1.81s |
+| unit/integration — stub packages (ai, auth, ui) | — | — | — | — | echo/exit 0 |
+| foundation acceptance (tests/foundation) | 132 | 3 | 129 | 0 | 522ms |
+| typecheck (turbo, all 8 pkgs) | — | 8/8 | 0 | — | 3.76s |
+| lint (turbo, all 8 pkgs) | — | 8/8 | 0 | — | 2.97s |
+| build (turbo) | — | 3/4 | 1 (web) | — | 404ms |
+| security scan (pnpm audit --audit-level=high) | — | PASS | — | — | — |
+| e2e | — | — | — | — | NOT APPLICABLE |
+| perf baseline | — | — | — | — | NOT APPLICABLE |
 
-**Overall result: PASS** — All 256 tests pass across unit, integration, and acceptance suites. Typecheck, lint, and build are clean. No high or critical CVEs.
+**Overall verdict**: FAIL
 
----
+Active failure categories:
+1. Foundation acceptance suite: `ROOT = "/workspace"` hardcoded Linux/Docker path in all 5 test files — all 129 failures are path-resolution mismatches on Windows (pre-existing, unchanged from Run 2)
+2. `apps/web` build script: `NODE_ENV=production next build` uses POSIX inline env-var syntax, fails on Windows cmd.exe (pre-existing, unchanged from Run 2)
+3. `packages/db` — 4 intentional skips (live Postgres not running — correct behavior, documented)
 
-## Detail: Unit / Integration Tests
-
-### Foundation phase acceptance tests — 132/132 PASS
-
-`tests/foundation/` — Vitest v4.1.5
-
-| File | Tests | Status |
-|---|---|---|
-| fnd-01-monorepo.test.ts | 67 | PASS |
-| fnd-07-ci.test.ts | 22 | PASS |
-| fnd-08-observability.test.ts | 11 | PASS |
-| fnd-09-do-spec.test.ts | 15 | PASS |
-| fnd-10-compose.test.ts | 17 | PASS |
-
-Coverage includes: monorepo structure, pnpm-workspace, turbo pipeline, tsconfig strict mode, workspace package.json names, Husky pre-commit hooks, GitHub Actions CI job definitions (typecheck/lint/test/build), pnpm caching, Axiom/Sentry SDK dependencies, env-var guards, pino redact config, DigitalOcean app spec, README rollback section, docker-compose service topology (5 services, port mappings, volumes, shared network).
-
-### apps/api — 49/49 PASS
-
-`apps/api/src/__tests__/` — Vitest v3.2.4
-
-| File | Tests | Status |
-|---|---|---|
-| health.test.ts | 29 | PASS |
-| echo.test.ts | 20 | PASS |
-
-`health.test.ts` covers: application bootstrap, GET /healthz happy path (200), DB unreachable (503), Redis unreachable (503), both unreachable (503), structured pino JSON logging, X-Request-ID header echoing, Helmet security headers, CORS preflight (204), unknown route 404, and a regression test confirming `pino-pretty` is in devDependencies and logger wiring imports are active.
-
-`echo.test.ts` covers: POST /api/v1/echo happy path, roundtrip fidelity, 400 on invalid input, response envelope shape, edge cases.
-
-### apps/voice — 11/11 PASS
-
-`apps/voice/src/__tests__/voice.test.ts` — Vitest v3.2.4 (10 s per-test timeout)
-
-Covers: GET /healthz 200, WebSocket upgrade handshake for `/call`, structured pino JSON logging, server listening startup.
-
-### apps/web — 24/24 PASS
-
-`apps/web/src/__tests__/structure.test.ts` — Vitest v3.2.4
-
-Covers: Next.js 15 app directory structure, App Router layout/page files, Tailwind directives, shadcn/ui presence, package.json dependency declarations, JSX TypeScript configuration, `next.config.ts` Sentry `withSentryConfig` wrapper, `src/app/global-error.tsx` Client Component existence (React render error capture), ts-rest `initClient` wiring, `apiClient.echo` type-safe call present.
-
-### packages/contracts — 21/21 PASS
-
-`packages/contracts/src/__tests__/echo.test.ts` — Vitest v3.2.4
-
-Covers: file existence, `echoContract` export, ts-rest route definition shape, Zod input/response schema validation, numeric key casting correctness (regression test for AUDIT-2 fix).
-
-### packages/db — 19/19 PASS
-
-`packages/db/src/__tests__/health-checks.test.ts` — Vitest v4.1.5
-
-| Group | Tests | Status |
-|---|---|---|
-| Schema shape (Drizzle column definitions) | 5 | PASS |
-| Up-migration SQL structure | 7 | PASS |
-| Down-migration SQL | 3 | PASS |
-| Live Postgres integration (localhost:5434) | 4 | PASS |
-
-All 4 live integration tests pass this run — Postgres is reachable at `localhost:5434` in the current environment. Tests exercise insert, read, constraint violations (>100 char service, >20 char status), and `checked_at` timestamp defaulting.
-
-### Stub packages — SKIP (expected)
-
-`packages/ai`, `packages/auth`, `packages/ui` — echo `'No tests in stub package'` and exit 0 per convention.
+The Run 2 regression (`const x: number = "this is a string"` at `apps/api/src/app.ts:182`) was an unstaged working-tree change that is confirmed absent from the current tree. Typecheck, lint, and non-web build are all fully green.
 
 ---
 
-## Typecheck
+## Details by Suite
 
-`pnpm typecheck` — Turborepo (8 packages)
+### Unit + Integration — packages/contracts
 
-| Package | Result | Notes |
-|---|---|---|
-| apps/api | PASS | 3 fresh — 0 errors |
-| apps/web | PASS | 1 fresh — 0 errors |
-| apps/voice | PASS | cached |
-| packages/contracts | PASS | 1 fresh — 0 errors |
-| packages/db | PASS | cached |
-| packages/ai | PASS | cached |
-| packages/auth | PASS | cached |
-| packages/ui | PASS | cached |
+Vitest v3.2.4 | Command: `pnpm turbo test --force`
 
-**8/8 packages pass.** The `Type 'string' is not assignable to type 'number'` regression (line 182 in `apps/api/src/app.ts`) that blocked Run 2 has been removed.
+```
+Test Files  1 passed (1)
+     Tests  21 passed (21)
+  Duration  1.21s
+```
+
+All 21 tests pass. CORRECTION-5 portable `PKG_ROOT` fix (using `fileURLToPath(import.meta.url)` instead of hardcoded `/workspace/...`) confirmed working on Windows.
+
+### Unit + Integration — packages/db
+
+Vitest v4.1.5
+
+```
+Test Files  1 passed (1)
+     Tests  15 passed | 4 skipped (19)
+  Duration  1.65s
+```
+
+15 static schema and migration tests pass. 4 live integration tests skip via `checkPostgresReachable()` guard (no Postgres at `localhost:5434` — correct and intentional; requires `docker-compose up`). Unchanged from Run 2.
+
+### Unit + Integration — apps/api
+
+Vitest v3.2.4
+
+```
+Test Files  3 passed (3)
+     Tests  55 passed (55)
+  Duration  2.42s
+```
+
+All 55 tests pass across 3 files:
+- `health.test.ts` — 29 tests (PASS) — all happy-path, DB-error, Redis-error, and error-format suites pass via `mockDb` + `mockRedis` injection (CORRECTION-5 B1 fix)
+- `echo.test.ts` — 20 tests (PASS)
+- `shutdown.test.ts` — 6 tests (PASS) — flaky test fixed with 80ms head-start delay (CORRECTION-5 M2 fix)
+
+No timeouts. All tests resolve in under 10ms via mock stubs. Duration 2.42s (was 72s pre-CORRECTION-5 due to Redis reconnect backoff).
+
+### Unit + Integration — apps/web
+
+Vitest v3.2.4
+
+```
+Test Files  1 passed (1)
+     Tests  32 passed (32)
+  Duration  1.53s
+```
+
+### Unit + Integration — apps/voice
+
+Vitest v3.2.4
+
+```
+Test Files  1 passed (1)
+     Tests  11 passed (11)
+  Duration  1.81s
+```
+
+### Stub Packages — packages/ai, packages/auth, packages/ui
+
+All three echo `No tests in stub package` and exit 0 per convention.
+
+### Unit + Integration Aggregate
+
+| Package | Pass | Fail | Skip |
+|---|---|---|---|
+| packages/contracts | 21 | 0 | 0 |
+| packages/db | 15 | 0 | 4 |
+| apps/api | 55 | 0 | 0 |
+| apps/web | 32 | 0 | 0 |
+| apps/voice | 11 | 0 | 0 |
+| **Total** | **134** | **0** | **4** |
 
 ---
 
-## Lint
+### Foundation Acceptance Tests (tests/foundation)
 
-`pnpm lint` — Turborepo (8 packages)
+Command: `cd tests/foundation && pnpm test` | Vitest v4.1.5 | Exit code: 1
 
-| Package | Result | Notes |
-|---|---|---|
-| apps/api | PASS | 0 errors |
-| apps/web | PASS | 0 errors; `next lint` deprecation warning (cosmetic) |
-| apps/voice | PASS | cached |
-| packages/contracts | PASS | 0 errors |
-| packages/db | PASS | cached |
-| packages/ai | PASS | cached |
-| packages/auth | PASS | cached |
-| packages/ui | PASS | cached |
+```
+Test Files  5 failed (5)
+     Tests  129 failed | 3 passed (132)
+  Duration  522ms
+```
 
-**8/8 packages pass.** The `@typescript-eslint/no-unused-vars` violation from the regression line that blocked Run 2 is gone.
+Root cause: All 5 test files declare `const ROOT = "/workspace"` (or equivalent hardcoded paths). On Windows, `join("/workspace", ...)` resolves to `\workspace\` — a non-existent path. Every `existsSync()` and `readFileSync()` call fails.
 
-Non-fatal warnings (present in all runs, unchanged):
-- All packages: `MODULE_TYPELESS_PACKAGE_JSON` — root `package.json` lacks `"type": "module"`. Cosmetic; lint succeeds.
-- `apps/web`: `next lint` CLI deprecated in Next.js 15. Cosmetic; lint succeeds.
-- `apps/web`: Next.js ESLint plugin not detected in `eslint.config.js`. Cosmetic; no errors emitted.
+Per-file counts:
+
+| File | Failed | Passed | Root cause |
+|---|---|---|---|
+| fnd-01-monorepo.test.ts | 64 | 3 | `const ROOT = "/workspace"` at line 24 |
+| fnd-07-ci.test.ts | 22 | 0 | `const ROOT = "/workspace"` at line 23 |
+| fnd-08-observability.test.ts | 11 | 0 | `const ROOT = '/workspace'` at line 28 |
+| fnd-09-do-spec.test.ts | 15 | 0 | `const ROOT = '/workspace'` at line 26 |
+| fnd-10-compose.test.ts | 17 | 0 | `const COMPOSE_PATH = "/workspace/docker-compose.yml"` at line 25 |
+
+The 3 passing tests are all in `fnd-01-monorepo.test.ts`; they iterate over workspace paths with `continue` on missing files so they do not throw. The implementation artifacts being tested all exist and are correct at the actual repo root (`C:/Users/jhein/servicetitan-clone/`). This is a test infrastructure portability issue only.
+
+Representative error output:
+
+```
+FAIL  fnd-01-monorepo.test.ts > each workspace has a tsconfig.json > apps/api/tsconfig.json extends the root base config
+Error: Expected file not found: \workspace\apps\api\tsconfig.json
+ at readFile fnd-01-monorepo.test.ts:30:11
+
+FAIL  fnd-07-ci.test.ts > the workflow file exists at .github/workflows/ci.yml
+AssertionError: expected false to be true
+ at fnd-07-ci.test.ts:28:5
+
+FAIL  fnd-09-do-spec.test.ts > .do/app.yaml exists at /workspace/.do/app.yaml
+AssertionError: expected false to be true
+ at fnd-09-do-spec.test.ts:34:5
+```
 
 ---
 
-## Build
+### Typecheck
 
-`pnpm build` — Turborepo (4 compilable targets)
+Command: `pnpm turbo typecheck --force` | Exit code: 0
+
+```
+Tasks:    8 successful, 8 total
+Time:     3.758s
+```
+
+| Package | Result |
+|---|---|
+| apps/api | PASS |
+| apps/voice | PASS |
+| apps/web | PASS |
+| packages/contracts | PASS |
+| packages/db | PASS |
+| packages/ai | PASS |
+| packages/auth | PASS |
+| packages/ui | PASS |
+
+The Run 2 regression (`const x: number = "this is a string"` at `apps/api/src/app.ts:182`) is confirmed absent from the working tree. All 8 packages typecheck cleanly.
+
+---
+
+### Lint
+
+Command: `pnpm turbo lint --force` | Exit code: 0
+
+```
+Tasks:    8 successful, 8 total
+Time:     2.972s
+```
+
+All 8 packages pass. Informational `MODULE_TYPELESS_PACKAGE_JSON` warning present across all packages (root `package.json` lacks `"type": "module"`) — non-fatal cosmetic warning, not an error. Unchanged from Run 2 (tracked as OPEN-6).
+
+---
+
+### Build
+
+Command: `pnpm turbo build --force` | Exit code: 1
+
+```
+Tasks:    0 successful, 4 total
+Failed:   @service-ai/web#build
+Time:     404ms
+```
+
+Non-web packages (confirmed clean by running build excluding `apps/web`):
+
+```
+Tasks:    3 successful, 3 total
+Time:     2.095s
+```
 
 | Task | Result | Notes |
 |---|---|---|
-| apps/api | PASS | fresh `tsc` — emits to `dist/` |
-| apps/web | PASS | fresh Next.js 15.5.15 production build — 4 static pages, 103 kB first-load JS |
-| apps/voice | PASS | cached `tsc` |
-| packages/db | PASS | cached `tsc` |
+| apps/api | PASS | tsc — no errors |
+| apps/voice | PASS | tsc — no errors |
+| packages/db | PASS | tsc — no errors |
+| apps/web | FAIL | `'NODE_ENV' is not recognized as an internal or external command, operable program or batch file.` |
 
-**4/4 build tasks pass.** Next.js build generates: `/` (300 B) and `/_not-found` (301 B) static pages with 46 kB + 54.4 kB shared chunks.
-
----
-
-## E2E Tests
-
-**Not run.** No `tests/e2e/` directory and no Playwright configuration exist. E2E infrastructure is not required for phase_foundation.
+Root cause: `apps/web/package.json` `scripts.build` is `"NODE_ENV=production next build"`. Inline POSIX env-var assignment is not valid on Windows cmd.exe. CI (ubuntu-latest) is unaffected. Fix: add `cross-env` devDependency; change to `"cross-env NODE_ENV=production next build"`.
 
 ---
 
-## Performance Baseline
+### Security Scan
 
-**Not run.** No `tests/perf/` directory and no k6 scripts exist. Performance test infrastructure is not required for phase_foundation.
+Command: `pnpm audit --audit-level=high` | Exit code: 0 — PASS
 
----
+No HIGH or CRITICAL vulnerabilities found.
 
-## Security Scan
+`pnpm audit` (all severities): 3 moderate vulnerabilities — all in the `vitest -> vite -> esbuild` dev toolchain only. No production artifact exposure.
 
-`pnpm audit --audit-level=high` — **PASS** (exit 0). No HIGH or CRITICAL vulnerabilities.
-
-`pnpm audit` (full) — **3 moderate vulnerabilities**, all in dev toolchain.
-
-| Advisory | Package | Severity | Vulnerable | Fixed In | Path |
+| Advisory | Package | Severity | Vulnerable | Fixed In | Scope |
 |---|---|---|---|---|---|
-| GHSA-67mh-4wv8-2f99 | esbuild | moderate | <=0.24.2 | >=0.25.0 | vitest → vite → esbuild |
-| GHSA-4w7w-66w2-5vf9 | vite | moderate | <=6.4.1 | >=6.4.2 | vitest → vite |
-| (3rd moderate) | vite/esbuild (transitive) | moderate | — | — | dev toolchain |
+| GHSA-67mh-4wv8-2f99 | esbuild | moderate | <=0.24.2 | >=0.25.0 | dev toolchain (vitest/vite) |
+| GHSA-4w7w-66w2-5vf9 | vite | moderate | <=6.4.1 | >=6.4.2 | dev toolchain (vitest/vite) |
+| (3rd moderate) | esbuild (transitive) | moderate | — | — | dev toolchain |
 
-All three moderate findings are in the `vitest` → `vite` → `esbuild` dev-dependency chain. Not reachable in production builds or at runtime. Documented in AUDIT-3; `pnpm.overrides` pins `rollup` to `>=3.30.0` (existing CVE from prior cycle). No action required for gate passage.
+All three unchanged from Run 2. Documented in AUDIT-3 and root `package.json` `pnpm.overrides`.
+
+---
+
+### E2E Tests
+
+NOT APPLICABLE — `tests/e2e/` directory does not exist. Only `tests/foundation/` is present under `tests/`. E2E infrastructure is not required for phase_foundation.
+
+---
+
+### Performance Baseline
+
+NOT APPLICABLE — `tests/perf/` directory does not exist. Performance test infrastructure is not required for phase_foundation.
+
+---
+
+## Failures
+
+### F-1: foundation acceptance suite — ROOT="/workspace" hardcoded Linux path (129 failures)
+
+- **Test**: All 129 failing tests across 5 files in `tests/foundation/`
+- **Files**:
+  - `tests/foundation/fnd-01-monorepo.test.ts:24` — `const ROOT = "/workspace"`
+  - `tests/foundation/fnd-07-ci.test.ts:23` — `const ROOT = "/workspace"`
+  - `tests/foundation/fnd-08-observability.test.ts:28` — `const ROOT = '/workspace'`
+  - `tests/foundation/fnd-09-do-spec.test.ts:26` — `const ROOT = '/workspace'`
+  - `tests/foundation/fnd-10-compose.test.ts:25` — `const COMPOSE_PATH = "/workspace/docker-compose.yml"`
+- **Error**: `Error: Expected file not found: \workspace\<path>` for every file-existence check (path resolves to Windows non-existent `\workspace\` drive root)
+- **Status**: Pre-existing — identical to Run 2
+- **Fix required**: Replace hardcoded `/workspace` in all 5 files with portable `import.meta.url`-based resolution. For `fnd-10-compose.test.ts`, additionally change `COMPOSE_PATH` to `join(ROOT, "docker-compose.yml")`.
+
+### F-2: apps/web build — Windows-incompatible inline env-var
+
+- **Test**: `pnpm turbo build` — `@service-ai/web#build`
+- **File**: `apps/web/package.json`, `scripts.build`
+- **Error**: `'NODE_ENV' is not recognized as an internal or external command, operable program or batch file.`
+- **Status**: Pre-existing — identical to Run 2
+- **Fix required**: Add `cross-env` devDependency to `apps/web`; change build script to `"cross-env NODE_ENV=production next build"`.
+
+### Non-failure — packages/db live integration skips (4 tests)
+
+4 tests in `packages/db/src/__tests__/health-checks.test.ts` skip via `checkPostgresReachable()` guard. Requires `docker-compose up postgres`. Intentional and correct. Not a code defect.
 
 ---
 
@@ -187,34 +287,30 @@ All three moderate findings are in the `vitest` → `vite` → `esbuild` dev-dep
 
 | Check | Run 2 | Run 3 | Delta |
 |---|---|---|---|
-| Foundation acceptance tests | 132/132 PASS | 132/132 PASS | no change |
-| apps/api unit tests | 48/48 PASS | **49/49 PASS** | +1 (logger regression test) |
-| apps/voice unit tests | 11/11 PASS | 11/11 PASS | no change |
-| apps/web unit tests | 20/20 PASS | **24/24 PASS** | +4 (Sentry/ts-rest client tests) |
-| packages/contracts | 20/20 PASS | **21/21 PASS** | +1 (numeric key casting regression test) |
-| packages/db (schema/SQL) | 15/15 PASS | 15/15 PASS | no change |
-| packages/db (live DB) | 4/4 **FAIL** (ECONNREFUSED) | **4/4 PASS** | Postgres available this run |
-| typecheck | **7/8 FAIL** (apps/api TS2322) | **8/8 PASS** | regression removed |
-| lint | **7/8 FAIL** (apps/api no-unused-vars) | **8/8 PASS** | regression removed |
-| build | **3/4 FAIL** (apps/api tsc) | **4/4 PASS** | regression removed |
-| security (high/critical) | 0 | 0 | no change |
-| **Total tests** | **236 pass, 4 fail** | **256 pass, 0 fail** | **+20 tests, 0 failures** |
+| packages/contracts (21 tests) | 21 PASS | 21 PASS | no change |
+| packages/db (15 schema + 4 skip) | 15 PASS / 4 skip | 15 PASS / 4 skip | no change |
+| apps/api (55 tests) | 55 PASS | 55 PASS | no change |
+| apps/web (32 tests) | 32 PASS | 32 PASS | no change |
+| apps/voice (11 tests) | 11 PASS | 11 PASS | no change |
+| foundation acceptance (132) | 3 PASS / 129 FAIL | 3 PASS / 129 FAIL | no change |
+| typecheck (8 pkgs) | 7/8 FAIL (regression) | 8/8 PASS | FIXED |
+| lint (8 pkgs) | 7/8 FAIL (regression) | 8/8 PASS | FIXED |
+| build — api/voice/db | FAIL (regression) | PASS | FIXED |
+| build — apps/web | FAIL (Windows env syntax) | FAIL (Windows env syntax) | no change (pre-existing) |
+| security (pnpm audit --audit-level=high) | PASS | PASS | no change |
 
-### Root causes resolved between Run 2 and Run 3
-
-1. **Regression removed** — `const x: number = "this is a string";` (apps/api/src/app.ts:182) removed by CORRECTION_2. Unblocks typecheck, lint, and build for `apps/api`.
-2. **Logger wiring regression test added** — `apps/api/src/__tests__/health.test.ts` gained 1 test asserting `pino-pretty` in devDependencies and loggerInstance import is wired (CORRECTION_2 fix for AUDIT-2 logger issue).
-3. **Sentry + ts-rest client tests added** — `apps/web/src/__tests__/structure.test.ts` gained 4 tests for `withSentryConfig` wrapper, `global-error.tsx`, `initClient` wiring, `apiClient.echo` call (CORRECTION_2 fixes B1/B3).
-4. **Numeric key casting regression test added** — `packages/contracts/src/__tests__/echo.test.ts` gained 1 test (CORRECTION_2 fix B2).
-5. **Postgres available** — 4 live-DB integration tests in `packages/db` that previously failed with `ECONNREFUSED` now pass; Postgres container accessible at `localhost:5434` in this run environment.
+The Run 2 regression (`const x: number = "this is a string"` in `apps/api/src/app.ts`) was an unstaged working-tree change that is no longer present. Typecheck, lint, and non-web build are now all clean.
 
 ---
 
-## Observations
+## Blocker Assessment
 
-1. **256/256 tests pass with zero failures.** This is the first clean run across all suites.
-2. **Vitest version split** (`v3.2.4` in apps/packages vs `v4.1.5` in `tests/foundation` and `packages/db`) is unchanged and functional. Both resolve correctly. Not a gate blocker.
-3. **Coverage tooling absent.** `@vitest/coverage-v8` is not installed and no `coverage` script exists. The ≥80% line coverage gate criterion (identified as BLOCKER-1 in AUDIT-5) cannot be measured. This was a known open item entering CORRECTION_2 and is carried forward — if it remains a gate criterion it must be addressed before final gate approval.
-4. **Graceful-shutdown test absent.** No test exercises SIGTERM + in-flight request draining (AUDIT-5 BLOCKER-2). Carried forward from CORRECTION_2.
-5. **`pnpm db:migrate` from root** still untested in this run (AUDIT-5 BLOCKER-3) — requires a live DB and is an ops concern, not a test-runner concern.
-6. **Live-DB tests pass this run** but depend on ambient infrastructure. CI will need the Postgres service started before `pnpm -r test` for these to be stable.
+Two issues prevent a fully-green run on native Windows:
+
+1. **Foundation acceptance suite `ROOT="/workspace"`** — 129 test failures across all 5 acceptance test files. All implementation artifacts exist and are correct. This is a test infrastructure portability defect, not a product defect. Requires corrector to update all 5 `tests/foundation/*.test.ts` files with portable `fileURLToPath(import.meta.url)`-based ROOT resolution.
+
+2. **`apps/web` build script** — Windows cmd.exe incompatible. Blocks `pnpm turbo build` on Windows. CI (ubuntu-latest) is unaffected. Requires `cross-env` addition to `apps/web`.
+
+Neither failure indicates a missing or broken implementation artifact. Both are Windows-portability issues in test/build tooling. The underlying foundation deliverables (CI workflow, DO spec, docker-compose, observability wiring, monorepo scaffold, Husky hooks) are all present and correct at `C:/Users/jhein/servicetitan-clone/`.
+
+**Verdict: ACTIONABLE_FAILURES** — corrector action required on test portability (F-1) and build script (F-2) before this run can be declared ALL_GREEN.

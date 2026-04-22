@@ -4,7 +4,7 @@
 **Corrector:** Autonomous Corrector
 **Audit addressed:** phases/phase_foundation_AUDIT_2.md
 **Prior correction:** phases/phase_foundation_CORRECTION_1.md (Cycle 1 — fixed B3/B4 from AUDIT_1)
-**Commit with core fixes:** c4f6425d (fix(foundation): AUDIT-2 correct build, typecheck, ts-rest client, observability wiring)
+**Commit with core fixes:** b7e5a11 (fix(foundation): AUDIT-2 correct build, typecheck, ts-rest client, observability wiring)
 
 ---
 
