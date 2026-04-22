@@ -11,6 +11,10 @@
 import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
 import { mountAuth } from './auth-mount.js';
+import {
+  requestScopePlugin,
+  type MembershipResolver,
+} from './request-scope.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Server, IncomingMessage, ServerResponse } from 'http';
 import sensible from '@fastify/sensible';
@@ -58,6 +62,12 @@ export interface AppOptions {
    * so the app boots and serves /healthz without an auth backend configured.
    */
   auth?: Auth | null;
+  /**
+   * Resolves the active memberships for a given user id. Used by the
+   * requestScopePlugin to populate request.scope. Required when `auth` is
+   * provided. Tests inject a stub; production wires a real DB-backed impl.
+   */
+  membershipResolver?: MembershipResolver;
 }
 
 /**
@@ -123,9 +133,19 @@ export function buildApp(opts: AppOptions = {}) {
   // captured with request context. No-op when SENTRY_DSN is unset.
   setupSentryFastify(app);
 
-  // Mount Better Auth and /api/v1/me when an auth instance is provided.
+  // Mount Better Auth + RequestScope when an auth instance is provided.
   // Skipped in tests that only exercise /healthz or /echo.
   if (opts.auth) {
+    const resolver: MembershipResolver = opts.membershipResolver ?? {
+      // Default resolver returns no memberships — suitable as a safe no-op
+      // for tests that wire auth but don't care about scope. Production
+      // wires a real DB-backed resolver in index.ts.
+      memberships: async () => [],
+    };
+    app.register(requestScopePlugin, {
+      auth: opts.auth,
+      membershipResolver: resolver,
+    });
     mountAuth(app, opts.auth);
   }
 
