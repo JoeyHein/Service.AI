@@ -8,7 +8,7 @@
  * @module app
  */
 
-import './sentry.js';
+import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Server, IncomingMessage, ServerResponse } from 'http';
@@ -110,6 +110,10 @@ export function buildApp(opts: AppOptions = {}) {
   app.register(cors);
   app.register(rateLimit, { max: 60, timeWindow: '1 minute' });
   app.register(compress);
+
+  // Wire Sentry's Fastify error handler so unhandled route errors are
+  // captured with request context. No-op when SENTRY_DSN is unset.
+  setupSentryFastify(app);
 
   /**
    * GET /healthz

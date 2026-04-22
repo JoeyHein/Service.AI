@@ -15,6 +15,7 @@
  */
 
 import * as Sentry from '@sentry/node';
+import type { FastifyInstance } from 'fastify';
 
 const sentryDsn = process.env['SENTRY_DSN'];
 
@@ -24,6 +25,18 @@ if (sentryDsn) {
     tracesSampleRate: 1.0,
     environment: process.env['NODE_ENV'] ?? 'development',
   });
+}
+
+/**
+ * Wire Sentry's Fastify error handler onto the given app instance so
+ * unhandled route errors are captured with request context (URL, method,
+ * request ID). No-op when SENTRY_DSN is not set, so local dev and CI
+ * without the secret stay side-effect-free.
+ */
+export function setupFastify(app: FastifyInstance): void {
+  if (sentryDsn) {
+    Sentry.setupFastifyErrorHandler(app);
+  }
 }
 
 export { Sentry };
