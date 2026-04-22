@@ -10,6 +10,7 @@
 
 import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
+import { mountAuth } from './auth-mount.js';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Server, IncomingMessage, ServerResponse } from 'http';
 import sensible from '@fastify/sensible';
@@ -20,6 +21,7 @@ import compress from '@fastify/compress';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { z } from 'zod';
+import type { Auth } from '@service-ai/auth';
 
 const { Pool } = pg;
 
@@ -50,6 +52,12 @@ export interface AppOptions {
   db?: DbClient;
   redis?: RedisClient;
   logger?: boolean | object;
+  /**
+   * Optional Better Auth instance. When present, /api/auth/* and /api/v1/me
+   * are mounted. Tests that don't need auth omit this; it defaults to null
+   * so the app boots and serves /healthz without an auth backend configured.
+   */
+  auth?: Auth | null;
 }
 
 /**
@@ -114,6 +122,12 @@ export function buildApp(opts: AppOptions = {}) {
   // Wire Sentry's Fastify error handler so unhandled route errors are
   // captured with request context. No-op when SENTRY_DSN is unset.
   setupSentryFastify(app);
+
+  // Mount Better Auth and /api/v1/me when an auth instance is provided.
+  // Skipped in tests that only exercise /healthz or /echo.
+  if (opts.auth) {
+    mountAuth(app, opts.auth);
+  }
 
   /**
    * GET /healthz
