@@ -26,6 +26,7 @@
     "@service-ai/db": "workspace:^",
     "@ts-rest/core": "^3",
     "@ts-rest/fastify": "^3",
+    "drizzle-orm": "^0.45.2",
     "fastify": "^5.0.0",
     "fastify-plugin": "^5",
     "ioredis": "^5.0.0",

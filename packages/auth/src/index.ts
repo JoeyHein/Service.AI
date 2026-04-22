@@ -21,16 +21,29 @@ export { loggingSender };
 export type { MagicLinkSender, MagicLinkPayload } from './sender.js';
 
 /**
- * Narrow shape of the Drizzle client Better Auth needs. Taking a structural
- * type here keeps @service-ai/auth from importing @service-ai/db directly,
- * which would create a dependency cycle (db depends on auth-schema shapes).
+ * The Drizzle client Better Auth needs. Typed as `unknown` here so
+ * @service-ai/auth does not import @service-ai/db directly (avoiding a
+ * dependency cycle); callers pass their real Drizzle instance and the
+ * drizzle adapter handles the runtime contract.
  */
-export interface AuthDb {
-  [k: string]: unknown;
-}
+export type AuthDb = unknown;
 
 export interface CreateAuthOptions {
   db: AuthDb;
+  /**
+   * Schema object mapping Better Auth's canonical model names (`user`,
+   * `session`, `account`, `verification`) to the caller's Drizzle table
+   * exports. Required because @service-ai/db uses plural table variable
+   * names (`users`, `sessions`, …); without this mapping the Better Auth
+   * Drizzle adapter fails introspection at request time with a
+   * "model was not found" error.
+   */
+  authSchema: {
+    user: unknown;
+    session: unknown;
+    account: unknown;
+    verification: unknown;
+  };
   /** Full origin (protocol+host) the API serves auth routes under. */
   baseUrl: string;
   /** Random secret; production deployments use a 32+ byte value. */
@@ -51,7 +64,10 @@ export function createAuth(opts: CreateAuthOptions) {
   return betterAuth({
     baseURL: opts.baseUrl,
     secret: opts.secret,
-    database: drizzleAdapter(opts.db as never, { provider: 'pg' }),
+    database: drizzleAdapter(opts.db as never, {
+      provider: 'pg',
+      schema: opts.authSchema as never,
+    }),
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,

@@ -74,6 +74,9 @@ importers:
       '@ts-rest/fastify':
         specifier: ^3
         version: 3.52.1(@ts-rest/core@3.52.1(@types/node@22.19.17)(zod@3.25.76))(fastify@5.8.5)(zod@3.25.76)
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.28.16)(pg@8.20.0)
       fastify:
         specifier: ^5.0.0
         version: 5.8.5
