@@ -10,8 +10,8 @@
     "lint": "eslint src",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql",
-    "db:migrate:down": "psql $DATABASE_URL -f migrations/0001_health_checks.down.sql",
+    "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql -f migrations/0002_tenancy_franchise.sql",
+    "db:migrate:down": "psql $DATABASE_URL -f migrations/0002_tenancy_franchise.down.sql -f migrations/0001_health_checks.down.sql",
     "seed": "echo 'No seed data yet — implement in a future phase' && exit 0",
     "seed:reset": "echo 'No seed reset yet — implement in a future phase' && exit 0"
   },
