@@ -503,4 +503,20 @@ describe('AUDIT-2 / B4 regression / logger wiring', () => {
     await expect(app.ready()).resolves.not.toThrow();
     await app.close();
   });
+
+  it('pino-pretty is declared as a devDependency in apps/api/package.json', async () => {
+    // logger.ts specifies pino-pretty as a transport target when AXIOM_TOKEN is
+    // set. If pino-pretty is absent from node_modules, pino throws:
+    //   "Error: unable to determine transport target for pino-pretty"
+    // The package must be in devDependencies so it is installed in both dev and
+    // CI environments. This test guards against it being accidentally removed.
+    const { readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const apiRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const pkg = JSON.parse(readFileSync(join(apiRoot, 'package.json'), 'utf-8')) as {
+      devDependencies?: Record<string, string>;
+    };
+    expect(pkg.devDependencies?.['pino-pretty']).toBeTruthy();
+  });
 });

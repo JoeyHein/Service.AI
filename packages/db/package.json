@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql",
     "db:migrate:down": "psql $DATABASE_URL -f migrations/0001_health_checks.down.sql"
   },
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "^4.0.0",
     "drizzle-kit": "^0.31.1",
     "typescript": "^5.4.0",
     "vitest": "^4.1.5"

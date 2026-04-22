@@ -18,9 +18,7 @@ const nextConfig: NextConfig = {
     const path = require('path') as typeof import('path');
     const monorepoRoot = path.resolve(__dirname, '..', '..');
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- webpack type
     config.resolve.plugins ??= [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- webpack type
     (config.resolve.plugins as any[]).push({
       apply(resolver: any) {
         const target = resolver.ensureHook('resolve');

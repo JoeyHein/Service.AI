@@ -1,269 +1,246 @@
-# Test Results — phase_foundation — Run 1
+# phase_foundation — Test Results Run 1
 
-**Date:** 2026-04-21  
-**Runner:** test-runner agent (claude-sonnet-4-6)  
-**Triggered by:** Orchestrator — post-build test gate  
+**Date**: 2026-04-21
+**Runner**: test-runner agent (claude-sonnet-4-6)
+**Branch**: main
+**Commit**: db9871872dfbf719a69e0c6c4d0d2ca3e4e41472
 
 ---
 
-## Executive Summary
+## Summary
 
-| Category | Files | Tests | Passed | Failed | Skipped |
+| Suite | Status | Pass | Fail | Skip | Duration |
 |---|---|---|---|---|---|
-| Foundation phase (fnd-*) | 5 | 132 | 132 | 0 | 0 |
-| apps/api | 2 | 45 | 45 | 0 | 0 |
-| apps/web | 1 | 16 | 16 | 0 | 0 |
-| apps/voice | 1 | 11 | 11 | 0 | 0 |
-| packages/db | 1 | 19 | 19 | 0 | 0 |
-| packages/contracts | 1 | 20 | 20 | 0 | 0 |
-| packages/ai | — | — | — | — | NO TEST FILES |
-| packages/auth | — | — | — | — | NO TEST FILES |
-| packages/ui | — | — | — | — | NO TEST FILES |
-| **TOTAL** | **11** | **243** | **243** | **0** | **—** |
+| unit/integration (foundation phase tests) | PASS | 132 | 0 | 0 | 1.77s |
+| unit/integration (apps/api) | PASS | 48 | 0 | 0 | 14.85s |
+| unit/integration (apps/voice) | PASS | 11 | 0 | 0 | 9.84s |
+| unit/integration (apps/web) | PASS | 20 | 0 | 0 | 11.74s |
+| unit/integration (packages/contracts) | PASS | 20 | 0 | 0 | 2.95s |
+| unit/integration (packages/db — schema/SQL only) | PASS | 15 | 0 | 0 | — |
+| unit/integration (packages/db — live DB) | FAIL | 15 | 4 | 0 | 5.84s |
+| unit/integration (packages/ai) | SKIP | 0 | 0 | — | — (stub) |
+| unit/integration (packages/auth) | SKIP | 0 | 0 | — | — (stub) |
+| unit/integration (packages/ui) | SKIP | 0 | 0 | — | — (stub) |
+| typecheck | PASS | 8/8 pkgs | 0 | 0 | 40.2s |
+| lint | PASS | 8/8 pkgs | 0 | 0 | 56.3s |
+| build | PASS | 4/4 tasks | 0 | 0 | 121.5s |
+| security scan (pnpm audit) | WARNING | — | — | — | — |
+| e2e | NOT RUN | — | — | — | Not configured |
+| perf baseline | NOT RUN | — | — | — | Not configured |
 
-**Overall verdict:** All 243 tests pass. Two blocking issues found outside the test suite itself (typecheck failure in contracts, missing vitest dependency in ai/auth/ui). No E2E, performance, or SAST infrastructure configured for this phase.
+**Overall: ACTIONABLE_FAILURES**
 
----
-
-## 1. Lint
-
-**Command:** `pnpm -w run lint` (via Turborepo)  
-**Result:** PASS — 8/8 packages clean  
-**Duration:** ~33s  
-
-Non-fatal warnings logged (do not block):
-- All non-web packages: `[MODULE_TYPELESS_PACKAGE_JSON]` — root `package.json` lacks `"type": "module"`. ESLint still ran correctly.
-- `apps/web`: Next.js `next-lint` plugin not detected in `eslint.config.js` (flat config format requires explicit plugin wiring). No errors or warnings on source files.
-
-**No lint errors in any package.**
+The sole test failures are 4 live Postgres integration tests in `packages/db` that require a running Postgres instance on `localhost:5434`. No Postgres container is running in this environment (ECONNREFUSED). All 15 non-database tests in that same file pass. All other suites are green.
 
 ---
 
-## 2. TypeScript Typecheck
+## Unit / Integration Tests
 
-**Command:** `pnpm -w run typecheck` (via Turborepo)  
-**Result:** FAIL — 1 error  
-**Duration:** ~9.5s  
+### tests/foundation/ (phase-level acceptance tests)
 
-### Failure
-
-**Package:** `@service-ai/contracts`  
-**File:** `packages/contracts/src/__tests__/echo.test.ts:161:56`  
-**Error:**
-```
-error TS2345: Argument of type 'number' is not assignable to parameter of type 'string | (string | number)[]'.
-```
-
-**Root cause:** Indexing `echoContract.echo.responses[200]` with numeric literal `200`. ts-rest's generated `responses` type uses string or tuple index signatures; TypeScript rejects the bare `number` key at this access site. The runtime value is correct (tests pass), but the TypeScript type for property access must be `200 as const` or the variable must be typed as `z.ZodTypeAny` via a string index.
-
-**Packages that passed:** api, web, voice, db, ai, auth, ui, contracts (all non-test source files pass).
-
----
-
-## 3. Unit & Integration Tests
-
-### 3.1 Foundation phase tests — `tests/foundation/`
-
-**Runner:** Vitest v4.1.5 (own package with vitest v4)  
-**Command:** `pnpm run test` in `tests/foundation/`  
-**Duration:** 1.86s  
-**Result:** PASS — 132/132
+**Runner**: Vitest v4.1.5
+**Result**: PASS — 132/132 tests across 5 files
 
 | File | Tests | Result |
 |---|---|---|
-| `fnd-01-monorepo.test.ts` | 50 | PASS |
-| `fnd-07-ci.test.ts` | 22 | PASS |
-| `fnd-08-observability.test.ts` | 17 | PASS |
-| `fnd-09-do-spec.test.ts` | 15 | PASS |
-| `fnd-10-compose.test.ts` | 28 | PASS |
+| fnd-01-monorepo.test.ts | ~50 | PASS |
+| fnd-07-ci.test.ts | ~22 | PASS |
+| fnd-08-observability.test.ts | ~17 | PASS |
+| fnd-09-do-spec.test.ts | ~15 | PASS |
+| fnd-10-compose.test.ts | ~28 | PASS |
 
-Notable verifications confirmed passing:
-- pnpm-workspace.yaml, turbo.json, tsconfig.base.json with `"strict": true`
-- All 8 workspace dirs + package.json files with `@service-ai/*` scoped names
-- All workspace tsconfigs extend root base; none override `strict: false`
-- `.husky/pre-commit` exists, is executable, invokes lint and typecheck, no `|| true` suppression
-- CI workflow (`ci.yml`) triggers on push+PR, has typecheck/lint/test/build jobs, uses pnpm with store caching
-- No plaintext secrets in CI workflow
-- Axiom + Sentry dependency declarations in all three apps
-- `AXIOM_TOKEN` and `SENTRY_DSN` env-var guards in API source before enabling transports
-- `pino` redact configuration covers the `authorization` header
-- Sentry initialized in API and wired in Next.js
-- `.do/app.yaml` present, all three services + Postgres + Redis declared, correct ports, auto-deploy branch, env var references
-- `README.md` present with rollback section
-- Docker Compose has all 5 services, correct non-default ports (5434, 6381), volume mounts for hot reload, shared network
+Verified by passing tests:
+- pnpm-workspace.yaml, turbo.json, tsconfig.base.json with strict: true
+- All 8 workspace directories with @service-ai/* scoped package names
+- All workspace tsconfigs extend root base; none override strict: false
+- .husky/pre-commit exists, is executable, invokes lint and typecheck, no || true suppression
+- CI workflow (.github/workflows/ci.yml) triggers on push + pull_request, defines typecheck/lint/test/build jobs, uses pnpm with store caching, no plaintext secrets
+- Axiom + Sentry SDK dependencies present in all three apps
+- AXIOM_TOKEN and SENTRY_DSN env-var guards in API source
+- pino redact configuration covers the authorization header
+- Sentry.init() call present in API source; Sentry wired in Next.js config
+- .do/app.yaml present with all three services, Postgres and Redis references, ports (3000, 3001, 8080), auto-deploy branch, env var references
+- README.md present with rollback section
+- docker-compose.yml has all 5 services, non-default ports (5434:5432, 6381:6379), volume mounts for hot reload, shared build-net network (more than 4 references)
 
-### 3.2 apps/api — `src/__tests__/`
+### apps/api
 
-**Runner:** Vitest v3.2.4  
-**Duration:** 16.90s  
-**Result:** PASS — 45/45
+**Runner**: Vitest v3.2.4
+**Result**: PASS — 48/48 tests across 2 files
 
 | File | Tests | Result | Notes |
 |---|---|---|---|
-| `echo.test.ts` | 20 | PASS | POST /api/v1/echo — happy path, roundtrip fidelity, invalid input, envelope, edge cases |
-| `health.test.ts` | 25 | PASS | GET /healthz — 200/503, DB/Redis mock failures, structured logging, request IDs, Helmet headers, CORS, 404 handling |
+| src/__tests__/health.test.ts | 28 | PASS | GET /healthz 200/503, DB/Redis mock failures, structured logging, request IDs, Helmet headers, CORS, 404 |
+| src/__tests__/echo.test.ts | 20 | PASS | POST /api/v1/echo happy path, roundtrip fidelity (unicode), 400 on invalid input, response envelope consistency, edge cases |
 
-Observed structured pino JSON logs emitted during health tests — confirms logging pipeline is active.
+Pino JSON structured logs were emitted to stdout during the test run, confirming the logging pipeline is active and wired.
 
-### 3.3 apps/web — `src/__tests__/`
+### apps/voice
 
-**Runner:** Vitest v3.2.4  
-**Duration:** 13.96s  
-**Result:** PASS — 16/16
-
-| File | Tests | Result | Notes |
-|---|---|---|---|
-| `structure.test.ts` | 16 | PASS | Config files, App Router layout.tsx + page.tsx, Tailwind directives, shadcn components.json, "Service.AI" brand text, health endpoint reference, JSX tsconfig |
-
-### 3.4 apps/voice — `src/__tests__/`
-
-**Runner:** Vitest v3.2.4  
-**Duration:** 8.12s  
-**Result:** PASS — 11/11
+**Runner**: Vitest v3.2.4
+**Result**: PASS — 11/11 tests across 1 file
 
 | File | Tests | Result | Notes |
 |---|---|---|---|
-| `voice.test.ts` | 11 | PASS | GET /healthz, WebSocket /call handshake, ping→pong echo, latency <200ms, sequential messages, empty string edge case, concurrent clients |
+| src/__tests__/voice.test.ts | 11 | PASS | GET /healthz 200, WebSocket /call handshake, ping->pong echo, latency <200ms, sequential messages (2 and 3), empty string edge case, concurrent clients |
 
-### 3.5 packages/db — `src/__tests__/`
+### apps/web
 
-**Runner:** Vitest v4.1.5 (own version)  
-**Duration:** 3.07s  
-**Result:** PASS — 19/19
-
-| File | Tests | Result | Notes |
-|---|---|---|---|
-| `health-checks.test.ts` | 19 | PASS | Schema exports, column presence, up/down migration SQL structure; **live DB integration**: insert/read-back, varchar(100)/(20) constraint enforcement, `checked_at` timestamp default |
-
-The live integration tests hit the Postgres instance. All constraints and defaults verified against a real database.
-
-### 3.6 packages/contracts — `src/__tests__/`
-
-**Runner:** Vitest v3.2.4  
-**Duration:** 3.19s  
-**Result:** PASS — 20/20
+**Runner**: Vitest v3.2.4
+**Result**: PASS — 20/20 tests across 1 file
 
 | File | Tests | Result | Notes |
 |---|---|---|---|
-| `echo.test.ts` | 20 | PASS | File existence, re-exports, route definition (POST /api/v1/echo), body/response schema validation — accepts valid, rejects missing/wrong-typed/empty fields |
+| src/__tests__/structure.test.ts | 20 | PASS | Config files present, App Router layout.tsx + page.tsx, Tailwind directives, shadcn components.json, brand text, JSX tsconfig |
 
-Note: All tests pass at runtime despite the TypeScript typecheck error at line 161 (numeric index). The `safeParse` call itself is structurally correct.
+### packages/contracts
 
-### 3.7 packages/ai, packages/auth, packages/ui
+**Runner**: Vitest v3.2.4
+**Result**: PASS — 20/20 tests across 1 file
 
-**Result:** TEST SCRIPT FAILS — `vitest: not found`
+| File | Tests | Result | Notes |
+|---|---|---|---|
+| src/__tests__/echo.test.ts | 20 | PASS | File existence, re-exports, route definition (POST /api/v1/echo), Zod body/response schema validation |
 
-These three packages declare `"test": "vitest run"` in `package.json` but do not list `vitest` as a devDependency. Additionally, no `__tests__/` directory or test files exist in any of them — only a stub `src/index.ts`. The Turborepo `test` pipeline therefore fails for these 3 packages when invoked as `pnpm -w run test`.
+### packages/db
 
-**Impact:** No tests to pass or fail; the scripts themselves error. This is a configuration gap (empty package scripts pointing at an uninstalled binary), not a failing test.
+**Runner**: Vitest v4.1.5
+**Result**: FAIL — 15 passed, 4 failed (all failures require live Postgres)
 
----
-
-## 4. E2E Tests (Playwright)
-
-**Result:** NOT CONFIGURED  
-
-No Playwright configuration file, no `tests/e2e/` spec files, and `playwright` is not present in any package.json. The gate document references E2E as a future concern; it is not required for phase_foundation completion per the gate criteria.
-
----
-
-## 5. Performance Baseline (k6)
-
-**Result:** NOT CONFIGURED  
-
-No k6 scripts found in `tests/perf/` (directory does not exist). The gate document lists performance baselines as metrics to establish, not as pass/fail blockers for phase_foundation. Baselines will be captured when k6 infrastructure is wired.
-
----
-
-## 6. Security Scan
-
-### 6.1 `pnpm audit`
-
-**Result:** 4 vulnerabilities — 1 HIGH, 3 MODERATE  
-All findings are in **devDependencies only** (vitest/vite toolchain and Sentry bundler plugins). None affect production runtime.
-
-| Severity | Package | Vulnerability | Path | Exploitable in Prod? |
-|---|---|---|---|---|
-| HIGH | `rollup@3.29.5` | Arbitrary File Write via Path Traversal (GHSA-mw96-cpmx-2vgc) | `apps/web > @sentry/nextjs > @rollup/plugin-commonjs > rollup` | No — build-time devDep |
-| MODERATE | `esbuild@0.21.5` | Dev server CORS bypass — any site can query dev server (GHSA-67mh-4wv8-2f99) | `apps/api > vitest > vite > esbuild` (13 paths) | No — dev/test tooling only |
-| MODERATE | `vite@5.4.21` | Path Traversal in Optimized Deps `.map` Handling (GHSA-4w7w-66w2-5vf9) | `apps/api > vitest > vite` (12 paths) | No — dev/test tooling only |
-| MODERATE | *(third moderate included in `pnpm audit` count)* | — | — | — |
-
-**Remediation path:**
-- `rollup`: `@sentry/nextjs` must ship an updated peer dep; no direct fix available yet.
-- `esbuild`/`vite`: Upgrade vitest and vite to ≥0.25.0 / ≥6.4.2 — blocked on vitest v3 compatibility.
-- These are acceptable for a development phase; must be resolved before production deploy.
-
-### 6.2 Static code checks
-
-| Check | Result |
-|---|---|
-| `console.log` in production source paths | PASS — none found |
-| `.env` file committed to git | PASS — `.env` is gitignored and NOT tracked (confirmed via `git ls-files`) |
-| `.env` exists locally | NOTE — contains `ANTHROPIC_API_KEY`. Comment in file says "rotate after use — this was shared in chat". **Key should be rotated immediately.** |
-| `TODO` without task ID | PASS — none found |
-| `: any` types in production source | PASS — none found |
-| Secrets in CI workflow file | PASS — no plaintext secrets (verified by `fnd-07` test suite) |
-
----
-
-## 7. Build Artifacts
-
-**Command:** `pnpm -w run build` (Turborepo — 4 packages: db, contracts, api, web)  
-**Duration:** 2m 14.7s (cold, no cache)  
-**Result:** PASS — 4/4 tasks successful
-
-**Next.js bundle (apps/web):**
-| Route | Size | First Load JS |
+| Group | Tests | Result |
 |---|---|---|
-| `/` (dynamic) | 123 B | 102 kB |
-| `/_not-found` (static) | 994 B | 103 kB |
-| Shared chunks | — | 102 kB |
+| health_checks Drizzle schema (unit) | 5 | PASS |
+| up migration SQL structure (unit) | 7 | PASS |
+| down migration SQL structure (unit) | 3 | PASS |
+| health_checks live integration | 4 | FAIL — ECONNREFUSED 127.0.0.1:5434 |
 
-Build baseline established: **2m 15s cold build, 102 kB First Load JS**.
+### packages/ai, packages/auth, packages/ui
 
----
-
-## 8. Issues Requiring Correction
-
-### BLOCKER-1 — TypeScript typecheck failure in contracts test
-
-**File:** `packages/contracts/src/__tests__/echo.test.ts:161`  
-**Error:** `TS2345: Argument of type 'number' is not assignable to parameter of type 'string | (string | number)[]'`  
-**Fix:** Change `echoContract.echo.responses[200]` to `echoContract.echo.responses[200 as unknown as string]` or type the responses accessor as `Record<number, z.ZodTypeAny>`. Alternatively, declare the variable with `as z.ZodTypeAny` directly.
-
-### BLOCKER-2 — ai/auth/ui packages have broken test scripts
-
-**Packages:** `@service-ai/ai`, `@service-ai/auth`, `@service-ai/ui`  
-**Issue:** `package.json` declares `"test": "vitest run"` but vitest is not in devDependencies and no test files exist.  
-**Fix:** Either (a) add `vitest` to devDependencies and add stub `__tests__/index.test.ts` with a placeholder test, or (b) change the test script to `echo 'no tests yet' && exit 0` until tests are written. Option (a) is preferred to keep Turborepo's test task non-failing.
-
-### WARNING-1 — Anthropic API key in .env may need rotation
-
-The `.env` file at workspace root contains an `ANTHROPIC_API_KEY`. The file comment acknowledges it was shared in chat. The key is NOT committed to git (properly gitignored). Rotate the key at earliest convenience.
-
-### WARNING-2 — Audit findings in devDependencies
-
-4 pnpm audit findings (1 high, 3 moderate) in the vitest/vite/sentry toolchain. No production risk now, but must be resolved before any production-facing deployment.
-
-### INFO — E2E / perf / SAST not yet wired
-
-Playwright, k6, and Semgrep are in the tech stack but not yet configured. No blocking impact for phase_foundation; wiring is expected in later phases.
+**Result**: STUB — no test files exist; each package runs `echo 'No tests in stub package' && exit 0`. Exit code 0.
 
 ---
 
-## 9. Metrics Baselines Established
+## Typecheck
 
-| Metric | Value |
-|---|---|
-| Cold build time | 2m 15s |
-| Next.js First Load JS | 102 kB |
-| Vitest run duration (all packages combined) | ~47s |
-| pnpm audit findings (devDep only) | 4 (1 high, 3 moderate) |
-| console.log in prod paths | 0 |
-| any types in prod paths | 0 |
-| Committed secrets | 0 |
+**Command**: `pnpm typecheck` (Turborepo, all 8 packages)
+**Result**: PASS — 8/8 packages clean
+**Duration**: 40.2s
+
+All packages typecheck without errors. Packages verified:
+- @service-ai/ai, @service-ai/api, @service-ai/auth, @service-ai/contracts, @service-ai/db, @service-ai/ui, @service-ai/voice, @service-ai/web
 
 ---
 
-*End of test results — phase_foundation — Run 1*
+## Lint
+
+**Command**: `pnpm lint` (Turborepo, all 8 packages)
+**Result**: PASS — 8/8 packages clean, no lint errors
+**Duration**: 56.3s
+
+Non-fatal warnings (do not block):
+- All non-web packages: `[MODULE_TYPELESS_PACKAGE_JSON]` — root package.json lacks "type": "module". ESLint still runs correctly.
+- apps/web: `next lint` deprecation notice (will be removed in Next.js 16; no errors emitted). Next.js ESLint plugin not detected in flat config — informational only.
+
+---
+
+## Build
+
+**Command**: `pnpm build` (Turborepo)
+**Result**: PASS — 4/4 build tasks successful (voice was cached from prior run)
+**Duration**: 121.5s (cold build for web, api, db; voice replayed from cache)
+
+Next.js production bundle (apps/web):
+- Route `/`: 300 B page, 103 kB First Load JS
+- Route `/_not-found`: 301 B page, 103 kB First Load JS
+- Shared JS chunks: 103 kB
+
+---
+
+## Security Scan
+
+**Command**: `pnpm audit --audit-level=high`
+**Result**: No HIGH or CRITICAL vulnerabilities. 3 MODERATE findings, all in devDependency toolchain only (no production exposure).
+
+`pnpm audit --audit-level=high` exits 0. `pnpm audit` (no level filter) exits 1 with the following findings:
+
+| Severity | Package | Vulnerability | GHSA / CVE | Path | Prod Risk |
+|---|---|---|---|---|---|
+| MODERATE | esbuild <=0.24.2 | Dev server CORS bypass — any website can send requests to dev server and read responses | GHSA-67mh-4wv8-2f99 | apps/api > vitest > vite > esbuild | No — dev/test tooling only |
+| MODERATE | vite <=6.4.1 | Path traversal in optimized deps .map handling | GHSA-4w7w-66w2-5vf9 / CVE-2026-39365 | apps/api > vitest > vite | No — dev/test tooling only |
+| MODERATE | vite <=6.4.1 | (same advisory, additional path) | GHSA-4w7w-66w2-5vf9 | apps/voice > vitest > vite | No — dev/test tooling only |
+
+Remediation: upgrade vitest to a version that bundles vite >=6.4.2 and esbuild >=0.25.0. The root package.json already overrides rollup >=3.30.0 (per AUDIT-3 fix); esbuild and vite overrides should be added similarly before production deployment.
+
+---
+
+## E2E Tests
+
+Not run — no Playwright configuration found and no tests/e2e/ directory exists. This infrastructure is not required for phase_foundation.
+
+---
+
+## Performance Baseline
+
+Not run — no k6 scripts found and no tests/perf/ directory exists. This infrastructure is not required for phase_foundation.
+
+---
+
+## Failures & Errors
+
+### packages/db > health_checks live integration > 4 tests FAIL
+
+All 4 failures share the same root cause: no Postgres is running on localhost:5434.
+
+**Failure 1**: applies the up migration, inserts a row, reads it back, then cleans up
+```
+Error: connect ECONNREFUSED 127.0.0.1:5434
+  at pg-pool/index.js:45:11
+  at src/__tests__/health-checks.test.ts:161:7  (pool.query(idempotentSql))
+```
+
+**Failure 2**: rejects a row with a service value exceeding 100 characters
+```
+Error: connect ECONNREFUSED 127.0.0.1:5434
+  at src/__tests__/health-checks.test.ts:221:7
+```
+
+**Failure 3**: rejects a row with a status value exceeding 20 characters
+```
+Error: connect ECONNREFUSED 127.0.0.1:5434
+  at src/__tests__/health-checks.test.ts:251:7
+```
+
+**Failure 4**: defaults checked_at to the current timestamp when not supplied
+```
+Error: connect ECONNREFUSED 127.0.0.1:5434
+  at src/__tests__/health-checks.test.ts:281:7
+```
+
+**Likely cause**: These are genuine integration tests that require the Docker Compose Postgres service (`postgresql://builder:builder@localhost:5434/servicetitan`). No container is running in the current test environment. The test code is correct and the schema/migrations are structurally valid (all 15 non-DB tests pass). These tests will pass when run with `docker compose up -d postgres` first.
+
+**Classification**: INFRASTRUCTURE — not a code defect. The tests cannot be made to pass without a running database. This is expected behavior for a live integration test suite.
+
+---
+
+## Coverage
+
+Coverage collection was not configured in any vitest.config.ts (no `coverage` key present). No coverage report was generated.
+
+---
+
+## Observations
+
+1. The 4 live DB test failures are entirely infrastructure-driven (no Postgres available). The underlying schema, migration SQL, and Drizzle ORM code are sound — all static/unit assertions pass. These tests should be skipped or guarded in CI environments without a database, or the CI workflow should spin up Postgres as a service job.
+
+2. Lint produces a recurring `[MODULE_TYPELESS_PACKAGE_JSON]` warning across all packages because the root package.json has no `"type"` field. ESLint's flat config file (eslint.config.js) uses ESM syntax and triggers Node's module-type detection heuristic. Adding `"type": "module"` to the root package.json would eliminate this warning, but it is non-blocking.
+
+3. apps/web uses `next lint` which is deprecated in favor of the ESLint CLI directly. The command still works and produces no errors. Migration should happen before Next.js 16.
+
+4. The Next.js ESLint plugin warning (`The Next.js plugin was not detected`) is informational — the existing flat config does not include `plugin:@next/core-web-vitals` rules. Source passes lint clean regardless.
+
+5. Build times: Next.js cold production build took ~2 minutes. The voice app build was served from Turborepo cache. First Load JS is 103 kB — reasonable for a stub page.
+
+6. Three vitest versions coexist: v4.1.5 in tests/foundation and packages/db, v3.2.4 in the app packages. This works but may cause subtle behavior differences. Standardizing to one version is advisable.
+
+7. The security audit flags no HIGH or CRITICAL issues. All 3 MODERATE findings are in dev toolchain (vitest/vite/esbuild) with no production runtime exposure. The rollup CVE (GHSA-mw96-cpmx-2vgc) that was present in a prior audit appears resolved by the `pnpm.overrides` pin for rollup >=3.30.0 added in AUDIT-3.
+```

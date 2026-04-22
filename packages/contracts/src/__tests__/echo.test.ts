@@ -204,3 +204,25 @@ describe('TASK-FND-06 / contracts package / response schema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// AUDIT-2 / B2 regression — TypeScript numeric key indexing on ts-rest responses
+// ---------------------------------------------------------------------------
+
+describe('AUDIT-2 / B2 regression / ts-rest responses numeric key', () => {
+  it('echoContract.echo.responses[200] is accessible without a TypeScript error', async () => {
+    // Before the fix, `echoContract.echo.responses[200]` with a bare number literal
+    // failed typecheck: "Argument of type 'number' is not assignable to parameter
+    // of type 'string | (string | number)[]'". The fix uses `as unknown as z.ZodTypeAny`
+    // to satisfy the ts-rest AppRoute.responses index type without widening the
+    // value type. This test is the executable proof: if the cast breaks, all four
+    // response-schema tests above will fail with a TypeScript compile error.
+    const { echoContract } = await import('../echo.js');
+    // Array-notation property assertion — toHaveProperty([200]) avoids the same
+    // TypeScript error that toHaveProperty(200) would introduce.
+    expect(echoContract.echo.responses).toHaveProperty([200]);
+    // Cast used throughout Suite 5; confirmed callable here as a standalone guard.
+    const schema = echoContract.echo.responses[200] as unknown as z.ZodTypeAny;
+    expect(typeof schema.safeParse).toBe('function');
+  });
+});

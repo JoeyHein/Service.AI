@@ -50,6 +50,49 @@ servicetitan-clone/
 
 Web talks to API only via the ts-rest contracts in `packages/contracts`. Voice talks to API for business actions (create job, update status). No direct DB access from web or voice — API is the only writer.
 
+## 2a. Package dependency graph
+
+Explicit directed dependency edges (→ = "depends on"). Only workspace packages shown; external npm dependencies omitted.
+
+```
+apps/web    → packages/contracts   (shared Zod schemas + ts-rest client)
+apps/web    → packages/ui          (shadcn component library)
+apps/web    → packages/auth        (session/cookie helpers)
+
+apps/api    → packages/contracts   (shared Zod schemas + ts-rest server handler)
+apps/api    → packages/db          (Drizzle ORM schema + Pool client)
+apps/api    → packages/ai          (LLM router, prompt library)
+apps/api    → packages/auth        (Better Auth middleware)
+
+apps/voice  → packages/ai          (LLM router for voice-to-text intent extraction)
+apps/voice  → packages/auth        (session validation for WS upgrades)
+
+packages/ai → (no workspace deps — only external: anthropic, @ai-sdk/xai, zod)
+packages/db → (no workspace deps — only external: drizzle-orm, pg)
+packages/contracts → (no workspace deps — only external: @ts-rest/core, zod)
+packages/auth → packages/db        (reads/writes session + membership tables)
+packages/ui → (no workspace deps — only external: react, tailwindcss, radix-ui)
+```
+
+**Forbidden edges (enforced by CLAUDE.md):**
+- `apps/web` → `packages/db` — web must not touch DB directly; all writes go through `apps/api`
+- `apps/voice` → `packages/db` — same rule
+- Any package → direct LLM SDK import — all LLM calls route through `packages/ai`
+
+## 2b. Local vs. DO environment parity
+
+| Concern | Local (Docker Compose) | DO App Platform |
+|---|---|---|
+| Postgres | `postgres:16-alpine` container, port 5434 on host | DO Managed Postgres 16 |
+| Redis | `redis:7-alpine` container, port 6381 on host | DO Managed Redis 7 |
+| Secret injection | `.env` file (gitignored) → Docker `environment:` | DO App Platform env vars (encrypted at rest) |
+| Connectivity | Services reach each other by Docker service name (`postgres:5432`, `redis:6379`) | Same DNS pattern via DO's internal VPC |
+| Ports | web:3000, api:3001, voice:8080 (mapped to host) | Each service on its own DO App subdomain; internal routing via DO network |
+| Build | `pnpm dev` with tsx watch (hot reload) | `pnpm build` → static artifact; auto-deploy on push to `main` |
+| Observability | Axiom + Sentry disabled when env vars absent (local default) | Tokens injected via DO env → Axiom dataset + Sentry DSN active |
+
+The `DATABASE_URL` and `REDIS_URL` env var names are identical in both environments, ensuring zero code-path differences between local and deployed.
+
 ## 3. Data model (key tables)
 
 ### Tenancy & auth

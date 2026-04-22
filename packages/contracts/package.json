@@ -11,13 +11,15 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@ts-rest/core": "^3",
     "zod": "^3"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^3.0.0",
     "typescript": "^5",
     "vitest": "^3"
   }

@@ -15,7 +15,7 @@
  *   packages/db/drizzle.config.ts
  */
 
-import { describe, it, expect, afterAll } from 'vitest'
+import { describe, it, expect, afterAll, beforeAll, beforeEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import pkg from 'pg'
@@ -31,6 +31,27 @@ const DOWN_MIGRATION_PATH = resolve(PACKAGE_ROOT, 'migrations', '0001_health_che
 
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://builder:builder@localhost:5434/servicetitan'
+
+/**
+ * Check whether Postgres is reachable before attempting live integration tests.
+ * When DATABASE_URL points to an unreachable host (local dev without Docker, or
+ * CI without a service container), these tests are skipped with an explicit
+ * reason rather than failing with ECONNREFUSED. All schema and migration SQL
+ * tests above run unconditionally since they only read the filesystem.
+ */
+let postgresReachable = false
+
+async function checkPostgresReachable(): Promise<boolean> {
+  const pool = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 })
+  try {
+    await pool.query('SELECT 1')
+    return true
+  } catch {
+    return false
+  } finally {
+    await pool.end()
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 1. Schema shape tests — verify the Drizzle schema exposes expected columns
@@ -138,6 +159,20 @@ describe('down migration SQL (0001_health_checks.down.sql)', () => {
 
 describe('health_checks live integration', () => {
   let pool: InstanceType<typeof Pool>
+
+  beforeAll(async () => {
+    // Skip all live tests when Postgres is unreachable. Documented reason:
+    // CI provides a postgres service container; local dev requires
+    // `docker compose up -d` before running these tests. Static schema and
+    // migration SQL tests above always run since they are filesystem-only.
+    postgresReachable = await checkPostgresReachable()
+  }, 10_000)
+
+  beforeEach((ctx) => {
+    if (!postgresReachable) {
+      ctx.skip()
+    }
+  })
 
   afterAll(async () => {
     if (pool) {

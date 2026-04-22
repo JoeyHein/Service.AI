@@ -8,7 +8,11 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "dev": "turbo run dev"
+    "coverage": "turbo run coverage",
+    "dev": "turbo run dev",
+    "db:migrate": "pnpm --filter @service-ai/db run db:migrate",
+    "db:migrate:down": "pnpm --filter @service-ai/db run db:migrate:down",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.0.0",
