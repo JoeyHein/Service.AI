@@ -17,6 +17,8 @@ import { registerAuditLogRoutes } from './audit-log-routes.js';
 import { registerCustomerRoutes } from './customers-routes.js';
 import { registerJobRoutes } from './jobs-routes.js';
 import { registerPlacesRoutes, stubPlacesClient, type PlacesClient } from './places.js';
+import { registerJobPhotoRoutes } from './job-photos-routes.js';
+import { stubObjectStore, type ObjectStore } from './object-store.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -105,6 +107,13 @@ export interface AppOptions {
    * client via `googlePlacesClient(GOOGLE_MAPS_API_KEY)`.
    */
   placesClient?: PlacesClient;
+  /**
+   * Photo storage adapter. Defaults to `stubObjectStore()` so dev
+   * tests run without any bucket configured. Production wires
+   * `s3ObjectStore({ endpoint, region, bucket, accessKeyId, secretAccessKey })`
+   * pointed at the DO Space.
+   */
+  objectStore?: ObjectStore;
 }
 
 /**
@@ -233,6 +242,11 @@ export function buildApp(opts: AppOptions = {}) {
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
+    registerJobPhotoRoutes(
+      app,
+      opts.drizzle,
+      opts.objectStore ?? stubObjectStore(),
+    );
   }
 
   // Places endpoints don't need the DB but do require the scope plugin —
