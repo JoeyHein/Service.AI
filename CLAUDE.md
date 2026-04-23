@@ -60,10 +60,51 @@ servicetitan-clone/
 ## Required patterns
 
 ### Tenancy (load-bearing)
-- Every tenant-scoped query includes `franchisee_id` (and when relevant `location_id`) in the WHERE clause.
-- `tenant_id` is resolved from `request.scope`, **never** from request input.
-- Postgres RLS is enabled as defense in depth with policies referencing session GUCs.
-- Franchisor cross-tenant access requires the `X-Impersonate-Franchisee` header, validated, and writes a row to `audit_log`.
+
+Canonical entry points implemented in phase_tenancy_franchise:
+
+- `requestScopePlugin` (`apps/api/src/request-scope.ts`) — Fastify
+  plugin that attaches `request.scope`, `request.userId`,
+  `request.impersonation`, and a `request.requireScope()` helper to
+  every authenticated request. Resolves the scope from Better Auth's
+  session + the `memberships` table + optional impersonation header
+  or `serviceai.impersonate` cookie. `RequestScope` is a discriminated
+  union (`platform` / `franchisor` / `franchisee`) — pattern-match on
+  `scope.type`, never access fields that may not exist on the variant.
+- `withScope(db, scope, fn)` (`@service-ai/db`) — runs `fn(tx)` inside
+  a transaction with `app.role`, `app.franchisor_id`, `app.franchisee_id`
+  set via `set_config(..., true)` (transaction-local, auto-clear on
+  commit/rollback). Every query that reads a tenant-scoped table should
+  run inside this, so Postgres RLS policies fire.
+
+Required defence-in-depth combo for every tenant-scoped read:
+
+1. `scope = req.requireScope()` — 401/403 before any DB work
+2. App-layer `WHERE` that matches the scope (e.g.
+   `eq(franchisees.franchisor_id, scope.franchisorId)`). Required
+   because the dev docker Postgres connects as a superuser that bypasses
+   RLS; production DO Postgres connects as a non-superuser and RLS does
+   its job, but both paths must behave identically.
+3. `withScope(db, scope, tx => tx.select()...)` — RLS enforces the same
+   filter at the DB layer if the app-layer WHERE is ever forgotten.
+
+Rules:
+- `franchisee_id` is resolved from `request.scope`, **never** from
+  request input. Body fields like `{ franchiseeId }` that cross-reference
+  the scope must validate (e.g. `target.franchisorId ===
+  scope.franchisorId`) — see `apps/api/src/invites.ts#resolveTarget`
+  and `apps/api/src/can-invite.ts` for the pattern.
+- Every tenant-scoped table has `ROW LEVEL SECURITY ENABLED` +
+  `FORCE ROW LEVEL SECURITY` + three named policies per table
+  (`_platform_admin` / `_franchisor_admin` / `_scoped`). New migrations
+  that add tenant tables must add policies in the same commit — see
+  migration 0003 for the template.
+- Franchisor cross-tenant access requires either the
+  `X-Impersonate-Franchisee` header or the `serviceai.impersonate`
+  cookie (header wins). The plugin validates and writes exactly one
+  `audit_log` row per impersonated request. UI flow: POST
+  `/impersonate/start` to set the cookie, POST `/impersonate/stop` to
+  clear.
 
 ### API
 - Every endpoint registered through ts-rest; contract lives in `packages/contracts`.
@@ -130,13 +171,21 @@ servicetitan-clone/
 ## Multi-tenancy rule (strict)
 
 Every tenant-scoped table carries:
-- `franchisee_id` (required; NOT NULL)
+- `franchisee_id` (may be NULL only for rows that represent the
+  franchisor / platform level; NOT NULL on row types that only make
+  sense inside a franchisee)
 - `location_id` (when applicable)
 - `created_at`, `updated_at`
 
 Every SELECT/UPDATE/DELETE against that table:
-- Uses `scopedQuery(request.scope)` from `packages/db` — or equivalent manual Drizzle with the scope check
-- Fails closed: if `request.scope.franchisee_id` is missing and the caller isn't a platform admin, the query refuses to run
+- Runs inside `withScope(db, scope, fn)` from `@service-ai/db` so
+  RLS policies fire
+- Adds an app-layer WHERE matching `request.scope` as defence in depth
+- Fails closed: if `request.scope` is null, the handler returns 401
+  before the query runs (`req.requireScope()` throws)
+
+See `apps/api/src/invites.ts` and `apps/api/src/audit-log-routes.ts`
+for the canonical pattern.
 
 ## AI guardrail defaults (per franchisee)
 

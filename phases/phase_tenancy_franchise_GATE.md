@@ -129,6 +129,39 @@ This is phase 2 of 13. Inherits foundation baselines. Multi-tenancy is load-bear
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Verdict:** APPROVED
 
-**Verdict:** _(pending)_
+**Reviewer:** Joey Heinrichs (self-review against AUDIT_1)
+**Date:** 2026-04-23
+**Commit:** 37c1b60 (feat(tenancy): TASK-TEN-08 audit log viewer), plus
+the docs + audit + approval commit on top.
+**Notes:** Every BLOCKER criterion is independently verified in
+`phase_tenancy_franchise_AUDIT_1.md` against the live docker Postgres +
+Redis stack. 355 tests across 9 packages, 0 cached, 0 skipped on
+`pnpm turbo test --force`. Two minors carried forward
+(`@service-ai/auth` functions coverage 75%, build-time delta
+uninstrumented) — both are explicit trade-offs and do not block the
+gate. Tagged `phase-tenancy-franchise-complete`.
+
+Three bugs that live testing surfaced and fixed during the phase:
+
+1. `MembershipResolver` returned `franchisor_id: null` for
+   franchisor_admin rows (COALESCE fix).
+2. Fastify's default error envelope didn't match the API contract
+   (centralised `app.setErrorHandler` added).
+3. GET/DELETE /invites relied on RLS alone; app-layer WHERE added for
+   defence-in-depth when the DB role bypasses RLS.
+
+Three lessons evolved from this phase (carried into every phase
+onward):
+
+- Always add a live-Postgres integration test next to the mocked one,
+  gated on DATABASE_URL reachability. Mocked tests alone masked all
+  three of the above bugs.
+- Every tenant-scoped endpoint needs app-layer WHERE + `withScope()`
+  even though the RLS policies exist. Dev docker Postgres connects as
+  a superuser and bypasses RLS, so app-layer becomes the primary
+  filter on that path.
+- Better Auth's Drizzle adapter requires an explicit `authSchema`
+  mapping when the caller's schema uses plural table names. This is
+  recorded in `~/.claude` memory for reuse in future projects.

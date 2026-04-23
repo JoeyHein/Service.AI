@@ -147,31 +147,101 @@ The `DATABASE_URL` and `REDIS_URL` env var names are identical in both environme
 
 ## 5. Auth & RBAC
 
-Better Auth manages sessions. Authorization is a middleware that resolves the effective scope from the membership table + any impersonation header.
+Better Auth manages sessions. Authorization is a Fastify plugin
+(`apps/api/src/request-scope.ts`) that resolves the effective scope from
+the `memberships` table + any impersonation header or cookie.
 
 ### Roles (enum, strictest first)
 - `platform_admin` — scope=platform
 - `franchisor_admin` — scope=franchisor
 - `franchisee_owner` — scope=franchisee
 - `location_manager` — scope=location
-- `dispatcher`, `tech`, `csr` — scope=location
-- `customer` — scope=franchisee (their franchisee), read-only self
+- `dispatcher`, `tech`, `csr` — scope=franchisee/location
 
-### Scoping rules
-- Every tenant-scoped query includes `WHERE franchisee_id = $current` at minimum.
-- Location-scoped roles additionally filter `location_id = $current`.
-- Franchisor admin can read any franchisee's data via impersonation; writes produce `audit_log` entries.
-- Platform admin can read anything; writes are rare and flagged.
+### Tenancy hierarchy
 
-### Request context
-On every request the API builds a `RequestScope` struct: `{ user_id, roles, franchisor_id?, franchisee_id?, location_id?, impersonating?: franchisee_id }`. Query builders receive this struct and compose the WHERE clause.
+```mermaid
+flowchart TD
+  P["platform (platform_admin)"]
+  P --> F1["franchisor: Elevated Doors (franchisor_admin)"]
+  F1 --> FE1["franchisee: Denver (franchisee_owner)"]
+  F1 --> FE2["franchisee: Austin (franchisee_owner)"]
+  FE1 --> L1["location: Denver Metro (location_manager)"]
+  FE2 --> L2["location: Austin Central (location_manager)"]
+  L1 --> U1["dispatcher · tech · csr"]
+  L2 --> U2["dispatcher · tech · csr"]
+```
+
+Every membership row lives in one box above. `RequestScope` (below) is a
+discriminated-union view of which box the caller currently stands in.
+
+### Request context (RequestScope)
+
+On every authenticated request, `requestScopePlugin` attaches:
+
+- `request.userId` — Better Auth session user id, or null for anonymous
+- `request.scope` — one of:
+  - `{ type: 'platform', userId, role: 'platform_admin' }`
+  - `{ type: 'franchisor', userId, role: 'franchisor_admin', franchisorId }`
+  - `{ type: 'franchisee', userId, role, franchisorId, franchiseeId, locationId? }`
+- `request.impersonation` — non-null when `X-Impersonate-Franchisee`
+  (header) or `serviceai.impersonate` (cookie) is validated. Carries
+  `{ actorUserId, actorFranchisorId, targetFranchiseeId, targetFranchiseeName? }`
+- `request.requireScope()` — throws 401/403 with a structured error code
+  when the caller is unauthenticated or has no active membership
+
+The scope is consumed by `withScope(db, scope, fn)` from `@service-ai/db`,
+which opens a transaction, sets three session GUCs
+(`app.role`, `app.franchisor_id`, `app.franchisee_id`) via
+`set_config(..., true)` so they auto-clear at commit/rollback, then
+runs the callback inside. Postgres RLS policies (migration 0003) read
+those GUCs and filter rows.
+
+### Impersonation
+
+`franchisor_admin` users can temporarily narrow their scope to a single
+franchisee they own. Two entry points map to the same validation path:
+
+1. **API clients**: send `X-Impersonate-Franchisee: <uuid>` header.
+2. **Web UI**: POST `/impersonate/start` — sets the `serviceai.impersonate`
+   httpOnly cookie (same-origin via Next.js rewrites, no header
+   injection needed on client fetches). The HQ banner renders on every
+   protected route while the cookie is present.
+
+On successful validation the scope narrows to `{ type: 'franchisee', role: 'franchisee_owner', franchiseeId: <target> }`
+so RLS policies match the target franchisee with full permissions; the
+actor's original role is preserved on `request.impersonation` for
+audit. Every validated impersonated request writes exactly one
+`audit_log` row (`action='impersonate.request'`).
 
 ## 6. Multi-tenancy (rows, not schemas)
 
-Single database, single schema, row-level scoping enforced in query layer. Reasons:
-- Cross-franchise analytics for franchisor is first-class — schemas would make that painful
+Single database, single schema, row-level scoping enforced in two layers:
+
+1. **Application layer** — every tenant-scoped endpoint reads
+   `request.scope`, composes a WHERE clause against it (e.g.
+   `franchisees.franchisor_id = scope.franchisorId`), and runs the
+   query inside `withScope()`.
+2. **Postgres RLS (defence in depth)** — every tenant-scoped table has
+   `ROW LEVEL SECURITY ENABLED` + `FORCE ROW LEVEL SECURITY` plus three
+   policies per table (platform bypass, franchisor by franchisor_id,
+   franchisee by franchisee_id). Policies read the GUCs set by
+   `withScope` so a bug that forgets the WHERE clause still fail-closes.
+
+Why one DB + row-level rather than a schema or database per franchisee:
+
+- Cross-franchise analytics for franchisors is first-class — schemas
+  would make that painful
 - One fewer ops dimension (no N schemas to migrate)
-- Postgres row-level security (RLS) is enabled as a **defense in depth** layer: policies reference session GUCs `app.franchisee_id` etc., set by the API on every connection checkout
+- RLS is the defence-in-depth net if the app forgets a filter
+
+**Production note:** RLS only fires when the DB role is non-superuser.
+DO Managed Postgres provides a non-superuser app role by default. The
+dev docker-compose Postgres creates a superuser (`builder`), so RLS is
+bypassed there; the app-layer WHERE clauses are the primary check on
+that connection. Tests that need to verify RLS directly use a
+`rls_test_user` role created at test setup — see
+`packages/db/src/__tests__/live-rls.test.ts`.
 
 ## 7. AI layer
 
