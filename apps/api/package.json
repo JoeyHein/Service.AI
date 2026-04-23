@@ -22,6 +22,7 @@
     "@fastify/helmet": "^12.0.0",
     "@fastify/rate-limit": "^10.0.0",
     "@fastify/sensible": "^6.0.0",
+    "@googlemaps/google-maps-services-js": "^3",
     "@sentry/node": "^8",
     "@service-ai/auth": "workspace:^",
     "@service-ai/contracts": "workspace:^",

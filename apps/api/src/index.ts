@@ -16,6 +16,9 @@
  *                          Defaults to http://<host>:<port>.
  *   WEB_ORIGIN           — origin used for invite accept URLs. Defaults
  *                          to http://localhost:3000.
+ *   GOOGLE_MAPS_API_KEY  — enables real Google Places lookups. When
+ *                          absent, the app uses the deterministic
+ *                          `stubPlacesClient` (suitable for dev + CI).
  *   HOST / PORT          — listen host/port. Defaults 0.0.0.0 / 3001.
  */
 import pkg from 'pg';
@@ -29,6 +32,11 @@ import {
   franchiseeLookup,
   auditLogWriter,
 } from './production-resolvers.js';
+import {
+  googlePlacesClient,
+  stubPlacesClient,
+  type PlacesClient,
+} from './places.js';
 
 const { Pool } = pkg;
 
@@ -70,6 +78,16 @@ const auth = createAuth({
   production: isProd,
 });
 
+const placesApiKey = process.env['GOOGLE_MAPS_API_KEY'];
+const placesClient: PlacesClient = placesApiKey
+  ? await googlePlacesClient(placesApiKey)
+  : stubPlacesClient;
+if (!placesApiKey) {
+  console.warn(
+    '[warn] GOOGLE_MAPS_API_KEY is unset — using stubPlacesClient. Set a real key for production Places lookups.',
+  );
+}
+
 const app = buildApp({
   auth,
   drizzle: db,
@@ -78,6 +96,7 @@ const app = buildApp({
   auditWriter: auditLogWriter(db),
   magicLinkSender: loggingSender,
   acceptUrlBase: process.env['WEB_ORIGIN'] ?? 'http://localhost:3000',
+  placesClient,
 });
 
 const signals = ['SIGTERM', 'SIGINT'] as const;

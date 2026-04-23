@@ -16,6 +16,7 @@ import { registerFranchiseeRoutes } from './franchisees-routes.js';
 import { registerAuditLogRoutes } from './audit-log-routes.js';
 import { registerCustomerRoutes } from './customers-routes.js';
 import { registerJobRoutes } from './jobs-routes.js';
+import { registerPlacesRoutes, stubPlacesClient, type PlacesClient } from './places.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -98,6 +99,12 @@ export interface AppOptions {
   magicLinkSender?: MagicLinkSender;
   /** Origin used to build invite accept URLs. Defaults to http://localhost:3000. */
   acceptUrlBase?: string;
+  /**
+   * Google Places adapter. Defaults to the deterministic `stubPlacesClient`
+   * so dev + tests never hit the network. Production wires the real
+   * client via `googlePlacesClient(GOOGLE_MAPS_API_KEY)`.
+   */
+  placesClient?: PlacesClient;
 }
 
 /**
@@ -226,6 +233,13 @@ export function buildApp(opts: AppOptions = {}) {
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
+  }
+
+  // Places endpoints don't need the DB but do require the scope plugin —
+  // guard on opts.auth so they only register when the rest of the auth
+  // stack is present.
+  if (opts.auth) {
+    registerPlacesRoutes(app, opts.placesClient ?? stubPlacesClient);
   }
 
   /**
