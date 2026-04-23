@@ -78,6 +78,20 @@ export function AppShell({
             )}
             {isPlatformOrFranchisor && (
               <Link
+                href="/franchisor/catalog"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Catalog
+              </Link>
+            )}
+            <Link
+              href="/pricebook"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Pricebook
+            </Link>
+            {isPlatformOrFranchisor && (
+              <Link
                 href="/franchisor/audit"
                 className="text-sm text-blue-700 hover:underline"
               >
