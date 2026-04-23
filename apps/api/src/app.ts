@@ -20,6 +20,7 @@ import { registerPlacesRoutes, stubPlacesClient, type PlacesClient } from './pla
 import { registerJobPhotoRoutes } from './job-photos-routes.js';
 import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
+import { registerPricebookRoutes } from './pricebook-routes.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -249,6 +250,7 @@ export function buildApp(opts: AppOptions = {}) {
       opts.objectStore ?? stubObjectStore(),
     );
     registerCatalogRoutes(app, opts.drizzle);
+    registerPricebookRoutes(app, opts.drizzle);
   }
 
   // Places endpoints don't need the DB but do require the scope plugin —
