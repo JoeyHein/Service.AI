@@ -15,6 +15,7 @@ import { registerInviteRoutes } from './invites.js';
 import { registerFranchiseeRoutes } from './franchisees-routes.js';
 import { registerAuditLogRoutes } from './audit-log-routes.js';
 import { registerCustomerRoutes } from './customers-routes.js';
+import { registerJobRoutes } from './jobs-routes.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -224,6 +225,7 @@ export function buildApp(opts: AppOptions = {}) {
     registerFranchiseeRoutes(app, opts.drizzle);
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
+    registerJobRoutes(app, opts.drizzle);
   }
 
   /**
