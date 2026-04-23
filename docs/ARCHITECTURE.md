@@ -314,6 +314,53 @@ Two pluggable-adapter pairs keep tests network-free:
 Both wire through `buildApp` options; absence of the env var just
 uses the stub with a WARN log (no crash).
 
+## 6b. Pricebook model (phase_pricebook)
+
+Franchisor-authored catalog → per-franchisee inherited pricebook with
+floor/ceiling overrides.
+
+| Table                       | Owner      | Purpose                                                   |
+|-----------------------------|------------|-----------------------------------------------------------|
+| `service_catalog_templates` | franchisor | Versioned draft/published/archived template. Invariant: at most one `published` per franchisor; publishing a new one atomically archives the previous. |
+| `service_items`             | franchisor | Line items with `base_price`, nullable `floor_price` + `ceiling_price`, category, unit, sku. Read-only to franchisee-scoped users via the `scoped_read` RLS policy. |
+| `pricebook_overrides`       | franchisee | One active override per `(franchisee_id, service_item_id)`. Soft-deleted; revert restores base price. |
+
+### Resolved pricebook
+
+`GET /api/v1/pricebook` merges the franchisor's published template's
+items with the caller's overrides:
+
+```
+effectivePrice = override_price (if active) else base_price
+overridden     = override_price IS NOT NULL
+```
+
+Items in `draft` or `archived` templates never appear. This is the
+shape every later phase (quotes, invoices, royalty engine) reads
+from — there's no other price source.
+
+### Floor / ceiling invariant
+
+```
+floor_price ≤ override_price ≤ ceiling_price    (when each bound is set)
+```
+
+Violations return `400 PRICE_OUT_OF_BOUNDS` with the boundary value
+in the message so the UI can render an inline hint before the user
+hits send. Server-side is the authority; client-side validation is
+pure UX.
+
+### Read-only scoped RLS policy (reusable pattern)
+
+Migration 0006 introduces a new RLS policy shape — `FOR SELECT` only,
+scoped by `app.franchisor_id`. Franchisee-scoped users can read their
+franchisor's templates + items without any ability to mutate them.
+Writes still go through the `platform_admin` / `franchisor_admin`
+policies. This is the template any future "franchisor-authored shared
+data" (knowledge base, training materials, brand assets) should
+follow — see `packages/db/migrations/0006_pricebook.sql` for the
+canonical three-policy-plus-one pattern.
+
 ## 7. AI layer
 
 ### Router (`packages/ai`)

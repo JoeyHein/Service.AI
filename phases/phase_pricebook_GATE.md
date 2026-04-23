@@ -162,6 +162,17 @@ in depth, pluggable external-service adapters when we need them.
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Verdict:** APPROVED
 
-**Verdict:** _(pending)_
+**Reviewer:** Joey Heinrichs (self-review against AUDIT_1)
+**Date:** 2026-04-23
+**Commit:** cf9b4b0 + docs/approval commit on top
+**Notes:** Every BLOCKER criterion is independently verified in
+`phase_pricebook_AUDIT_1.md` against the live docker Postgres stack.
+544 tests across 9 packages, 0 cached, 0 skipped. Zero bugs surfaced
+during the live-testing run — the defence-in-depth patterns from
+phase 2/3 carried over cleanly, including for the new read-only
+scoped RLS policy variant (franchisee can SELECT templates/items but
+cannot mutate). Two minors carried forward (no un-archive endpoint,
+no bulk item import) are explicit trade-offs. Tagged
+`phase-pricebook-complete`.
