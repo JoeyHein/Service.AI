@@ -19,7 +19,9 @@ import {
   text,
   timestamp,
   boolean,
+  integer,
   jsonb,
+  numeric,
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
@@ -292,5 +294,176 @@ export const invitations = pgTable(
     franchiseeIdx: index('invitations_franchisee_idx').on(t.franchiseeId),
     locationIdx: index('invitations_location_idx').on(t.locationId),
     inviterIdx: index('invitations_inviter_idx').on(t.inviterUserId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Customer / job model (phase_customer_job)
+// ---------------------------------------------------------------------------
+
+/**
+ * Job lifecycle states. Terminal states: completed, canceled. Valid
+ * transitions are enforced at the API layer in
+ * apps/api/src/jobs-routes.ts#canTransition — not a DB CHECK because
+ * the matrix includes "unschedule" (scheduled → unassigned) which would
+ * need procedural trigger logic the app already owns. The enum
+ * constrains the column to a known set; the app constrains which
+ * moves between them are legal.
+ */
+export const jobStatus = pgEnum('job_status', [
+  'unassigned',
+  'scheduled',
+  'en_route',
+  'arrived',
+  'in_progress',
+  'completed',
+  'canceled',
+]);
+
+/**
+ * Tenant customers. Soft-delete via deleted_at so we preserve job
+ * history references. Address is denormalised from Google Places —
+ * place_id lets us re-fetch the canonical record if needed.
+ */
+export const customers = pgTable(
+  'customers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    locationId: uuid('location_id').references(() => locations.id, {
+      onDelete: 'set null',
+    }),
+    name: text('name').notNull(),
+    email: text('email'),
+    phone: text('phone'),
+    addressLine1: text('address_line1'),
+    addressLine2: text('address_line2'),
+    city: text('city'),
+    state: text('state'),
+    postalCode: text('postal_code'),
+    country: text('country'),
+    placeId: text('place_id'),
+    latitude: numeric('latitude', { precision: 10, scale: 7 }),
+    longitude: numeric('longitude', { precision: 10, scale: 7 }),
+    notes: text('notes'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('customers_franchisee_idx').on(t.franchiseeId),
+    locationIdx: index('customers_location_idx').on(t.locationId),
+    emailIdx: index('customers_email_idx').on(t.email),
+    phoneIdx: index('customers_phone_idx').on(t.phone),
+    placeIdx: index('customers_place_idx').on(t.placeId),
+  }),
+);
+
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    locationId: uuid('location_id').references(() => locations.id, {
+      onDelete: 'set null',
+    }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    status: jobStatus('status').notNull().default('unassigned'),
+    title: text('title').notNull(),
+    description: text('description'),
+    scheduledStart: timestamp('scheduled_start', { withTimezone: true }),
+    scheduledEnd: timestamp('scheduled_end', { withTimezone: true }),
+    actualStart: timestamp('actual_start', { withTimezone: true }),
+    actualEnd: timestamp('actual_end', { withTimezone: true }),
+    assignedTechUserId: text('assigned_tech_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('jobs_franchisee_idx').on(t.franchiseeId),
+    locationIdx: index('jobs_location_idx').on(t.locationId),
+    customerIdx: index('jobs_customer_idx').on(t.customerId),
+    statusIdx: index('jobs_status_idx').on(t.status),
+    scheduledStartIdx: index('jobs_scheduled_start_idx').on(t.scheduledStart),
+    assignedTechIdx: index('jobs_assigned_tech_idx').on(t.assignedTechUserId),
+  }),
+);
+
+/**
+ * Append-only log of job state changes. Every row represents one
+ * validated transition. The job's current status is the to_status of
+ * the newest row (denormalised on jobs.status for query convenience).
+ */
+export const jobStatusLog = pgTable(
+  'job_status_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    // Denormalised franchisee_id so RLS policies match with a single
+    // column predicate (no join through jobs).
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    fromStatus: jobStatus('from_status'),
+    toStatus: jobStatus('to_status').notNull(),
+    actorUserId: text('actor_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    reason: text('reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    jobIdx: index('job_status_log_job_idx').on(t.jobId),
+    franchiseeIdx: index('job_status_log_franchisee_idx').on(t.franchiseeId),
+    createdIdx: index('job_status_log_created_idx').on(t.createdAt),
+  }),
+);
+
+/**
+ * Photos attached to a job. The actual bytes live in DO Spaces; this
+ * row records the storage key + metadata. Deleting the row does NOT
+ * delete the object — storage cleanup is a v2 concern per TECH_DEBT.
+ */
+export const jobPhotos = pgTable(
+  'job_photos',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    // Denormalised for RLS (same reason as job_status_log).
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    storageKey: text('storage_key').notNull(),
+    contentType: text('content_type'),
+    sizeBytes: integer('size_bytes'),
+    label: varchar('label', { length: 50 }),
+    uploadedByUserId: text('uploaded_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    jobIdx: index('job_photos_job_idx').on(t.jobId),
+    franchiseeIdx: index('job_photos_franchisee_idx').on(t.franchiseeId),
+    storageKeyIdx: uniqueIndex('job_photos_storage_key_unique').on(t.storageKey),
   }),
 );
