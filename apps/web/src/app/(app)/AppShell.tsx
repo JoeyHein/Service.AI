@@ -38,6 +38,8 @@ export function AppShell({
   const isPlatformOrFranchisor =
     !session.impersonating &&
     (session.scope?.type === 'platform' || session.scope?.type === 'franchisor');
+  const isTech =
+    session.scope?.type === 'franchisee' && session.scope.role === 'tech';
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -102,6 +104,15 @@ export function AppShell({
                 className="text-sm text-blue-700 hover:underline"
               >
                 Audit log
+              </Link>
+            )}
+            {isTech && (
+              <Link
+                href="/tech"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-tech-view"
+              >
+                Tech view
               </Link>
             )}
           </div>
