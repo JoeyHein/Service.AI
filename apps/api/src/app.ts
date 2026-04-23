@@ -21,6 +21,9 @@ import { registerJobPhotoRoutes } from './job-photos-routes.js';
 import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
+import { registerAssignmentRoutes } from './assignment-routes.js';
+import { registerSseRoutes } from './sse-routes.js';
+import { inProcessEventBus, type EventBus } from './event-bus.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -116,6 +119,12 @@ export interface AppOptions {
    * pointed at the DO Space.
    */
   objectStore?: ObjectStore;
+  /**
+   * Dispatch EventBus (phase_dispatch_board). Defaults to the
+   * in-process impl suitable for single-process API deployments.
+   * Multi-host deployments swap in a Redis-backed impl.
+   */
+  eventBus?: EventBus;
 }
 
 /**
@@ -251,6 +260,9 @@ export function buildApp(opts: AppOptions = {}) {
     );
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
+    const bus = opts.eventBus ?? inProcessEventBus();
+    registerAssignmentRoutes(app, opts.drizzle, bus);
+    registerSseRoutes(app, opts.drizzle, bus);
   }
 
   // Places endpoints don't need the DB but do require the scope plugin —
