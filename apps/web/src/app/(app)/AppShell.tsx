@@ -35,6 +35,9 @@ export function AppShell({
 
   const isFranchisorAdmin =
     !session.impersonating && session.scope?.type === 'franchisor';
+  const isPlatformOrFranchisor =
+    !session.impersonating &&
+    (session.scope?.type === 'platform' || session.scope?.type === 'franchisor');
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -59,6 +62,14 @@ export function AppShell({
                 className="text-sm text-blue-700 hover:underline"
               >
                 Franchisees
+              </Link>
+            )}
+            {isPlatformOrFranchisor && (
+              <Link
+                href="/franchisor/audit"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Audit log
               </Link>
             )}
           </div>
