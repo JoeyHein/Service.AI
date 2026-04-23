@@ -112,6 +112,31 @@ Rules:
 - Every POST supports `Idempotency-Key` (Redis-backed 24h TTL).
 - Every endpoint has Zod input validation.
 - Rate limit policy declared per endpoint (default 60 rpm per user).
+- Cross-tenant access always returns `404 NOT_FOUND` (never `403`) so
+  the caller cannot infer the existence of a row they shouldn't see.
+  See `apps/api/src/customers-routes.ts` + `jobs-routes.ts` for the
+  canonical pattern.
+
+### Status state machines (load-bearing for lifecycle entities)
+
+When an entity has a status column with structured transitions
+(jobs, invoices, bookings, …), follow the pattern proven in
+`apps/api/src/job-status-machine.ts`:
+
+1. Encode the matrix as a pure function module that both the API and
+   the web UI import. Web renders only `validTransitionsFrom(current)`
+   buttons; API calls `canTransition(from, to)` to validate.
+2. Illegal moves return `409 INVALID_TRANSITION` with `{ from, to }`
+   in the message.
+3. The status update and any accompanying log row (`*_status_log`)
+   run in a single `withScope()` transaction so state and history
+   cannot drift.
+4. Lifecycle timestamps (`actual_start`, `actual_end`, etc.) are
+   populated by the transition handler, not by separate PATCH calls.
+5. DB-level CHECKs for the matrix are deliberately skipped — they
+   can't encode the procedural edge cases (e.g. "unschedule" edges,
+   conditional approvals). The app owns correctness; the DB just
+   enforces the enum.
 
 ### Database
 - Every migration is reversible (has `up` + `down`) and idempotent.

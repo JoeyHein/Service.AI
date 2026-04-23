@@ -243,6 +243,77 @@ that connection. Tests that need to verify RLS directly use a
 `rls_test_user` role created at test setup — see
 `packages/db/src/__tests__/live-rls.test.ts`.
 
+## 6a. Customer / job model (phase_customer_job)
+
+The trade-agnostic backbone every later phase reads from. Four tables,
+all tenant-scoped with the same three-policy RLS pattern as migration
+0003:
+
+| Table            | Purpose                                                 |
+|------------------|---------------------------------------------------------|
+| `customers`      | End customers. Soft-deleted. Address fields denormalised from Google Places (kept alongside `place_id` so we can re-fetch the canonical record). |
+| `jobs`           | Customer-bound work items. `status` column carries the current state; `scheduled_*` vs `actual_*` timestamps track lifecycle. |
+| `job_status_log` | Append-only transition history. Denormalised `franchisee_id` so RLS matches with a single-column predicate. |
+| `job_photos`     | Photo metadata only. Bytes live in DO Spaces; storage cleanup on delete is deferred to v2 (`docs/TECH_DEBT.md`). |
+
+### Job status state machine
+
+```mermaid
+stateDiagram-v2
+  [*] --> unassigned
+  unassigned --> scheduled
+  unassigned --> canceled
+  scheduled --> en_route
+  scheduled --> unassigned: unschedule
+  scheduled --> canceled
+  en_route --> arrived
+  en_route --> canceled
+  arrived --> in_progress
+  arrived --> canceled
+  in_progress --> completed
+  in_progress --> canceled
+  completed --> [*]
+  canceled --> [*]
+```
+
+Transitions are enforced in the API layer by `canTransition(from, to)`
+in `apps/api/src/job-status-machine.ts`, not by a DB CHECK constraint.
+The API writes the status update and `job_status_log` row in a single
+transaction so status and log never drift. The web UI reads the same
+matrix (`validTransitionsFrom`) to render only the buttons that
+represent legal next steps.
+
+### Photo upload flow
+
+Browser-direct upload to DO Spaces, so large photos never transit the
+API. Three steps:
+
+1. `POST /api/v1/jobs/:id/photos/upload-url` → API returns a short-lived
+   (15-minute) presigned PUT URL plus the `storageKey` the client must
+   send back on finalise. Key format:
+   `jobs/<jobId>/photos/<uuid>.<ext>`
+2. Browser `PUT`s the file bytes directly to `uploadUrl`
+3. `POST /api/v1/jobs/:id/photos` with `{ storageKey, contentType,
+   sizeBytes }` → API writes a `job_photos` row inside `withScope()`
+   and returns the row plus a fresh download URL.
+
+The API validates that `storageKey` starts with `jobs/<jobId>/photos/`
+to prevent a caller from claiming an object in another job's
+namespace.
+
+### External-service adapters
+
+Two pluggable-adapter pairs keep tests network-free:
+
+- `PlacesClient` (`apps/api/src/places.ts`) — `stubPlacesClient` for
+  dev + tests, `googlePlacesClient(GOOGLE_MAPS_API_KEY)` for prod.
+- `ObjectStore` (`apps/api/src/object-store.ts`) — `stubObjectStore()`
+  for dev + tests, `s3ObjectStore(cfg)` wrapping
+  `@aws-sdk/s3-request-presigner` for prod DO Spaces.
+
+Both wire through `buildApp` options; absence of the env var just
+uses the stub with a WARN log (no crash).
+
 ## 7. AI layer
 
 ### Router (`packages/ai`)
