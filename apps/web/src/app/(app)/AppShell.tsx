@@ -56,6 +56,18 @@ export function AppShell({
             >
               {scopeLabel}
             </span>
+            <Link
+              href="/customers"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Customers
+            </Link>
+            <Link
+              href="/jobs"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Jobs
+            </Link>
             {isFranchisorAdmin && (
               <Link
                 href="/franchisor/franchisees"
