@@ -467,3 +467,118 @@ export const jobPhotos = pgTable(
     storageKeyIdx: uniqueIndex('job_photos_storage_key_unique').on(t.storageKey),
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Pricebook model (phase_pricebook)
+// ---------------------------------------------------------------------------
+
+export const catalogStatus = pgEnum('catalog_status', [
+  'draft',
+  'published',
+  'archived',
+]);
+
+/**
+ * Franchisor-authored service catalog. One currently-published template
+ * per franchisor is the gate-level invariant — the publish handler
+ * atomically archives the previous published template so franchisees
+ * always see a single authoritative catalog.
+ */
+export const serviceCatalogTemplates = pgTable(
+  'service_catalog_templates',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    status: catalogStatus('status').notNull().default('draft'),
+    notes: text('notes'),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchisorIdx: index('service_catalog_templates_franchisor_idx').on(t.franchisorId),
+    statusIdx: index('service_catalog_templates_status_idx').on(t.status),
+    slugUnique: uniqueIndex('service_catalog_templates_slug_unique').on(
+      t.franchisorId,
+      t.slug,
+    ),
+  }),
+);
+
+export const serviceItems = pgTable(
+  'service_items',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => serviceCatalogTemplates.id, { onDelete: 'cascade' }),
+    // Denormalised for RLS — franchisees resolve their pricebook via a
+    // policy that matches on franchisor_id without joining templates.
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    sku: text('sku').notNull(),
+    name: text('name').notNull(),
+    description: text('description'),
+    category: text('category').notNull(),
+    unit: text('unit').notNull(),
+    basePrice: numeric('base_price', { precision: 12, scale: 2 }).notNull(),
+    floorPrice: numeric('floor_price', { precision: 12, scale: 2 }),
+    ceilingPrice: numeric('ceiling_price', { precision: 12, scale: 2 }),
+    sortOrder: integer('sort_order').notNull().default(0),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    templateIdx: index('service_items_template_idx').on(t.templateId),
+    franchisorIdx: index('service_items_franchisor_idx').on(t.franchisorId),
+    categoryIdx: index('service_items_category_idx').on(t.category),
+    skuUnique: uniqueIndex('service_items_template_sku_unique').on(t.templateId, t.sku),
+  }),
+);
+
+/**
+ * Franchisee overrides on specific service items. One active override
+ * per (franchisee, item). Overrides are soft-deleted so the history is
+ * preserved for audit and for reverting.
+ */
+export const pricebookOverrides = pgTable(
+  'pricebook_overrides',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    // Denormalised for RLS read checks — we always know which franchisor
+    // the override belongs to without joining through service_items.
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    serviceItemId: uuid('service_item_id')
+      .notNull()
+      .references(() => serviceItems.id, { onDelete: 'cascade' }),
+    overridePrice: numeric('override_price', { precision: 12, scale: 2 }).notNull(),
+    note: text('note'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('pricebook_overrides_franchisee_idx').on(t.franchiseeId),
+    franchisorIdx: index('pricebook_overrides_franchisor_idx').on(t.franchisorId),
+    itemIdx: index('pricebook_overrides_item_idx').on(t.serviceItemId),
+    uniqueActive: uniqueIndex('pricebook_overrides_unique_active')
+      .on(t.franchiseeId, t.serviceItemId)
+      .where(sql`${t.deletedAt} IS NULL`),
+  }),
+);
