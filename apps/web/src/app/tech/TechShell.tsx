@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useTransition, type ReactNode } from 'react';
 import { apiClientFetch } from '../../lib/api.js';
 import type { MeResponse } from '../../lib/session.js';
+import { OfflineQueueDrainer } from './OfflineQueueDrainer';
 
 /**
  * Minimal chrome for the tech PWA. Full-bleed layout, 16px side
@@ -30,6 +31,7 @@ export function TechShell({
 
   return (
     <div className="min-h-screen bg-slate-50">
+      <OfflineQueueDrainer />
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="mx-auto max-w-3xl px-4 flex items-center justify-between h-12">
           <Link

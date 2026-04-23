@@ -65,14 +65,51 @@ export async function apiServerFetch<T = unknown>(
   return { status: res.status, body, raw: res };
 }
 
+const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+
 /**
  * Browser-side fetch. The rewrite makes /api/* same-origin so
  * credentials: 'include' is enough for cookies to pass through.
+ *
+ * Offline behaviour (TM-03): when `navigator.onLine === false` and
+ * the request is a mutating method, the call is handed to the
+ * IndexedDB outbox and a synthetic 202 `{ ok: true, data: { queued:
+ * true } }` envelope is returned so callers can optimistically
+ * render. GETs bypass the queue (a stale cached response is better
+ * than a delayed one).
  */
 export async function apiClientFetch<T = unknown>(
   path: string,
   init: RequestInit = {},
 ): Promise<{ status: number; body: ApiEnvelope<T> }> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const isOffline =
+    typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (isOffline && WRITE_METHODS.has(method)) {
+    try {
+      const { enqueue } = await import('./offline-queue.js');
+      const body = init.body == null ? undefined : safeParse(init.body);
+      await enqueue({ method, url: path, body });
+      return {
+        status: 202,
+        body: {
+          ok: true,
+          data: { queued: true } as T,
+        },
+      };
+    } catch (err) {
+      return {
+        status: 507,
+        body: {
+          ok: false,
+          error: {
+            code: 'QUEUE_FAILED',
+            message: err instanceof Error ? err.message : 'Queue write failed',
+          },
+        },
+      };
+    }
+  }
   const res = await fetch(path, {
     ...init,
     credentials: 'include',
@@ -89,4 +126,15 @@ export async function apiClientFetch<T = unknown>(
     body = { ok: false, error: { code: 'PARSE_ERROR', message: bodyText } };
   }
   return { status: res.status, body };
+}
+
+function safeParse(v: BodyInit): unknown {
+  if (typeof v === 'string') {
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
+    }
+  }
+  return v;
 }
