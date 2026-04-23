@@ -134,6 +134,20 @@ modification.
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Verdict:** APPROVED
 
-**Verdict:** _(pending)_
+**Reviewer:** Joey Heinrichs (self-review against AUDIT_1)
+**Date:** 2026-04-23
+**Commit:** security-suite commit + docs/approval commit on top
+**Notes:** Every BLOCKER criterion is independently verified in
+`phase_dispatch_board_AUDIT_1.md` against the live docker Postgres
+stack. 587 tests across 9 packages, 0 cached, 0 skipped. 10-
+subscriber SSE latency harness beat the 500 ms p95 budget. Zero
+bugs surfaced during the run — the tenancy + adapter patterns
+from earlier phases carried over cleanly to assignment, EventBus,
+and the SSE stream. Three minors carried forward:
+single-franchisee dispatch view (platform/franchisor use
+impersonation), no Redis-backed EventBus yet (interface in
+place), assignment allowed from any scoped user (policy
+recorded in the security suite so a future tightening flips a
+positive to a negative case). Tagged `phase-dispatch-board-complete`.

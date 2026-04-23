@@ -361,6 +361,61 @@ data" (knowledge base, training materials, brand assets) should
 follow — see `packages/db/migrations/0006_pricebook.sql` for the
 canonical three-policy-plus-one pattern.
 
+## 6c. Dispatch + realtime (phase_dispatch_board)
+
+Phase 5 adds the dispatch board + live propagation of assignment
+and status changes across every open session within a franchisee.
+
+### EventBus
+
+`apps/api/src/event-bus.ts` defines a minimal `EventBus` interface
+with publish / subscribe semantics plus a default in-process impl
+based on Node's `EventEmitter`. Events carry **ids only** — never
+job titles, customer names, or prices — so receivers that shouldn't
+see those fields can't snoop via the stream; clients re-fetch
+through `/api/v1/jobs/:id` which is scope-filtered.
+
+For multi-host deployments, swap the default for a Redis pub/sub
+adapter with the same interface. Pattern matches `PlacesClient` and
+`ObjectStore` from earlier phases.
+
+### Server-Sent Events
+
+`GET /api/v1/jobs/events/stream` returns `text/event-stream` with
+one SSE frame per matching event. Subscribers pass through the
+`requestScopePlugin`, so the server computes a scope-filter
+predicate on connect and hands it to `EventBus.subscribe`.
+
+- Franchisee-scoped → only events in their franchisee
+- Franchisor-admin → events in any of their franchisees (resolved
+  once at connect-time from `franchisees` table)
+- Platform admin → everything
+
+15-second comment heartbeat so proxies keep idle sockets open.
+Cleanup is registered on both the request's `close` and `error`
+events so subscribers don't leak when the browser walks away.
+
+### Assignment endpoint
+
+`POST /api/v1/jobs/:id/assign` validates the target tech is an
+active `tech` membership in the job's franchisee (cross-franchisee
+or non-tech → `400 INVALID_TARGET`). If the job was `unassigned`
+the handler atomically transitions it to `scheduled` and writes a
+`job_status_log` row in the same transaction — status + history
+never drift. Publishes `job.assigned` (+ `job.transitioned` when
+the side-effect fires) on the EventBus.
+
+`POST /api/v1/jobs/:id/unassign` clears the assignment and, when
+the job was `scheduled` with no explicit times, reverts the status
+to `unassigned` with another `job_status_log` entry.
+
+### Conflict model
+
+Optimistic client moves + last-write-wins on the server. The SSE
+stream re-syncs every session within the gate's **p95 < 500 ms**
+budget (verified by a 10-subscriber latency harness in
+`live-sse-latency.test.ts`), so divergence windows are short.
+
 ## 7. AI layer
 
 ### Router (`packages/ai`)
