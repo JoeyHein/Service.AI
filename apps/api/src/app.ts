@@ -14,6 +14,7 @@ import { mountAuth } from './auth-mount.js';
 import { registerInviteRoutes } from './invites.js';
 import { registerFranchiseeRoutes } from './franchisees-routes.js';
 import { registerAuditLogRoutes } from './audit-log-routes.js';
+import { registerCustomerRoutes } from './customers-routes.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -222,6 +223,7 @@ export function buildApp(opts: AppOptions = {}) {
   if (opts.drizzle) {
     registerFranchiseeRoutes(app, opts.drizzle);
     registerAuditLogRoutes(app, opts.drizzle);
+    registerCustomerRoutes(app, opts.drizzle);
   }
 
   /**
