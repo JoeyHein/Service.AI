@@ -89,6 +89,20 @@ describe('TM-01 / service worker', () => {
   });
 });
 
+describe('TM-04 / camera capture on JobPhotos input', () => {
+  it('JobPhotos file input carries capture="environment" so mobile opens the rear camera', () => {
+    const content = read('src/app/(app)/jobs/[id]/JobPhotos.tsx');
+    expect(content).toMatch(/capture=["']environment["']/);
+    expect(content).toMatch(/accept=["']image\/\*["']/);
+  });
+
+  it('JobPhotos upload reuses the phase-3 presigned-URL flow (upload-url + /photos finalise)', () => {
+    const content = read('src/app/(app)/jobs/[id]/JobPhotos.tsx');
+    expect(content).toMatch(/upload-url/);
+    expect(content).toMatch(/\/photos['"`]/);
+  });
+});
+
 describe('TM-01 / root layout registers the service worker', () => {
   it('root layout declares the manifest URL', () => {
     const layout = read('src/app/layout.tsx');

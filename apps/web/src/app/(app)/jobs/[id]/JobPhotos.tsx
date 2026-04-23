@@ -150,11 +150,12 @@ export function JobPhotos({
       </div>
       <div className="mt-4 bg-white rounded-lg border border-slate-200 p-4">
         <h3 className="text-sm font-medium text-slate-700">Upload photo</h3>
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap gap-2 items-center">
           <input
             ref={fileInput}
             type="file"
             accept="image/*"
+            capture="environment"
             className="text-sm"
             data-testid="photo-file-input"
           />
@@ -169,9 +170,10 @@ export function JobPhotos({
             type="button"
             onClick={upload}
             disabled={pending}
+            data-testid="photo-upload-button"
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            {pending ? 'Uploading…' : 'Upload'}
+            {pending ? 'Uploading…' : 'Take photo / upload'}
           </button>
         </div>
         {error && (
