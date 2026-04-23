@@ -1,11 +1,26 @@
 import type { NextConfig } from 'next';
 import { withSentryConfig } from '@sentry/nextjs';
 
+const API_ORIGIN = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+
 const nextConfig: NextConfig = {
   // Transpile workspace packages that publish TypeScript sources directly.
   // This alone is not sufficient when the package's source files use NodeNext
   // .js extensions in their imports — see the webpack config below.
   transpilePackages: ['@service-ai/contracts'],
+
+  // Proxy /api/* to the Fastify API so the browser sees auth cookies on a
+  // same-origin URL. Avoids cross-origin CORS + SameSite=Lax cookie drops
+  // between localhost:3000 and localhost:3001 in dev, and mirrors the DO
+  // App Platform deployment where the web + api services sit behind the
+  // same ingress.
+  async rewrites() {
+    return [
+      { source: '/api/auth/:path*', destination: `${API_ORIGIN}/api/auth/:path*` },
+      { source: '/api/v1/:path*', destination: `${API_ORIGIN}/api/v1/:path*` },
+      { source: '/healthz', destination: `${API_ORIGIN}/healthz` },
+    ];
+  },
 
   webpack(config: Parameters<NonNullable<NextConfig['webpack']>>[0]) {
     // @service-ai/contracts is compiled with NodeNext module resolution which
