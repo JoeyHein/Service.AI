@@ -68,6 +68,12 @@ export function AppShell({
             >
               Jobs
             </Link>
+            <Link
+              href="/dispatch"
+              className="text-sm text-blue-700 hover:underline"
+            >
+              Dispatch
+            </Link>
             {isFranchisorAdmin && (
               <Link
                 href="/franchisor/franchisees"

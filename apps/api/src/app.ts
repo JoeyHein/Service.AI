@@ -23,6 +23,7 @@ import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
 import { registerAssignmentRoutes } from './assignment-routes.js';
 import { registerSseRoutes } from './sse-routes.js';
+import { registerTechRoutes } from './techs-routes.js';
 import { inProcessEventBus, type EventBus } from './event-bus.js';
 import {
   requestScopePlugin,
@@ -263,6 +264,7 @@ export function buildApp(opts: AppOptions = {}) {
     const bus = opts.eventBus ?? inProcessEventBus();
     registerAssignmentRoutes(app, opts.drizzle, bus);
     registerSseRoutes(app, opts.drizzle, bus);
+    registerTechRoutes(app, opts.drizzle);
   }
 
   // Places endpoints don't need the DB but do require the scope plugin —

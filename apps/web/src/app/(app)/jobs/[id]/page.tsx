@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { apiServerFetch } from '../../../../lib/api.js';
+import { StaticMap } from '../../../../components/StaticMap';
 import { JobTransitionPanel } from './JobTransitionPanel';
 import { JobPhotos } from './JobPhotos';
 
@@ -40,6 +41,26 @@ export default async function JobDetailPage({
   );
   const photos =
     photosRes.status === 200 && photosRes.body.data ? photosRes.body.data : [];
+
+  // Fetch the customer for address + lat/lng → static map. Silent-fail
+  // to null so an RLS glitch or missing customer doesn't blank the
+  // whole page; the map component renders a placeholder in that case.
+  const customerRes = await apiServerFetch<{
+    latitude: string | null;
+    longitude: string | null;
+    addressLine1: string | null;
+    city: string | null;
+    state: string | null;
+  }>(`/api/v1/customers/${encodeURIComponent(job.customerId)}`);
+  const customer =
+    customerRes.status === 200 && customerRes.body.data
+      ? customerRes.body.data
+      : null;
+  const lat = customer?.latitude ? Number(customer.latitude) : null;
+  const lng = customer?.longitude ? Number(customer.longitude) : null;
+  const address = customer
+    ? [customer.addressLine1, customer.city, customer.state].filter(Boolean).join(', ')
+    : null;
 
   return (
     <section>
@@ -107,6 +128,13 @@ export default async function JobDetailPage({
 
       <div className="mt-6">
         <JobTransitionPanel jobId={job.id} status={job.status} />
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-sm font-medium text-slate-700">Location</h2>
+        <div className="mt-3">
+          <StaticMap latitude={lat} longitude={lng} address={address || null} />
+        </div>
       </div>
 
       <div className="mt-8">
