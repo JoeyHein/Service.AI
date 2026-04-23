@@ -78,6 +78,17 @@ export function mountAuth(app: FastifyInstance, auth: Auth): void {
       data: {
         user: { id: req.userId },
         scope: req.scope,
+        // Populated by requestScopePlugin when the caller is currently
+        // impersonating a franchisee. The web HQ banner reads this so it
+        // can render "HQ VIEWING: <franchisee name>" without a separate
+        // lookup round-trip. null when not impersonating.
+        impersonating: req.impersonation
+          ? {
+              targetFranchiseeId: req.impersonation.targetFranchiseeId,
+              targetFranchiseeName:
+                req.impersonation.targetFranchiseeName ?? null,
+            }
+          : null,
       },
     });
   });

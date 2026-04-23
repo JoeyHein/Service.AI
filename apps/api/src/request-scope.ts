@@ -6,8 +6,11 @@
  * touch". Resolved from:
  *   1. Better Auth session (userId)
  *   2. Memberships of that user (returned by the injected MembershipResolver)
- *   3. Optional X-Impersonate-Franchisee header, validated against the
- *      caller's franchisor scope via the injected FranchiseeLookup
+ *   3. Optional X-Impersonate-Franchisee header (or
+ *      `serviceai.impersonate=<uuid>` cookie as fallback — same
+ *      semantics, used by the web UI's HQ "View as" flow), validated
+ *      against the caller's franchisor scope via the injected
+ *      FranchiseeLookup
  *
  * When a valid impersonation is detected, the effective scope narrows to a
  * `franchisee` variant so Postgres RLS policies match on the target
@@ -61,6 +64,13 @@ export interface MembershipResolver {
  */
 export interface FranchiseeLookup {
   franchisorIdFor(franchiseeId: string): Promise<string | null>;
+  /**
+   * Optional human-readable name for the franchisee. The requestScopePlugin
+   * calls this during impersonation so the HQ banner in the web UI can say
+   * "HQ VIEWING: <Franchisee Name>" instead of a UUID. Impls that don't
+   * render UI — tests, background workers — can omit this.
+   */
+  nameFor?(franchiseeId: string): Promise<string | null>;
 }
 
 /**
@@ -92,6 +102,12 @@ export interface ImpersonationContext {
   actorUserId: string;
   actorFranchisorId: string;
   targetFranchiseeId: string;
+  /**
+   * Populated when the FranchiseeLookup impl provides a nameFor method.
+   * /api/v1/me surfaces this to the web UI so the HQ banner can render
+   * a friendly label without a second round-trip.
+   */
+  targetFranchiseeName?: string;
 }
 
 export interface RequestScopeOptions {
@@ -109,6 +125,32 @@ export interface RequestScopeOptions {
 }
 
 export const IMPERSONATION_HEADER = 'x-impersonate-franchisee';
+export const IMPERSONATION_COOKIE = 'serviceai.impersonate';
+
+/**
+ * Extract an impersonation target from either the X-Impersonate-Franchisee
+ * header or the `serviceai.impersonate` cookie. Header wins when both are
+ * present — explicit beats implicit.
+ */
+function readImpersonationTarget(req: FastifyRequest): string | null {
+  const rawHeader = req.headers[IMPERSONATION_HEADER];
+  const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+  if (headerValue) return headerValue;
+
+  const cookieHeader = req.headers['cookie'];
+  if (!cookieHeader) return null;
+  // Parse cookies without depending on @fastify/cookie — this plugin runs
+  // before route-level plugins and should not require an extra dep for a
+  // single lookup. A simple split is safe because cookie values are
+  // always URL-safe characters (we only set UUIDs here).
+  for (const part of cookieHeader.split(';')) {
+    const [name, ...rest] = part.trim().split('=');
+    if (name === IMPERSONATION_COOKIE && rest.length > 0) {
+      return decodeURIComponent(rest.join('='));
+    }
+  }
+  return null;
+}
 
 /**
  * Pick the strongest-privilege membership so downstream handlers always see
@@ -222,8 +264,7 @@ const plugin: FastifyPluginAsync<RequestScopeOptions> = async (app, opts) => {
     const baseScope = resolveScope(session.userId, memberships);
     req.scope = baseScope;
 
-    const rawHeader = req.headers[IMPERSONATION_HEADER];
-    const targetId = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    const targetId = readImpersonationTarget(req);
     if (!targetId) return;
 
     if (!baseScope || baseScope.type !== 'franchisor') {
@@ -260,11 +301,16 @@ const plugin: FastifyPluginAsync<RequestScopeOptions> = async (app, opts) => {
     }
 
     req.scope = narrowForImpersonation(baseScope, targetId);
-    req.impersonation = {
+    const targetName = franchiseeLookup.nameFor
+      ? await franchiseeLookup.nameFor(targetId)
+      : null;
+    const ctx: ImpersonationContext = {
       actorUserId: session.userId,
       actorFranchisorId: baseScope.franchisorId,
       targetFranchiseeId: targetId,
     };
+    if (targetName) ctx.targetFranchiseeName = targetName;
+    req.impersonation = ctx;
 
     if (auditWriter) {
       await auditWriter.write({

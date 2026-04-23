@@ -65,6 +65,13 @@ export function franchiseeLookup(db: Drizzle): FranchiseeLookup {
         .where(eq(franchisees.id, franchiseeId));
       return rows[0]?.franchisorId ?? null;
     },
+    async nameFor(franchiseeId: string): Promise<string | null> {
+      const rows = await db
+        .select({ name: franchisees.name })
+        .from(franchisees)
+        .where(eq(franchisees.id, franchiseeId));
+      return rows[0]?.name ?? null;
+    },
   };
 }
 

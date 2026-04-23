@@ -12,6 +12,7 @@ import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
 import { mountAuth } from './auth-mount.js';
 import { registerInviteRoutes } from './invites.js';
+import { registerFranchiseeRoutes } from './franchisees-routes.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
@@ -213,6 +214,12 @@ export function buildApp(opts: AppOptions = {}) {
       magicLinkSender: opts.magicLinkSender,
       acceptUrlBase: opts.acceptUrlBase ?? 'http://localhost:3000',
     });
+  }
+
+  // Mount franchisee list when a Drizzle handle is wired. Needs the scope
+  // plugin already registered — buildApp orders that above.
+  if (opts.drizzle) {
+    registerFranchiseeRoutes(app, opts.drizzle);
   }
 
   /**

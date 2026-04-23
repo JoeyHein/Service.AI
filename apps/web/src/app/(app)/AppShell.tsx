@@ -1,9 +1,11 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTransition, type ReactNode } from 'react';
 import { apiClientFetch } from '../../lib/api.js';
 import type { MeResponse } from '../../lib/session.js';
+import { HqBanner } from './HqBanner';
 
 /**
  * The persistent chrome for every authenticated route. Displays the
@@ -31,18 +33,34 @@ export function AppShell({
     ? describeScope(session.scope)
     : 'no active membership';
 
+  const isFranchisorAdmin =
+    !session.impersonating && session.scope?.type === 'franchisor';
+
   return (
     <div className="min-h-screen bg-slate-50">
+      {session.impersonating && (
+        <HqBanner impersonating={session.impersonating} />
+      )}
       <header className="bg-white border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
           <div className="flex items-center gap-3">
-            <span className="font-semibold text-slate-900">Service.AI</span>
+            <Link href="/dashboard" className="font-semibold text-slate-900">
+              Service.AI
+            </Link>
             <span
               className="text-xs text-slate-500 px-2 py-0.5 rounded border border-slate-200 bg-slate-50"
               data-testid="scope-pill"
             >
               {scopeLabel}
             </span>
+            {isFranchisorAdmin && (
+              <Link
+                href="/franchisor/franchisees"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Franchisees
+              </Link>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <span

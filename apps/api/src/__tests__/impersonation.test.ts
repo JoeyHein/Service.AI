@@ -244,6 +244,100 @@ describe('TASK-TEN-04 / X-Impersonate-Franchisee', () => {
     });
   });
 
+  it('accepts the serviceai.impersonate cookie as a header fallback', async () => {
+    const { writer, entries } = recordingAuditWriter();
+    app = buildApp({
+      db: mockDb,
+      redis: mockRedis,
+      logger: false,
+      auth: mockAuth('admin_of_A'),
+      membershipResolver: mockResolver([franchisorAdminOfA]),
+      franchiseeLookup: mockLookup({ [FRANCHISEE_OF_A]: FRANCHISOR_A }),
+      auditWriter: writer,
+    });
+    await app.ready();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me',
+      headers: {
+        // Two cookies — ours plus noise — to prove the parser picks the
+        // right one regardless of ordering.
+        cookie: `other=value; serviceai.impersonate=${FRANCHISEE_OF_A}; more=also`,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const scope = res.json().data.scope;
+    expect(scope.type).toBe('franchisee');
+    expect(scope.franchiseeId).toBe(FRANCHISEE_OF_A);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.action).toBe('impersonate.request');
+  });
+
+  it('prefers the X-Impersonate-Franchisee header over the cookie when both are set', async () => {
+    const ALT_FRANCHISEE = 'aaaaaaaa-aaaa-4000-aaaa-aaaaaaaaaaaa';
+    const { writer } = recordingAuditWriter();
+    app = buildApp({
+      db: mockDb,
+      redis: mockRedis,
+      logger: false,
+      auth: mockAuth('admin_of_A'),
+      membershipResolver: mockResolver([franchisorAdminOfA]),
+      franchiseeLookup: mockLookup({
+        [FRANCHISEE_OF_A]: FRANCHISOR_A,
+        [ALT_FRANCHISEE]: FRANCHISOR_A,
+      }),
+      auditWriter: writer,
+    });
+    await app.ready();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me',
+      headers: {
+        'x-impersonate-franchisee': ALT_FRANCHISEE,
+        cookie: `serviceai.impersonate=${FRANCHISEE_OF_A}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.scope.franchiseeId).toBe(ALT_FRANCHISEE);
+  });
+
+  it('surfaces targetFranchiseeName when FranchiseeLookup supplies nameFor', async () => {
+    const lookup = {
+      async franchisorIdFor() {
+        return FRANCHISOR_A;
+      },
+      async nameFor() {
+        return 'Denver Metro';
+      },
+    };
+    const { writer } = recordingAuditWriter();
+    app = buildApp({
+      db: mockDb,
+      redis: mockRedis,
+      logger: false,
+      auth: mockAuth('admin_of_A'),
+      membershipResolver: mockResolver([franchisorAdminOfA]),
+      franchiseeLookup: lookup,
+      auditWriter: writer,
+    });
+    await app.ready();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/me',
+      headers: { 'x-impersonate-franchisee': FRANCHISEE_OF_A },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.impersonating).toEqual({
+      targetFranchiseeId: FRANCHISEE_OF_A,
+      targetFranchiseeName: 'Denver Metro',
+    });
+  });
+
   it('passes through unchanged when no header is set', async () => {
     const { writer, entries } = recordingAuditWriter();
     app = buildApp({

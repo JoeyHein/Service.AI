@@ -15,9 +15,20 @@ export interface MeScope {
   locationId?: string | null;
 }
 
+export interface ImpersonatingContext {
+  targetFranchiseeId: string;
+  targetFranchiseeName: string | null;
+}
+
 export interface MeResponse {
   user: { id: string };
   scope: MeScope | null;
+  /**
+   * Non-null when the caller is currently impersonating a franchisee. The
+   * app shell uses this to render the HQ banner; individual pages can
+   * treat it as "normal scope" since the API has already narrowed.
+   */
+  impersonating: ImpersonatingContext | null;
 }
 
 /**
