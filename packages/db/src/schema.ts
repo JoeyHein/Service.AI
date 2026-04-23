@@ -582,3 +582,111 @@ export const pricebookOverrides = pgTable(
       .where(sql`${t.deletedAt} IS NULL`),
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Invoices (phase_tech_mobile_pwa draft scope; finalize/pay in phase 7)
+// ---------------------------------------------------------------------------
+
+export const invoiceStatus = pgEnum('invoice_status', [
+  'draft',
+  'finalized',
+  'sent',
+  'paid',
+  'void',
+]);
+
+export const invoices = pgTable(
+  'invoices',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'restrict' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    status: invoiceStatus('status').notNull().default('draft'),
+    subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
+    taxRate: numeric('tax_rate', { precision: 6, scale: 4 }).notNull().default('0'),
+    taxAmount: numeric('tax_amount', { precision: 12, scale: 2 }).notNull().default('0'),
+    total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
+    notes: text('notes'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('invoices_franchisee_idx').on(t.franchiseeId),
+    jobIdx: index('invoices_job_idx').on(t.jobId),
+    customerIdx: index('invoices_customer_idx').on(t.customerId),
+    statusIdx: index('invoices_status_idx').on(t.status),
+  }),
+);
+
+export const invoiceLineItems = pgTable(
+  'invoice_line_items',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    serviceItemId: uuid('service_item_id').references(() => serviceItems.id, {
+      onDelete: 'set null',
+    }),
+    sku: text('sku').notNull(),
+    name: text('name').notNull(),
+    quantity: numeric('quantity', { precision: 12, scale: 3 }).notNull(),
+    unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+    lineTotal: numeric('line_total', { precision: 12, scale: 2 }).notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    invoiceIdx: index('invoice_line_items_invoice_idx').on(t.invoiceId),
+    franchiseeIdx: index('invoice_line_items_franchisee_idx').on(t.franchiseeId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Web push subscriptions (phase_tech_mobile_pwa)
+// ---------------------------------------------------------------------------
+
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Denormalised so franchisor-scoped push sends can target a
+    // franchisee without joining memberships.
+    franchiseeId: uuid('franchisee_id').references(() => franchisees.id, {
+      onDelete: 'set null',
+    }),
+    endpoint: text('endpoint').notNull(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    userAgent: text('user_agent'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('push_subscriptions_user_idx').on(t.userId),
+    endpointUnique: uniqueIndex('push_subscriptions_endpoint_unique')
+      .on(t.endpoint)
+      .where(sql`${t.deletedAt} IS NULL`),
+  }),
+);

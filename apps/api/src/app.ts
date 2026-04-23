@@ -21,6 +21,7 @@ import { registerJobPhotoRoutes } from './job-photos-routes.js';
 import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
+import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerAssignmentRoutes } from './assignment-routes.js';
 import { registerSseRoutes } from './sse-routes.js';
 import { registerTechRoutes } from './techs-routes.js';
@@ -261,6 +262,7 @@ export function buildApp(opts: AppOptions = {}) {
     );
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
+    registerInvoiceRoutes(app, opts.drizzle);
     const bus = opts.eventBus ?? inProcessEventBus();
     registerAssignmentRoutes(app, opts.drizzle, bus);
     registerSseRoutes(app, opts.drizzle, bus);

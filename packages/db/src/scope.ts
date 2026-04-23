@@ -55,6 +55,7 @@ export interface ScopeGucs {
   role: string;
   franchisorId: string;
   franchiseeId: string;
+  userId: string;
 }
 
 /**
@@ -66,18 +67,25 @@ export interface ScopeGucs {
 export function scopeToGucs(scope: RequestScope): ScopeGucs {
   switch (scope.type) {
     case 'platform':
-      return { role: 'platform_admin', franchisorId: '', franchiseeId: '' };
+      return {
+        role: 'platform_admin',
+        franchisorId: '',
+        franchiseeId: '',
+        userId: scope.userId,
+      };
     case 'franchisor':
       return {
         role: 'franchisor_admin',
         franchisorId: scope.franchisorId,
         franchiseeId: '',
+        userId: scope.userId,
       };
     case 'franchisee':
       return {
         role: scope.role,
         franchisorId: scope.franchisorId,
         franchiseeId: scope.franchiseeId,
+        userId: scope.userId,
       };
   }
 }
@@ -103,6 +111,7 @@ export async function withScope<T>(
     await tx.execute(
       sql`select set_config('app.franchisee_id', ${gucs.franchiseeId}, true)`,
     );
+    await tx.execute(sql`select set_config('app.user_id', ${gucs.userId}, true)`);
     return fn(tx);
   });
 }
