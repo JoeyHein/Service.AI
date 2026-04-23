@@ -147,6 +147,35 @@ export function buildApp(opts: AppOptions = {}) {
     reply.header('x-request-id', request.id);
   });
 
+  // Uniform error envelope. Plugins throw errors decorated with a .code
+  // and .statusCode (see request-scope.ts); Fastify's default serialiser
+  // would expose `code` at the top level, which breaks client contracts
+  // that expect `{ ok: false, error: { code, message } }`. This handler
+  // reshapes any error that carries a string `code` into the canonical
+  // envelope. Errors without a code fall through to Fastify defaults.
+  interface CodedError {
+    statusCode?: number;
+    code?: string;
+    message?: string;
+  }
+  app.setErrorHandler((err: CodedError, _req, reply) => {
+    const code = typeof err.code === 'string' ? err.code : null;
+    const statusCode =
+      typeof err.statusCode === 'number' && err.statusCode >= 400
+        ? err.statusCode
+        : 500;
+    if (code) {
+      return reply.code(statusCode).send({
+        ok: false,
+        error: { code, message: err.message ?? code },
+      });
+    }
+    return reply.code(statusCode).send({
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: err.message ?? 'Unexpected error' },
+    });
+  });
+
   // Register plugins in dependency order. sensible first so its decorators
   // are available to all subsequent plugins and routes.
   app.register(sensible);

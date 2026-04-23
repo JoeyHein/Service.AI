@@ -12,7 +12,7 @@
  * constructors directly if they ever want to exercise the real resolvers
  * against a live DB rather than a mock.
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@service-ai/db';
 import { memberships, franchisees, auditLog } from '@service-ai/db';
@@ -29,11 +29,21 @@ type Drizzle = NodePgDatabase<typeof schema>;
 export function membershipResolver(db: Drizzle): MembershipResolver {
   return {
     async memberships(userId: string): Promise<MembershipRow[]> {
+      // franchisor_admin rows carry scope_type='franchisor' + scope_id =
+      // franchisor uuid and have franchisee_id = NULL. For those rows the
+      // LEFT JOIN on franchisees.id can't resolve franchisor_id, so we
+      // COALESCE to the scope_id directly. For franchisee-scoped rows
+      // the join provides it.
       const rows = await db
         .select({
           scopeType: memberships.scopeType,
           role: memberships.role,
-          franchisorId: franchisees.franchisorId,
+          franchisorId: sql<string | null>`COALESCE(
+            CASE WHEN ${memberships.scopeType} = 'franchisor'
+                 THEN ${memberships.scopeId}::text
+                 ELSE NULL END,
+            ${franchisees.franchisorId}::text
+          )`,
           franchiseeId: memberships.franchiseeId,
           locationId: memberships.locationId,
         })

@@ -228,7 +228,12 @@ export function registerInviteRoutes(
   });
 
   // -------------------------------------------------------------------------
-  // GET /api/v1/invites — list pending (scoped via withScope + RLS)
+  // GET /api/v1/invites — list pending invites visible to the caller.
+  //
+  // Two layers of scoping: (1) withScope sets GUCs so RLS policies filter
+  // rows if the DB user is non-superuser (production), and (2) an explicit
+  // WHERE clause enforces the same rule even when the DB user bypasses RLS
+  // (dev superuser, infra/admin tooling). Defence in depth.
   // -------------------------------------------------------------------------
   app.get('/api/v1/invites', async (req, reply) => {
     if (req.scope === null) {
@@ -237,8 +242,20 @@ export function registerInviteRoutes(
         error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
       });
     }
-    const rows = await withScope(db, req.scope, (tx) =>
-      tx
+    const scope = req.scope;
+    const rows = await withScope(db, scope, (tx) => {
+      const lifecycle = and(
+        isNull(invitations.redeemedAt),
+        isNull(invitations.revokedAt),
+        gt(invitations.expiresAt, new Date()),
+      );
+      const scopeFilter =
+        scope.type === 'platform'
+          ? undefined
+          : scope.type === 'franchisor'
+            ? eq(invitations.franchisorId, scope.franchisorId)
+            : eq(invitations.franchiseeId, scope.franchiseeId);
+      return tx
         .select({
           id: invitations.id,
           email: invitations.email,
@@ -249,14 +266,8 @@ export function registerInviteRoutes(
           createdAt: invitations.createdAt,
         })
         .from(invitations)
-        .where(
-          and(
-            isNull(invitations.redeemedAt),
-            isNull(invitations.revokedAt),
-            gt(invitations.expiresAt, new Date()),
-          ),
-        ),
-    );
+        .where(scopeFilter ? and(lifecycle, scopeFilter) : lifecycle);
+    });
     return reply.code(200).send({ ok: true, data: rows });
   });
 
@@ -279,13 +290,28 @@ export function registerInviteRoutes(
       });
     }
 
-    const result = await withScope(db, req.scope, async (tx) => {
+    const scope = req.scope;
+    const result = await withScope(db, scope, async (tx) => {
       const existing = await tx
-        .select({ id: invitations.id, revokedAt: invitations.revokedAt })
+        .select({
+          id: invitations.id,
+          revokedAt: invitations.revokedAt,
+          franchisorId: invitations.franchisorId,
+          franchiseeId: invitations.franchiseeId,
+        })
         .from(invitations)
         .where(eq(invitations.id, id));
       const row = existing[0];
       if (!row) return { found: false as const };
+      // Defence-in-depth app-layer scope check — RLS filters rows in
+      // production (non-superuser DB role), but the dev / admin-pool
+      // connection bypasses RLS and would otherwise let a denver_owner
+      // revoke an austin invite. We reject by pretending it doesn't exist.
+      const inScope =
+        scope.type === 'platform' ||
+        (scope.type === 'franchisor' && row.franchisorId === scope.franchisorId) ||
+        (scope.type === 'franchisee' && row.franchiseeId === scope.franchiseeId);
+      if (!inScope) return { found: false as const };
       if (row.revokedAt !== null) return { found: true as const, alreadyRevoked: true };
       await tx
         .update(invitations)
