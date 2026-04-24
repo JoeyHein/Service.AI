@@ -24,6 +24,7 @@ import { registerPricebookRoutes } from './pricebook-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerConnectRoutes } from './connect-routes.js';
+import { registerStripeWebhook } from './stripe-webhook.js';
 import { resolveStripeClient, type StripeClient } from './stripe.js';
 import {
   resolveEmailSender,
@@ -306,6 +307,7 @@ export function buildApp(opts: AppOptions = {}) {
       smsSender,
       publicBaseUrl,
     });
+    registerStripeWebhook(app, opts.drizzle, stripe);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app
