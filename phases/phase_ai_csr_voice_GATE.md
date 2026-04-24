@@ -218,6 +218,11 @@ without a human CSR picking up.**
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_ai_csr_voice_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-24
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: real Deepgram + ElevenLabs adapters deferred; m2:
+aggregate-transcript agent loop becomes turn-by-turn in phase
+10; m3: undo UX lives in dispatch phase 12). Tagged
+`phase-ai-csr-voice-complete`.

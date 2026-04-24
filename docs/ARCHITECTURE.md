@@ -416,6 +416,103 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6g. AI CSR voice — phase_ai_csr_voice
+
+The voice service takes an inbound Twilio call and books a job
+end-to-end. Caller greeted → name + address + symptom collected
+→ tech availability checked → job booked → SMS confirmation →
+job on the dispatch board, all without human CSR intervention.
+
+### Adapter boundary surfaces
+Four external dependencies, each behind its own pluggable
+interface so tests never hit the network:
+
+| Adapter | Interface | Stub (default) | Real wiring |
+|---|---|---|---|
+| Anthropic (Claude) | `AIClient.turn()` | `stubAIClient({script})` | `anthropicAIClient(key)` |
+| Twilio | `TelephonyClient.{provisionNumber,verifyWebhookSignature,sendSms,initiateTransfer}` | `stubTelephonyClient()` | `realTelephonyClient(sid, token)` |
+| Deepgram | `AsrClient.open() → AsrSession` | `stubAsrClient({scripts})` | (wiring lands when first pilot streams) |
+| ElevenLabs | `TtsClient.speak()` | `stubTtsClient()` | (wiring lands alongside Deepgram) |
+
+The stubs are deterministic — e.g. `stubTelephonyClient.provisionNumber`
+hashes `franchiseeId` into a stable `+1555xxxxxxx`, and
+`stubAsrClient` replays canned transcripts by `audioId`. Tests
+reproduce whole conversations without audio files.
+
+### Agent loop (`packages/ai`)
+`runAgentLoop` is the tool-use driver. Given a system prompt, an
+`AIClient`, a tool map, and a `ToolContext`, it pumps until:
+
+1. The model emits a `text` turn → terminate, return `{finalText,
+   outcome: 'completed'}`.
+2. The model emits a `tool_use` → look up the tool, execute, feed
+   the result back as a `tool_result`, loop.
+3. `maxSteps` (default 12) hit → terminate with
+   `outcome: 'max_steps'`.
+
+**Guardrail redirect**: before executing a tool, the loop
+compares the assistant's reported confidence against
+`ctx.guardrails.confidenceThreshold`. If the tool is in the
+configured `gatedTools` list and confidence is below threshold,
+the loop substitutes `transferToHuman` in place of the original
+call. The model learns from the tool_result that the system
+declined to run the risky action — no inline "hallucinated
+safety" needed.
+
+### CSR tools
+Six implementations in `apps/api/src/ai-tools/csr-tools.ts`:
+
+- `lookupCustomer({phone?, name?})` — franchisee-scoped, caches
+  the matched `customerId` in `deps.state` for downstream tools.
+- `createCustomer({name, phone?, address?...})` — inserts into
+  the caller's franchisee.
+- `proposeTimeSlots({windowStart?, windowEnd?})` — greedy
+  9am/12pm/3pm slots across the next available day. Phase 10
+  plugs in live tech calendars.
+- `bookJob({customerId?, title, scheduledStart?, techUserId?})`
+  — verifies customer + tech belong to the caller's franchisee
+  before insert; cross-tenant → `INVALID_TARGET`.
+- `transferToHuman({reason, priority})` — records an
+  ai_messages tool row, returns the transfer line to speak.
+- `logCallSummary({summary, intent, outcome})` — final tool,
+  stamps `call_sessions.outcome`.
+
+`CSR_GATED_TOOLS` exports `[bookJob, createCustomer]` — the two
+tools that write tenant-affecting data — as the list the loop
+consults for confidence gating.
+
+### Call orchestrator
+`CallOrchestrator` (in `packages/ai`) is framework-agnostic:
+ASR → agent loop → TTS → DB persistence. `start()` inserts
+`ai_conversations` + `call_sessions` rows; `run()` aggregates
+ASR finals into an initial user message, runs the agent, writes
+every assistant + tool turn to `ai_messages`, streams TTS
+frames via `onTtsFrame`, closes the call row with status +
+outcome.
+
+### Twilio webhook + WS streams
+`apps/voice/src/app.ts` exposes:
+
+- `POST /voice/incoming` — Twilio webhook. Signature verified
+  via `TelephonyClient.verifyWebhookSignature`. Unknown `To`
+  numbers return a TwiML hang-up; known numbers return
+  `<Connect><Stream>` TwiML with the franchisee id encoded in a
+  custom parameter.
+- `WS /voice/stream` — Twilio Media Streams handler. `start`
+  event spins up the orchestrator; `media` events push frames;
+  `stop` / socket close tears it down.
+
+### Guardrails + phone provisioning
+`franchisees.ai_guardrails` is a jsonb with a schema default of
+`{confidenceThreshold: 0.8, undoWindowSeconds: 900,
+transferOnLowConfidence: true}`. A newly-onboarded franchisee
+is safe by default without any admin action.
+
+Admin endpoints: `POST /franchisees/:id/phone/provision`
+(idempotent), `GET /franchisees/:id/phone`, `PATCH
+/franchisees/:id/ai-guardrails` — all platform or owning
+franchisor admin only.
+
 ## 6f. Royalty engine + statements — phase_royalty_engine
 
 The royalty engine replaces phase 7's hard-coded 5% application
