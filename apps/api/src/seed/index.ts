@@ -508,6 +508,10 @@ export async function runSeed(pool: InstanceType<typeof Pool>): Promise<SeedResu
     overrideCount,
   };
 
+  // KB seed (phase_ai_tech_assistant). Idempotent on `source`.
+  const { runKbSeed } = await import('./kb-docs.js');
+  await runKbSeed(pool, franchisorId);
+
   return result;
 }
 
