@@ -40,6 +40,7 @@ export function AppShell({
     (session.scope?.type === 'platform' || session.scope?.type === 'franchisor');
   const isTech =
     session.scope?.type === 'franchisee' && session.scope.role === 'tech';
+  const isFranchiseeScope = session.scope?.type === 'franchisee';
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -113,6 +114,15 @@ export function AppShell({
                 data-testid="nav-tech-view"
               >
                 Tech view
+              </Link>
+            )}
+            {isFranchiseeScope && (
+              <Link
+                href="/statements"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-statements"
+              >
+                Statements
               </Link>
             )}
           </div>
