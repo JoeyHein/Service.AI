@@ -77,6 +77,15 @@ export function AppShell({
             >
               Dispatch
             </Link>
+            {isPlatformOrFranchisor && (
+              <Link
+                href="/franchisor"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-franchisor-network"
+              >
+                Network
+              </Link>
+            )}
             {isFranchisorAdmin && (
               <Link
                 href="/franchisor/franchisees"
