@@ -783,6 +783,68 @@ export const stripeEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// AI tech assistant (phase_ai_tech_assistant)
+// ---------------------------------------------------------------------------
+
+export const aiFeedbackKind = pgEnum('ai_feedback_kind', ['accept', 'override']);
+export const aiFeedbackSubjectKind = pgEnum('ai_feedback_subject_kind', [
+  'photo_quote_item',
+  'notes_invoice_draft',
+  'dispatcher_assignment',
+]);
+
+/**
+ * kb_docs is franchisor-scoped but franchisor_id may be NULL for
+ * platform-global articles. Embeddings are jsonb arrays — phase
+ * 11 computes cosine similarity in JS at the ≤200-doc scale; a
+ * pgvector migration is deferred until the corpus grows past the
+ * in-memory threshold.
+ */
+export const kbDocs = pgTable(
+  'kb_docs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchisorId: uuid('franchisor_id').references(() => franchisors.id, {
+      onDelete: 'cascade',
+    }),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    source: text('source').notNull(),
+    embedding: jsonb('embedding').notNull(),
+    tags: jsonb('tags').notNull().default(sql`'[]'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchisorIdx: index('kb_docs_franchisor_idx').on(t.franchisorId),
+    sourceUnique: uniqueIndex('kb_docs_source_unique').on(t.source),
+  }),
+);
+
+export const aiFeedback = pgTable(
+  'ai_feedback',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id'),
+    kind: aiFeedbackKind('kind').notNull(),
+    subjectKind: aiFeedbackSubjectKind('subject_kind').notNull(),
+    subjectRef: jsonb('subject_ref').notNull(),
+    actorUserId: text('actor_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('ai_feedback_franchisee_idx').on(t.franchiseeId),
+    kindIdx: index('ai_feedback_kind_idx').on(t.kind),
+    subjectIdx: index('ai_feedback_subject_kind_idx').on(t.subjectKind),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // AI dispatcher (phase_ai_dispatcher)
 // ---------------------------------------------------------------------------
 
