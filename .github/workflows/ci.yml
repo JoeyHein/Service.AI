@@ -71,6 +71,10 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Apply database migrations
+        run: pnpm --filter @service-ai/db db:migrate
+        env:
+          DATABASE_URL: postgresql://builder:builder@localhost:5434/servicetitan
       - name: Run tests
         run: pnpm -r test
         env:
