@@ -773,6 +773,140 @@ export const stripeEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Royalty engine (phase_royalty_engine)
+// ---------------------------------------------------------------------------
+
+export const agreementStatus = pgEnum('agreement_status', [
+  'draft',
+  'active',
+  'ended',
+]);
+
+export const royaltyRuleType = pgEnum('royalty_rule_type', [
+  'percentage',
+  'flat_per_job',
+  'tiered',
+  'minimum_floor',
+]);
+
+export const royaltyStatementStatus = pgEnum('royalty_statement_status', [
+  'open',
+  'reconciled',
+  'disputed',
+]);
+
+/**
+ * A franchise agreement is the authoritative source of the
+ * platform fee for every invoice under a franchisee. At most one
+ * `status = 'active'` row per franchisee is enforced by a partial
+ * unique index.
+ */
+export const franchiseAgreements = pgTable(
+  'franchise_agreements',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    // Denormalised for fast franchisor-scoped reads + cleaner RLS.
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    status: agreementStatus('status').notNull().default('draft'),
+    name: text('name').notNull(),
+    notes: text('notes'),
+    startsOn: timestamp('starts_on', { withTimezone: true }),
+    endsOn: timestamp('ends_on', { withTimezone: true }),
+    currency: text('currency').notNull().default('usd'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('franchise_agreements_franchisee_idx').on(t.franchiseeId),
+    franchisorIdx: index('franchise_agreements_franchisor_idx').on(t.franchisorId),
+    oneActivePerFranchisee: uniqueIndex('franchise_agreements_one_active')
+      .on(t.franchiseeId)
+      .where(sql`${t.status} = 'active'`),
+  }),
+);
+
+export const royaltyRules = pgTable(
+  'royalty_rules',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    agreementId: uuid('agreement_id')
+      .notNull()
+      .references(() => franchiseAgreements.id, { onDelete: 'cascade' }),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    ruleType: royaltyRuleType('rule_type').notNull(),
+    // JSONB blob whose shape depends on ruleType; validated by Zod
+    // at the API boundary. Stored as-is so evolving rule shapes
+    // don't require migrations.
+    params: jsonb('params').notNull(),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    agreementIdx: index('royalty_rules_agreement_idx').on(t.agreementId),
+    franchiseeIdx: index('royalty_rules_franchisee_idx').on(t.franchiseeId),
+  }),
+);
+
+export const royaltyStatements = pgTable(
+  'royalty_statements',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    franchisorId: uuid('franchisor_id')
+      .notNull()
+      .references(() => franchisors.id, { onDelete: 'cascade' }),
+    periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
+    periodEnd: timestamp('period_end', { withTimezone: true }).notNull(),
+    grossRevenue: numeric('gross_revenue', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    refundTotal: numeric('refund_total', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    netRevenue: numeric('net_revenue', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    royaltyOwed: numeric('royalty_owed', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    royaltyCollected: numeric('royalty_collected', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    variance: numeric('variance', { precision: 14, scale: 2 })
+      .notNull()
+      .default('0'),
+    transferId: text('transfer_id'),
+    status: royaltyStatementStatus('status').notNull().default('open'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('royalty_statements_franchisee_idx').on(t.franchiseeId),
+    franchisorIdx: index('royalty_statements_franchisor_idx').on(t.franchisorId),
+    periodUnique: uniqueIndex('royalty_statements_period_unique').on(
+      t.franchiseeId,
+      t.periodStart,
+      t.periodEnd,
+    ),
+    transferIdUnique: uniqueIndex('royalty_statements_transfer_unique')
+      .on(t.transferId)
+      .where(sql`${t.transferId} IS NOT NULL`),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Web push subscriptions (phase_tech_mobile_pwa)
 // ---------------------------------------------------------------------------
 
