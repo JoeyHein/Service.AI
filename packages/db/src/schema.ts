@@ -783,6 +783,103 @@ export const stripeEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// AI dispatcher (phase_ai_dispatcher)
+// ---------------------------------------------------------------------------
+
+export const aiSuggestionKind = pgEnum('ai_suggestion_kind', ['assignment']);
+export const aiSuggestionStatus = pgEnum('ai_suggestion_status', [
+  'pending',
+  'approved',
+  'rejected',
+  'applied',
+  'expired',
+]);
+
+export const aiSuggestions = pgTable(
+  'ai_suggestions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id'),
+    kind: aiSuggestionKind('kind').notNull(),
+    subjectJobId: uuid('subject_job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    proposedTechUserId: text('proposed_tech_user_id').references(
+      () => users.id,
+      { onDelete: 'set null' },
+    ),
+    proposedScheduledStart: timestamp('proposed_scheduled_start', {
+      withTimezone: true,
+    }),
+    proposedScheduledEnd: timestamp('proposed_scheduled_end', {
+      withTimezone: true,
+    }),
+    reasoning: text('reasoning').notNull(),
+    confidence: numeric('confidence', { precision: 5, scale: 4 }).notNull(),
+    status: aiSuggestionStatus('status').notNull().default('pending'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decidedByUserId: text('decided_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('ai_suggestions_franchisee_idx').on(t.franchiseeId),
+    jobIdx: index('ai_suggestions_job_idx').on(t.subjectJobId),
+    statusIdx: index('ai_suggestions_status_idx').on(t.status),
+  }),
+);
+
+export const aiMetrics = pgTable(
+  'ai_metrics',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    date: timestamp('date', { withTimezone: true }).notNull(),
+    suggestionsTotal: integer('suggestions_total').notNull().default(0),
+    autoApplied: integer('auto_applied').notNull().default(0),
+    queued: integer('queued').notNull().default(0),
+    approved: integer('approved').notNull().default(0),
+    rejected: integer('rejected').notNull().default(0),
+    overrideRate: numeric('override_rate', { precision: 5, scale: 4 })
+      .notNull()
+      .default('0'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    uniqDay: uniqueIndex('ai_metrics_franchisee_date_unique').on(
+      t.franchiseeId,
+      t.date,
+    ),
+  }),
+);
+
+export const techSkills = pgTable(
+  'tech_skills',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    skill: text('skill').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    pk: uniqueIndex('tech_skills_pk').on(t.userId, t.franchiseeId, t.skill),
+    franchiseeIdx: index('tech_skills_franchisee_idx').on(t.franchiseeId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // AI CSR voice (phase_ai_csr_voice)
 // ---------------------------------------------------------------------------
 
