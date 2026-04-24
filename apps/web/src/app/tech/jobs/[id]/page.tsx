@@ -4,6 +4,7 @@ import { apiServerFetch } from '../../../../lib/api.js';
 import { StaticMap } from '../../../../components/StaticMap';
 import { JobTransitionPanel } from '../../../(app)/jobs/[id]/JobTransitionPanel';
 import { JobPhotos } from '../../../(app)/jobs/[id]/JobPhotos';
+import { PhotoQuotePanel } from './PhotoQuotePanel';
 
 interface Job {
   id: string;
@@ -131,6 +132,8 @@ export default async function TechJobDetailPage({
       <div className="mt-6">
         <JobPhotos jobId={job.id} initialPhotos={photos} />
       </div>
+
+      <PhotoQuotePanel jobId={job.id} />
 
       <div className="mt-6 flex justify-end">
         <Link

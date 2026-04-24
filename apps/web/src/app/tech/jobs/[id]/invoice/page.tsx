@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { apiServerFetch } from '../../../../../lib/api.js';
 import { InvoiceDraftEditor } from './InvoiceDraftEditor';
+import { NotesToInvoicePanel } from './NotesToInvoicePanel';
 
 interface Job {
   id: string;
@@ -88,6 +89,8 @@ export default async function TechInvoicePage({
         pricebook={pricebook}
         initialInvoice={existing}
       />
+
+      <NotesToInvoicePanel jobId={job.id} />
     </section>
   );
 }
