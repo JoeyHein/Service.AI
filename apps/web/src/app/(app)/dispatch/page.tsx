@@ -2,6 +2,17 @@ import { notFound } from 'next/navigation';
 import { apiServerFetch } from '../../../lib/api.js';
 import { getSession } from '../../../lib/session.js';
 import { DispatchBoard, type JobCard, type Tech } from './DispatchBoard';
+import { AiSuggestionsPanel } from './AiSuggestionsPanel';
+
+interface Suggestion {
+  id: string;
+  subjectJobId: string;
+  proposedTechUserId: string | null;
+  proposedScheduledStart: string | null;
+  reasoning: string;
+  confidence: string;
+  status: string;
+}
 
 interface JobsPayload {
   rows: Array<{
@@ -37,16 +48,26 @@ export default async function DispatchPage({
   };
   const date = one('date') ?? new Date().toISOString().slice(0, 10);
 
-  const [techsRes, jobsRes] = await Promise.all([
+  const [techsRes, jobsRes, suggestionsRes] = await Promise.all([
     apiServerFetch<Tech[]>('/api/v1/techs'),
     // Fetch both unassigned (regardless of date) and scheduled/en_route
     // jobs — the board shows active work. Filter further client-side if
     // a date is set; we pull a generous slice here.
     apiServerFetch<JobsPayload>('/api/v1/jobs?limit=200'),
+    apiServerFetch<{ rows: Suggestion[] }>(
+      '/api/v1/dispatch/suggestions?status=pending',
+    ),
   ]);
 
   const techs: Tech[] = techsRes.body.ok && techsRes.body.data ? techsRes.body.data : [];
   const allJobs = jobsRes.body.ok && jobsRes.body.data ? jobsRes.body.data.rows : [];
+  const suggestions: Suggestion[] =
+    suggestionsRes.body.ok && suggestionsRes.body.data
+      ? suggestionsRes.body.data.rows
+      : [];
+  const techsById = Object.fromEntries(
+    techs.map((t) => [t.userId, t.name ?? t.email ?? t.userId]),
+  );
 
   // Keep jobs that are unassigned OR scheduled for the selected date,
   // OR en_route / arrived / in_progress (active today regardless of
@@ -97,8 +118,11 @@ export default async function DispatchPage({
           </button>
         </form>
       </div>
-      <div className="mt-6">
-        <DispatchBoard initialJobs={visible} techs={techs} />
+      <div className="mt-6 flex gap-4 items-start">
+        <div className="flex-1 min-w-0">
+          <DispatchBoard initialJobs={visible} techs={techs} />
+        </div>
+        <AiSuggestionsPanel initial={suggestions} techsById={techsById} />
       </div>
     </section>
   );
