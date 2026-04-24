@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./prompts/csr": "./src/prompts/csr.ts",
+    "./prompts/dispatcher": "./src/prompts/dispatcher.ts",
     "./tools": "./src/tools/index.ts"
   },
   "scripts": {
