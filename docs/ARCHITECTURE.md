@@ -416,6 +416,85 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6j. AI collections — phase_ai_collections
+
+AR aging shrinks without a human writing each follow-up.
+Invoices past due at 7 / 14 / 30 days get an AI-drafted SMS +
+email in three tones (friendly / firm / final). The franchisee
+owner reviews the queue, edits or approves, and the existing
+`EmailSender` + `SmsSender` adapters fire the send.
+
+### Data model (migration 0013)
+- `collections_drafts` — one row per (invoice, tone) reminder.
+  Status state machine: `pending → approved | edited |
+  rejected → sent | failed`. A partial unique index on
+  `(invoice_id, tone) WHERE status = 'pending'` prevents the
+  aging sweep from duplicating pending rows.
+- `payment_retries` — scheduled retry attempts for failed
+  PaymentIntents. Carries `failure_code`, `scheduled_for`,
+  `attempt_index`, and a jsonb `result_ref` of the Stripe
+  outcome.
+- `franchisees.ai_guardrails` default gains a `collections`
+  sub-object: `{ autoSendTone: null, cadenceDaysFriendly: 7,
+  cadenceDaysFirm: 14, cadenceDaysFinal: 30 }`. A null
+  `autoSendTone` means every draft is always queued for
+  review — the gate default is never auto-send.
+
+### Prompt library
+`packages/ai/prompts/collections.ts` emits a system prompt
+that interpolates brand + customer + amount + days-past-due and
+instructs the model to return JSON shaped
+`{ sms, email: { subject, body } }`. Each tone has its own
+guidance paragraph. Non-JSON output falls back to a
+deterministic copy template so the feature stays functional
+on a stub AI client.
+
+### Pipeline
+`apps/api/src/ai-collections.ts` bundles four primitives:
+
+- `collectionsDraft` — single AI turn per (invoice, tone).
+  Pre-checks the partial unique index so repeat sweeps return
+  the existing pending row instead of throwing.
+- `selectAgedInvoices` — pure projector. Picks the
+  most-severe tone the invoice has crossed + skips rows with
+  any pending / sent draft for that tone.
+- `runCollectionsSweep` — loops the projector + drafter.
+- `schedulePaymentRetry` — failure-code → delay lookup
+  (auth_required=1h, card_declined=3d, insufficient_funds=5d,
+  expired_card=7d, default=2d). Caps at 4 attempts.
+- `computeCollectionsMetrics` — DSO (days-sales-outstanding)
+  + recovered-revenue projector over the trailing 30 days.
+
+### Stripe webhook integration
+`payment_intent.payment_failed` events now dispatch to
+`schedulePaymentRetry`. The webhook-idempotency table (phase 7)
+ensures a replayed event never schedules a duplicate retry.
+
+### API surface
+- `POST /api/v1/collections/run` — trigger the sweep.
+- `GET /api/v1/collections/drafts?status=` — scoped list.
+- `POST /drafts/:id/approve` — send via EmailSender +
+  SmsSender; soft-skips missing channels; status →
+  sent / failed.
+- `POST /drafts/:id/edit` — replace sms / subject / body /
+  tone; status → edited.
+- `POST /drafts/:id/reject` — status → rejected.
+- `GET /collections/metrics` — DSO + recovered revenue.
+- `POST /payments/retries/:id/run` — spin up a fresh
+  PaymentIntent via the Stripe adapter; admin /
+  dispatch-role only.
+
+Role gate: platform + franchisor + franchisee_owner +
+location_manager + dispatcher. Tech + CSR → 403.
+
+### UI
+`/collections` page for franchisee-scope users renders three
+metric tiles (DSO, open receivables, recovered-via-retries)
+plus the pending-drafts queue. Each row has inline-editable
+sms / subject / body fields; Save edits + Approve-and-send +
+Reject + a top-right Run-sweep button fire the corresponding
+API.
+
 ## 6i. AI tech assistant — phase_ai_tech_assistant
 
 Two capabilities the field tech reaches from the PWA:

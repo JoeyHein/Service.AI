@@ -168,6 +168,10 @@ the message. No free-writing, no missed follow-ups.**
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_ai_collections_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-24
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: real BullMQ scheduler deferred; m2: retry cadence table
+hard-coded; m3: human-handoff escalation out of scope). Tagged
+`phase-ai-collections-complete`.
