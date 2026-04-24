@@ -22,6 +22,8 @@ import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
+import { registerConnectRoutes } from './connect-routes.js';
+import { resolveStripeClient, type StripeClient } from './stripe.js';
 import { registerPushRoutes } from './push-routes.js';
 import { resolvePushSender, type PushSender } from './push.js';
 import { registerAssignmentRoutes } from './assignment-routes.js';
@@ -135,6 +137,17 @@ export interface AppOptions {
    * VAPID_* env vars are present.
    */
   pushSender?: PushSender;
+  /**
+   * Stripe adapter (phase_invoicing_stripe). Defaults to
+   * `resolveStripeClient()` — stub unless STRIPE_SECRET_KEY +
+   * STRIPE_WEBHOOK_SECRET are both set.
+   */
+  stripe?: StripeClient;
+  /**
+   * Origin used when building Stripe account-link return URLs and
+   * public payment page URLs. Defaults to http://localhost:3000.
+   */
+  publicBaseUrl?: string;
 }
 
 /**
@@ -271,6 +284,9 @@ export function buildApp(opts: AppOptions = {}) {
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
     registerInvoiceRoutes(app, opts.drizzle);
+    const stripe = opts.stripe ?? resolveStripeClient();
+    const publicBaseUrl = opts.publicBaseUrl ?? 'http://localhost:3000';
+    registerConnectRoutes(app, opts.drizzle, { stripe, publicBaseUrl });
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app
