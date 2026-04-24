@@ -25,6 +25,7 @@ import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerPublicInvoiceRoutes } from './public-invoice-routes.js';
 import { registerConnectRoutes } from './connect-routes.js';
+import { registerAgreementRoutes } from './agreement-routes.js';
 import { registerStripeWebhook } from './stripe-webhook.js';
 import { resolveStripeClient, type StripeClient } from './stripe.js';
 import {
@@ -309,6 +310,7 @@ export function buildApp(opts: AppOptions = {}) {
       publicBaseUrl,
     });
     registerStripeWebhook(app, opts.drizzle, stripe);
+    registerAgreementRoutes(app, opts.drizzle);
     registerPublicInvoiceRoutes(app, opts.drizzle);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
