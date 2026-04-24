@@ -15,16 +15,22 @@
   "dependencies": {
     "@axiomhq/pino": "^1",
     "@fastify/cors": "^10",
+    "@fastify/formbody": "^8.0.2",
     "@fastify/helmet": "^12",
     "@fastify/sensible": "^6",
     "@fastify/websocket": "^11",
     "@sentry/node": "^8",
+    "@service-ai/ai": "workspace:^",
+    "@service-ai/db": "workspace:^",
+    "drizzle-orm": "^0.45.2",
     "fastify": "^5",
+    "pg": "^8.20.0",
     "pino": "^9",
     "twilio": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/pg": "^8.20.0",
     "@types/ws": "^8",
     "tsx": "^4",
     "typescript": "^5",
