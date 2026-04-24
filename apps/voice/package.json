@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Service.AI voice WS server — Twilio Media Streams, Deepgram ASR, ElevenLabs TTS",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
