@@ -278,6 +278,12 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.35.0
         version: 0.35.0
+      '@service-ai/db':
+        specifier: workspace:^
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(kysely@0.28.16)(pg@8.20.0)
     devDependencies:
       typescript:
         specifier: ^5.4.0

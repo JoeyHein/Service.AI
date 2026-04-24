@@ -4,8 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { stubTelephonyClient, strictStubTelephonyClient } from '../telephony.js';
-import { stubAsrClient } from '../asr.js';
-import { stubTtsClient } from '../tts.js';
+import { stubAsrClient, stubTtsClient } from '@service-ai/ai';
 
 describe('CV-04 / telephony stub', () => {
   it('provisions a stable E.164 number for a given franchiseeId', async () => {

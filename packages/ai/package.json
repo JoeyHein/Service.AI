@@ -16,7 +16,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.35.0"
+    "@anthropic-ai/sdk": "^0.35.0",
+    "@service-ai/db": "workspace:^",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

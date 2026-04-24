@@ -25,18 +25,22 @@ import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '@service-ai/db';
-import { resolveAIClient, type AIClient, type Tool } from '@service-ai/ai';
+import {
+  resolveAIClient,
+  stubAsrClient,
+  stubTtsClient,
+  resolveTenantByToNumber,
+  CallOrchestrator,
+  type AIClient,
+  type AsrClient,
+  type TtsClient,
+  type ResolvedCallTenant,
+  type Tool,
+} from '@service-ai/ai';
 import {
   stubTelephonyClient,
   type TelephonyClient,
 } from './telephony.js';
-import { stubAsrClient, type AsrClient } from './asr.js';
-import { stubTtsClient, type TtsClient } from './tts.js';
-import {
-  resolveTenantByToNumber,
-  type ResolvedCallTenant,
-} from './call-context.js';
-import { CallOrchestrator } from './call-orchestrator.js';
 
 const { Pool } = pg;
 type Drizzle = NodePgDatabase<typeof schema>;
