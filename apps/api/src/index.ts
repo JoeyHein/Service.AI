@@ -90,6 +90,7 @@ const auth = createAuth({
   baseUrl: process.env['BETTER_AUTH_URL'] ?? `http://${host}:${port}`,
   secret: effectiveSecret,
   production: isProd,
+  trustedOrigins: [process.env['WEB_ORIGIN'] ?? 'http://localhost:3000'],
 });
 
 const placesApiKey = process.env['GOOGLE_MAPS_API_KEY'];

@@ -52,6 +52,12 @@ export interface CreateAuthOptions {
   magicLinkSender?: MagicLinkSender;
   /** Set to true in production to mark cookies secure. */
   production?: boolean;
+  /**
+   * Additional origins allowed to hit the auth routes. Better Auth
+   * rejects cross-origin POSTs as CSRF by default; the web app's
+   * origin (e.g. http://localhost:3000) needs to be listed here.
+   */
+  trustedOrigins?: string[];
 }
 
 /**
@@ -64,6 +70,7 @@ export function createAuth(opts: CreateAuthOptions) {
   return betterAuth({
     baseURL: opts.baseUrl,
     secret: opts.secret,
+    trustedOrigins: opts.trustedOrigins,
     database: drizzleAdapter(opts.db as never, {
       provider: 'pg',
       schema: opts.authSchema as never,
