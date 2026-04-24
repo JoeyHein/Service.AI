@@ -416,6 +416,108 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6k. Franchisor console — phase_franchisor_console
+
+The final phase wraps HQ-facing operations in one surface.
+Phase 13 composes primitives already shipped in earlier phases
+(impersonation + audit log from phase 2, pricebook template
+publisher from phase 4, Stripe Connect from phase 7, agreement
+authoring from phase 8, Twilio provisioning from phase 9) behind
+a single `/franchisor` console. No new tables, no new adapters —
+every deliverable is UI + orchestration on top of code paths
+already audited in prior gates.
+
+### Network metrics projector
+`apps/api/src/franchisor-routes.ts` exposes
+`computeNetworkMetrics(db, { scope, periodStart?, periodEnd? })`
+— a pure projector that aggregates revenue (sum of payment rows
+in the period), open AR (sum of `invoices.amount_due_cents`
+where status ∈ {open, overdue}), AI cost (sum of
+`ai_messages.cost_usd`), royalty collected
+(`royalty_statements.royalty_cents` in period), and job count
+per franchisee. Returns
+`{ totals: { revenueCents, openArCents, aiCostUsd,
+royaltyCollectedCents, jobsCount, franchiseeCount },
+perFranchisee: [...] }`. Scoping rules:
+
+- `platform_admin` → every franchisee across every franchisor.
+- `franchisor_admin` → every franchisee belonging to the
+  caller's franchisor.
+- Anything else → 403 (franchisee_owner / dispatcher / tech /
+  CSR).
+
+Default period = trailing 30 days UTC. `periodStart` /
+`periodEnd` accept ISO-8601 strings; malformed input → 400.
+
+### Onboarding orchestration
+`POST /api/v1/franchisor/onboard` creates a franchisee row under
+the caller's franchisor. Body shape
+`{ name, slug, legalEntityName?, locationName?, timezone? }`.
+Any client-supplied `franchisorId` is silently ignored for
+`franchisor_admin` — the server always uses the caller's
+`scope.franchisorId`. `platform_admin` must supply the target
+franchisorId (they're cross-tenant by nature). Slug must match
+`/^[a-z0-9-]+$/`; duplicate slug inside the same franchisor →
+`409 SLUG_TAKEN`.
+
+### Audit log search + filters
+`GET /api/v1/audit-log` gained three new query params:
+
+- `?q=` — case-insensitive `ILIKE %q%` against `action` (scope_type
+  is a Postgres enum, so we deliberately search only `action`;
+  user-supplied input is always passed as a Drizzle bind
+  parameter, never concatenated).
+- `?userId=` — exact match against `actor_user_id`.
+- `?kind=` — one of `impersonation | invoice | payment |
+  agreement | onboard | catalog`; anything else → 400
+  VALIDATION_ERROR.
+
+Scope-visibility rules from phase 2 still apply: franchisor admins
+see only their own + their franchisees' events, franchisee scopes
+see only their own.
+
+### Dashboard UI
+`/franchisor` renders four metric tiles (Revenue, Open AR, AI
+spend, Franchisee count) plus a per-franchisee table with
+Revenue / Open AR / Jobs / AI spend / Royalty columns and a
+"View as" quick-impersonate button on each row. The "View as"
+action POSTs to the existing `/impersonate/start` endpoint and
+pushes the caller to `/dashboard`; the phase-2 HQ banner appears
+automatically. Non-admin scopes get `notFound()`.
+
+### Onboarding wizard UI
+`/franchisor/onboard` is a four-step client wizard:
+
+1. **Basics** — legal name, slug, city/timezone → POST
+   `/api/v1/franchisor/onboard`.
+2. **Phone** — optional Twilio number provision via the phase-9
+   endpoint `/api/v1/franchisees/:id/phone/provision`.
+3. **Stripe** — Stripe Connect onboarding link via the phase-7
+   endpoint `/api/v1/franchisees/:id/connect/onboard`.
+4. **Invite** — first staff member via the phase-2 endpoint
+   `/api/v1/invites`, with a role picker covering all
+   franchisee roles.
+
+Every step has a "Skip" action — an admin can finish now with
+only the basics committed. Progress persists to localStorage
+under `service-ai.onboard-wizard.v1`; the wizard restores via
+`queueMicrotask` to avoid React's set-state-in-effect warning.
+Pricebook template publishing (step 4 of the gate's original
+5-step sketch) is exposed in the wizard as a link to the
+existing `/franchisor/catalog` screen rather than duplicated as
+a wizard step — the catalog UI already handles multi-franchisee
+publishing.
+
+### Security surface
+`apps/api/src/__tests__/live-security-fc.test.ts` — 21 cases,
+runtime 2.5 s. Covers anonymous 401 × 4, role boundary 403 × 6
+(tech + owner + CSR against metrics, onboard, audit filters),
+cross-franchisor visibility × 3 (franchisor A admin sees only
+franchisor A franchisees; same for B; client-supplied
+franchisorId ignored on onboard), validation × 6 (missing slug,
+uppercase slug, duplicate slug, bad ISO period, bad kind, SQL
+injection attempt in `?q=`), and metrics-shape × 1.
+
 ## 6j. AI collections — phase_ai_collections
 
 AR aging shrinks without a human writing each follow-up.
