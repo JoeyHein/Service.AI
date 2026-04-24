@@ -13,7 +13,8 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "seed": "tsx --env-file=../../.env src/seed/index.ts",
-    "seed:reset": "tsx --env-file=../../.env src/seed/index.ts --reset"
+    "seed:reset": "tsx --env-file=../../.env src/seed/index.ts --reset",
+    "seed:demo": "tsx --env-file=../../.env src/seed/demo.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",

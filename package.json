@@ -14,6 +14,7 @@
     "db:migrate:down": "pnpm --filter @service-ai/db run db:migrate:down",
     "seed": "pnpm --filter @service-ai/api run seed",
     "seed:reset": "pnpm --filter @service-ai/api run seed:reset",
+    "seed:demo": "pnpm --filter @service-ai/api run seed:demo",
     "prepare": "husky"
   },
   "devDependencies": {
