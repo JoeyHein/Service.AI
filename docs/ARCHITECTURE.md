@@ -416,6 +416,69 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6d. Tech PWA + offline (phase_tech_mobile_pwa)
+
+The tech field view is a Progressive Web App installed on the
+tech's phone. It reuses the office-app's auth + API surface, but
+adds three infrastructure pieces that only live on the tech side:
+
+### Service worker cache strategy
+`apps/web/public/sw.js` implements three strategies keyed on URL:
+- **/_next/static/** — cache-first (content-addressed assets never
+  change under the same URL; safe to serve from cache forever).
+- **/api/** — network-first with cache fallback. Successful GETs
+  are cached; when offline the SW returns the last cached response
+  for that URL, or a 503 JSON envelope when none exists. Non-GETs
+  bypass the cache and hit the network.
+- **Everything else** — network-first. The fallback serves the
+  pre-cached app shell (`/`, `/tech`, `/dashboard`, the manifest)
+  from the install step.
+
+The SW is scope-limited to the origin root. Cross-origin fetches
+(DO Spaces presigned PUTs, Google Maps static tiles) bypass it.
+
+### IndexedDB write queue (outbox)
+`apps/web/src/lib/offline-queue.ts` owns a single object store
+(`outbox`) in an `IDBDatabase` named `service-ai-offline`. Entries
+are `{ method, url, body, headers, enqueuedAt }` records keyed by
+autoincrement id so insertion order is preserved across replays.
+
+`apiClientFetch` inspects `navigator.onLine` on every call. When
+offline AND the request is mutating (POST / PATCH / PUT / DELETE),
+it enqueues the request and returns a synthetic 202 `{ ok: true,
+data: { queued: true } }` so the UI can render optimistically.
+GETs bypass the queue — a stale cached response is better than a
+delayed one.
+
+`drain(sender)` replays every queued entry in FIFO order. A
+`status < 500` response deletes the entry (the server's verdict is
+final; 4xx errors are not re-tried). A 5xx or a network error
+stops the drain so ordering is preserved on the next retry. Quota
+exhaustion throws instead of silently dropping writes.
+
+`OfflineQueueDrainer` is a client component mounted inside
+`TechShell`. It attaches a single `window.addEventListener('online',
+drain)` listener and also drains once at mount so a page reload
+while offline picks back up on reconnect.
+
+### Web push subscription record
+`push_subscriptions` is a single tenant-scoped table (see
+migration 0007). `franchisee_id` is denormalised so a franchisor
+send can address all techs in a franchisee without joining
+`memberships`. `endpoint` has a unique partial index
+(`WHERE deleted_at IS NULL`) so repeated registration from the
+same device is idempotent instead of adding N rows. RLS policies
+are platform-admin passthrough + a `user_id = app.user_id`
+self-scope (so `withScope` propagates the authenticated user id
+alongside the existing role / franchisor / franchisee GUCs).
+
+The API pairs a pluggable `PushSender` interface with a
+`stubPushSender` default that logs and resolves — so dev + tests
+never page real devices. `resolvePushSender()` upgrades to a real
+VAPID sender only when `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
+and `VAPID_CONTACT` are all set; any partial configuration logs a
+WARN and falls back to the stub rather than crashing on boot.
+
 ## 7. AI layer
 
 ### Router (`packages/ai`)

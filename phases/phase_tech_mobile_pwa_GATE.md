@@ -162,6 +162,10 @@ server. No migrations change earlier tables.
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_tech_mobile_pwa_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-23
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: real VAPID sender deferred to phase 7; m2: no hard
+"one draft per job" constraint; m3: no retry cap on IndexedDB
+drain). Tagged `phase-tech-mobile-pwa-complete`.
