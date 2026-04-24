@@ -27,6 +27,11 @@ import { registerPublicInvoiceRoutes } from './public-invoice-routes.js';
 import { registerConnectRoutes } from './connect-routes.js';
 import { registerAgreementRoutes } from './agreement-routes.js';
 import { registerStatementRoutes } from './statement-routes.js';
+import {
+  registerPhoneRoutes,
+  stubPhoneProvisioner,
+  type PhoneProvisioner,
+} from './phone-routes.js';
 import { registerStripeWebhook } from './stripe-webhook.js';
 import { resolveStripeClient, type StripeClient } from './stripe.js';
 import {
@@ -163,6 +168,11 @@ export interface AppOptions {
   emailSender?: EmailSender;
   /** SMS sender used for invoice delivery (phase 7). */
   smsSender?: SmsSender;
+  /**
+   * Phone provisioner (phase_ai_csr_voice). Default is
+   * `stubPhoneProvisioner()` so dev + tests never hit Twilio.
+   */
+  phoneProvisioner?: PhoneProvisioner;
 }
 
 /**
@@ -313,6 +323,11 @@ export function buildApp(opts: AppOptions = {}) {
     registerStripeWebhook(app, opts.drizzle, stripe);
     registerAgreementRoutes(app, opts.drizzle);
     registerStatementRoutes(app, opts.drizzle, { stripe });
+    registerPhoneRoutes(
+      app,
+      opts.drizzle,
+      opts.phoneProvisioner ?? stubPhoneProvisioner(),
+    );
     registerPublicInvoiceRoutes(app, opts.drizzle);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
