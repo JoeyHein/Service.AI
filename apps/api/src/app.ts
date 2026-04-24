@@ -32,6 +32,12 @@ import {
   stubPhoneProvisioner,
   type PhoneProvisioner,
 } from './phone-routes.js';
+import { registerSuggestionRoutes } from './suggestion-routes.js';
+import {
+  resolveDistanceMatrixClient,
+  type DistanceMatrixClient,
+} from './distance-matrix.js';
+import { resolveAIClient, type AIClient } from '@service-ai/ai';
 import { registerStripeWebhook } from './stripe-webhook.js';
 import { resolveStripeClient, type StripeClient } from './stripe.js';
 import {
@@ -173,6 +179,18 @@ export interface AppOptions {
    * `stubPhoneProvisioner()` so dev + tests never hit Twilio.
    */
   phoneProvisioner?: PhoneProvisioner;
+  /**
+   * AI client (phase_ai_dispatcher). Default is
+   * `resolveAIClient()` which returns the stub when
+   * ANTHROPIC_API_KEY is unset. Tests inject scripted stubs.
+   */
+  aiClient?: AIClient;
+  /**
+   * Distance matrix adapter. Default is the deterministic
+   * haversine stub; production upgrades to Google when
+   * GOOGLE_MAPS_API_KEY is set.
+   */
+  distanceMatrix?: DistanceMatrixClient;
 }
 
 /**
@@ -328,6 +346,10 @@ export function buildApp(opts: AppOptions = {}) {
       opts.drizzle,
       opts.phoneProvisioner ?? stubPhoneProvisioner(),
     );
+    registerSuggestionRoutes(app, opts.drizzle, {
+      ai: opts.aiClient ?? resolveAIClient(),
+      distanceMatrix: opts.distanceMatrix ?? resolveDistanceMatrixClient(),
+    });
     registerPublicInvoiceRoutes(app, opts.drizzle);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
