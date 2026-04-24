@@ -20,6 +20,8 @@ interface Filters {
   action: string;
   fromDate: string;
   toDate: string;
+  q: string;
+  kind: string;
 }
 
 function pageLink(page: number, filters: Filters): string {

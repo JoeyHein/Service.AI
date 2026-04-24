@@ -70,6 +70,27 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
     const action = q['action']?.trim() || null;
     const fromDate = q['fromDate'] ? new Date(q['fromDate']) : null;
     const toDate = q['toDate'] ? new Date(q['toDate']) : null;
+    const searchTerm = q['q']?.trim() || null;
+    const userIdFilter = q['userId']?.trim() || null;
+    const kindFilter = q['kind']?.trim()?.toLowerCase() || null;
+    // Validate kind to a known set so the ILIKE mapping is safe.
+    const ALLOWED_KINDS = new Set([
+      'impersonation',
+      'invoice',
+      'payment',
+      'agreement',
+      'onboard',
+      'catalog',
+    ]);
+    if (kindFilter && !ALLOWED_KINDS.has(kindFilter)) {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `kind must be one of ${[...ALLOWED_KINDS].join(', ')}`,
+        },
+      });
+    }
 
     const { rows, total } = await withScope(db, scope, async (tx) => {
       const conditions = [] as unknown[];
@@ -109,6 +130,17 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
       }
       if (actorEmail) {
         conditions.push(ilike(users.email, `%${actorEmail}%`));
+      }
+      if (userIdFilter) {
+        conditions.push(eq(auditLog.actorUserId, userIdFilter));
+      }
+      if (searchTerm) {
+        // LIKE against action only. scope_type is an enum, so
+        // ILIKE fails against it in current schema.
+        conditions.push(ilike(auditLog.action, `%${searchTerm}%`));
+      }
+      if (kindFilter) {
+        conditions.push(ilike(auditLog.action, `%${kindFilter}%`));
       }
 
       const whereExpr =

@@ -47,6 +47,8 @@ export default async function AuditLogPage({
   const action = one('action') ?? '';
   const fromDate = one('fromDate') ?? '';
   const toDate = one('toDate') ?? '';
+  const q_search = one('q') ?? '';
+  const kind = one('kind') ?? '';
   const page = Math.max(parseInt(one('page') ?? '1', 10) || 1, 1);
   const limit = 50;
   const offset = (page - 1) * limit;
@@ -59,6 +61,8 @@ export default async function AuditLogPage({
   if (action) q.set('action', action);
   if (fromDate) q.set('fromDate', fromDate);
   if (toDate) q.set('toDate', toDate);
+  if (q_search) q.set('q', q_search);
+  if (kind) q.set('kind', kind);
 
   const res = await apiServerFetch<AuditLogResponse>(
     `/api/v1/audit-log?${q.toString()}`,
@@ -81,6 +85,32 @@ export default async function AuditLogPage({
         method="get"
         className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5 bg-white rounded-lg border border-slate-200 p-4"
       >
+        <label className="block text-sm">
+          <span className="text-slate-700 font-medium">Search</span>
+          <input
+            name="q"
+            type="text"
+            defaultValue={q_search}
+            placeholder="keyword"
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-slate-700 font-medium">Kind</span>
+          <select
+            name="kind"
+            defaultValue={kind}
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">All</option>
+            <option value="impersonation">Impersonation</option>
+            <option value="invoice">Invoice</option>
+            <option value="payment">Payment</option>
+            <option value="agreement">Agreement</option>
+            <option value="onboard">Onboarding</option>
+            <option value="catalog">Catalog</option>
+          </select>
+        </label>
         <label className="block text-sm">
           <span className="text-slate-700 font-medium">Actor email</span>
           <input
@@ -153,7 +183,15 @@ export default async function AuditLogPage({
             limit={data.limit}
             offset={data.offset}
             currentPage={page}
-            filters={{ actorEmail, franchiseeId, action, fromDate, toDate }}
+            filters={{
+              actorEmail,
+              franchiseeId,
+              action,
+              fromDate,
+              toDate,
+              q: q_search,
+              kind,
+            }}
           />
         </Suspense>
       </div>
