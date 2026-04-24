@@ -34,6 +34,8 @@ import {
 } from './phone-routes.js';
 import { registerSuggestionRoutes } from './suggestion-routes.js';
 import { registerDispatcherReflow } from './dispatcher-reflow.js';
+import { registerTechAssistantRoutes } from './tech-assistant-routes.js';
+import { resolveVisionClient, type VisionClient } from './vision.js';
 import {
   resolveDistanceMatrixClient,
   type DistanceMatrixClient,
@@ -192,6 +194,12 @@ export interface AppOptions {
    * GOOGLE_MAPS_API_KEY is set.
    */
   distanceMatrix?: DistanceMatrixClient;
+  /**
+   * Vision adapter (phase_ai_tech_assistant). Default is the
+   * fixture-driven stub; real Claude Sonnet 4.6 vision wiring
+   * lands with the first pilot photo.
+   */
+  vision?: VisionClient;
 }
 
 /**
@@ -347,9 +355,14 @@ export function buildApp(opts: AppOptions = {}) {
       opts.drizzle,
       opts.phoneProvisioner ?? stubPhoneProvisioner(),
     );
+    const aiClient = opts.aiClient ?? resolveAIClient();
     registerSuggestionRoutes(app, opts.drizzle, {
-      ai: opts.aiClient ?? resolveAIClient(),
+      ai: aiClient,
       distanceMatrix: opts.distanceMatrix ?? resolveDistanceMatrixClient(),
+    });
+    registerTechAssistantRoutes(app, opts.drizzle, {
+      ai: aiClient,
+      vision: opts.vision ?? resolveVisionClient(),
     });
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER
