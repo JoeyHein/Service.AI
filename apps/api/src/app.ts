@@ -22,8 +22,15 @@ import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
+import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerConnectRoutes } from './connect-routes.js';
 import { resolveStripeClient, type StripeClient } from './stripe.js';
+import {
+  resolveEmailSender,
+  resolveSmsSender,
+  type EmailSender,
+  type SmsSender,
+} from './notify.js';
 import { registerPushRoutes } from './push-routes.js';
 import { resolvePushSender, type PushSender } from './push.js';
 import { registerAssignmentRoutes } from './assignment-routes.js';
@@ -148,6 +155,10 @@ export interface AppOptions {
    * public payment page URLs. Defaults to http://localhost:3000.
    */
   publicBaseUrl?: string;
+  /** Email sender used for invoice delivery (phase 7). */
+  emailSender?: EmailSender;
+  /** SMS sender used for invoice delivery (phase 7). */
+  smsSender?: SmsSender;
 }
 
 /**
@@ -286,7 +297,15 @@ export function buildApp(opts: AppOptions = {}) {
     registerInvoiceRoutes(app, opts.drizzle);
     const stripe = opts.stripe ?? resolveStripeClient();
     const publicBaseUrl = opts.publicBaseUrl ?? 'http://localhost:3000';
+    const emailSender = opts.emailSender ?? resolveEmailSender();
+    const smsSender = opts.smsSender ?? resolveSmsSender();
     registerConnectRoutes(app, opts.drizzle, { stripe, publicBaseUrl });
+    registerInvoicePaymentRoutes(app, opts.drizzle, {
+      stripe,
+      emailSender,
+      smsSender,
+      publicBaseUrl,
+    });
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app
