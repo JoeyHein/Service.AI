@@ -37,6 +37,7 @@ import { registerDispatcherReflow } from './dispatcher-reflow.js';
 import { registerTechAssistantRoutes } from './tech-assistant-routes.js';
 import { resolveVisionClient, type VisionClient } from './vision.js';
 import { registerCollectionsRoutes } from './collections-routes.js';
+import { registerFranchisorConsoleRoutes } from './franchisor-routes.js';
 import {
   resolveDistanceMatrixClient,
   type DistanceMatrixClient,
@@ -372,6 +373,7 @@ export function buildApp(opts: AppOptions = {}) {
       stripe,
       publicBaseUrl,
     });
+    registerFranchisorConsoleRoutes(app, opts.drizzle);
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER
     // the EventBus is resolved.
