@@ -91,12 +91,32 @@ export interface CreateRefundInput {
   metadata?: Record<string, string>;
 }
 
+export interface CreateTransferInput {
+  /** Amount in cents; sign encodes direction. Positive = platform pays
+   *  the connected account; negative = platform reclaims. */
+  amount: number;
+  currency: string;
+  /** Connected account id (`acct_*`) on the destination side. */
+  destination: string;
+  description?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface StripeTransferSummary {
+  id: string;
+  amount: number;
+  currency: string;
+  destination: string;
+  status: string;
+}
+
 export interface StripeClient {
   createConnectAccount(input: CreateConnectAccountInput): Promise<StripeAccountSummary>;
   createAccountLink(input: CreateAccountLinkInput): Promise<{ url: string; expiresAt: number }>;
   retrieveAccount(accountId: string): Promise<StripeAccountSummary>;
   createPaymentIntent(input: CreatePaymentIntentInput): Promise<StripePaymentIntentSummary>;
   createRefund(input: CreateRefundInput): Promise<StripeRefundSummary>;
+  createTransfer(input: CreateTransferInput): Promise<StripeTransferSummary>;
   /**
    * Verify the signature on a raw webhook body, then parse it.
    * Invalid signature → throws `Error` with `code === 'BAD_SIGNATURE'`.
@@ -177,6 +197,15 @@ export const stubStripeClient: StripeClient = {
       currency: 'usd',
     };
   },
+  async createTransfer({ amount, currency, destination }) {
+    return {
+      id: nextId('tr'),
+      amount,
+      currency,
+      destination,
+      status: 'paid',
+    };
+  },
   constructWebhookEvent(rawBody) {
     const text = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
     const parsed = JSON.parse(text) as Partial<StripeWebhookEvent>;
@@ -219,6 +248,22 @@ function paymentIntentSummary(pi: Stripe.PaymentIntent): StripePaymentIntentSumm
       typeof pi.on_behalf_of === 'string'
         ? pi.on_behalf_of
         : (pi.on_behalf_of as Stripe.Account | null | undefined)?.id ?? null,
+  };
+}
+
+function transferSummary(transfer: Stripe.Transfer): StripeTransferSummary {
+  return {
+    id: transfer.id,
+    amount: transfer.amount,
+    currency: transfer.currency,
+    destination:
+      typeof transfer.destination === 'string'
+        ? transfer.destination
+        : transfer.destination?.id ?? '',
+    status:
+      (transfer as Stripe.Transfer & { reversed?: boolean }).reversed
+        ? 'reversed'
+        : 'paid',
   };
 }
 
@@ -283,6 +328,16 @@ export function realStripeClient(
         automatic_payment_methods: { enabled: true },
       });
       return paymentIntentSummary(pi);
+    },
+    async createTransfer({ amount, currency, destination, description, metadata }) {
+      const transfer = await stripe.transfers.create({
+        amount,
+        currency,
+        destination,
+        description,
+        metadata,
+      });
+      return transferSummary(transfer);
     },
     async createRefund({ paymentIntentId, amount, reason, metadata }) {
       const refund = await stripe.refunds.create({

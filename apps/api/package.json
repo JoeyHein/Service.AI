@@ -32,6 +32,8 @@
     "@service-ai/db": "workspace:^",
     "@ts-rest/core": "^3",
     "@ts-rest/fastify": "^3",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.0.0",
     "fastify-plugin": "^5",
