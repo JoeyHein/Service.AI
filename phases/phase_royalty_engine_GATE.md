@@ -192,6 +192,11 @@ automatically.**
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_royalty_engine_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-24
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: BullMQ scheduler is a scaffold; m2: Transfer direction
+encoded in description; m3: finalize context uses UTC boundaries
+while statements use franchisor tz). Tagged
+`phase-royalty-engine-complete`.

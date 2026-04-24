@@ -416,6 +416,90 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6f. Royalty engine + statements — phase_royalty_engine
+
+The royalty engine replaces phase 7's hard-coded 5% application
+fee with a per-franchisee, per-rule computation. Franchisor
+admins author a **franchise agreement** with an ordered list of
+**royalty rules**; at `/finalize` time, the engine resolves the
+active agreement's rules against the invoice to produce the
+Stripe PaymentIntent's `application_fee_amount`.
+
+### Agreement model
+`franchise_agreements.status` is `draft | active | ended`. A
+partial unique index `(franchisee_id) WHERE status = 'active'`
+guarantees exactly one authoritative fee source at any time.
+Agreements are edited in draft and activated atomically (the
+activate endpoint ends any prior active + flips the new one in
+one transaction so the unique index never fires).
+
+### Rule engine (pure function)
+`apps/api/src/royalty-engine.ts` exposes
+`resolveFeeCents(rules, ctx): number`. Four rule types, all
+composable:
+
+- `percentage` — `basisPoints` over the invoice total.
+- `flat_per_job` — fixed cents per invoice.
+- `tiered` — basis-point schedule that applies to the running
+  monthly gross; the tail tier uses `upToCents = null` to absorb
+  overflow.
+- `minimum_floor` — `perMonthCents`; the engine bumps the fee
+  so `monthFeesAccruedCents + fee >= perMonthCents`, clamped to
+  `totalCents` so the fee never exceeds the invoice.
+
+Rules apply in `sort_order`. The module's exhaustive `switch`
+forces a compile error whenever a new rule type is added, so
+there's no silent skip path. Context fields (`monthGrossCents`,
+`monthFeesAccruedCents`) are computed at the API boundary by
+summing `payments` for the current calendar month.
+
+### Fee resolution at finalize
+`invoice-payment-routes.ts#finalize`:
+
+1. Loads the active agreement + ordered rules.
+2. Aggregates month-to-date gross + accrued fees from `payments`.
+3. Calls `resolveFeeCents` to produce the application fee.
+4. Falls back to `defaultFallbackFeeCents(total) = 5%` when no
+   active agreement exists — so a franchisee onboarded before
+   their franchisor authors an agreement still pays something.
+
+### Monthly statement projector
+`apps/api/src/royalty-statement.ts` computes a single row per
+`(franchisee_id, period_start, period_end)`:
+
+- `grossRevenue` = sum of `payments.amount` in the period.
+- `refundTotal` = sum of `refunds.amount` in the period.
+- `netRevenue` = `grossRevenue - refundTotal`.
+- `royaltyCollected` = sum of `payments.applicationFeeAmount`
+  (what Stripe already routed to the platform).
+- `royaltyOwed` = `resolveFeeCents` rerun on `netRevenue` under
+  the current active agreement; shows "what the franchisor
+  would have billed under the current rule set" so mid-month
+  rule changes are visible.
+- `variance` = `owed - collected`. Positive → franchisee owes
+  the platform; negative → platform over-collected.
+
+Period boundaries use `date-fns-tz.fromZonedTime` so the month
+honours the franchisor's operational timezone (default
+`America/Denver`) rather than UTC midnight.
+
+The projector is idempotent via the unique
+`(franchisee_id, period_start, period_end)` index — re-running
+an "open" month's statement updates in place.
+
+### Reconciliation via Stripe Transfers
+`POST /api/v1/statements/:id/reconcile` (admin-only):
+1. Verifies the franchisee has `stripe_account_id`.
+2. Calls `StripeClient.createTransfer` with `amount =
+   abs(variance)`, encoded direction in the description.
+3. Stamps `transfer_id` (unique partial index so one transfer
+   maps to one statement) and flips status to `reconciled`.
+
+The monthly BullMQ scheduler is a scaffold — the `scheduleStatementJob`
+option on `buildApp` is a no-op default so tests and single-host
+deploys don't need a real worker. Multi-host deployments wire a
+real queue at boot time.
+
 ## 6e. Payments (Stripe Connect Standard) — phase_invoicing_stripe
 
 Every payment in Service.AI flows through a Stripe **Connect
