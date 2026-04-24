@@ -125,6 +125,15 @@ export function AppShell({
                 Statements
               </Link>
             )}
+            {isFranchiseeScope && (
+              <Link
+                href="/collections"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-collections"
+              >
+                Collections
+              </Link>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <span
