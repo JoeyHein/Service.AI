@@ -17,8 +17,8 @@
     "lint": "eslint src",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql -f migrations/0002_tenancy_franchise.sql -f migrations/0003_rls_policies.sql -f migrations/0004_invitations.sql -f migrations/0005_customer_job.sql -f migrations/0006_pricebook.sql -f migrations/0007_invoices_push.sql",
-    "db:migrate:down": "psql $DATABASE_URL -f migrations/0007_invoices_push.down.sql -f migrations/0006_pricebook.down.sql -f migrations/0005_customer_job.down.sql -f migrations/0004_invitations.down.sql -f migrations/0003_rls_policies.down.sql -f migrations/0002_tenancy_franchise.down.sql -f migrations/0001_health_checks.down.sql"
+    "db:migrate": "psql $DATABASE_URL -f migrations/0001_health_checks.sql -f migrations/0002_tenancy_franchise.sql -f migrations/0003_rls_policies.sql -f migrations/0004_invitations.sql -f migrations/0005_customer_job.sql -f migrations/0006_pricebook.sql -f migrations/0007_invoices_push.sql -f migrations/0008_payments_stripe.sql",
+    "db:migrate:down": "psql $DATABASE_URL -f migrations/0008_payments_stripe.down.sql -f migrations/0007_invoices_push.down.sql -f migrations/0006_pricebook.down.sql -f migrations/0005_customer_job.down.sql -f migrations/0004_invitations.down.sql -f migrations/0003_rls_policies.down.sql -f migrations/0002_tenancy_franchise.down.sql -f migrations/0001_health_checks.down.sql"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

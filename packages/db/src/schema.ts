@@ -165,6 +165,14 @@ export const franchisees = pgTable(
     name: text('name').notNull(),
     slug: text('slug').notNull(),
     legalEntityName: text('legal_entity_name'),
+    // Stripe Connect fields (phase_invoicing_stripe, migration 0008).
+    // stripeAccountId is the acct_* id; the three boolean columns
+    // mirror the Stripe `Account` object's readiness flags and are
+    // kept in sync by the account.updated webhook.
+    stripeAccountId: text('stripe_account_id'),
+    stripeChargesEnabled: boolean('stripe_charges_enabled').notNull().default(false),
+    stripePayoutsEnabled: boolean('stripe_payouts_enabled').notNull().default(false),
+    stripeDetailsSubmitted: boolean('stripe_details_submitted').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -174,6 +182,9 @@ export const franchisees = pgTable(
       t.franchisorId,
       t.slug,
     ),
+    stripeAccountUnique: uniqueIndex('franchisees_stripe_account_unique')
+      .on(t.stripeAccountId)
+      .where(sql`${t.stripeAccountId} IS NOT NULL`),
   }),
 );
 
@@ -613,7 +624,17 @@ export const invoices = pgTable(
     taxRate: numeric('tax_rate', { precision: 6, scale: 4 }).notNull().default('0'),
     taxAmount: numeric('tax_amount', { precision: 12, scale: 2 }).notNull().default('0'),
     total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
+    applicationFeeAmount: numeric('application_fee_amount', {
+      precision: 12,
+      scale: 2,
+    })
+      .notNull()
+      .default('0'),
     notes: text('notes'),
+    // Payment wiring (phase_invoicing_stripe). Both fields are
+    // populated at finalize; before that they are NULL.
+    stripePaymentIntentId: text('stripe_payment_intent_id'),
+    paymentLinkToken: text('payment_link_token'),
     createdByUserId: text('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -630,6 +651,12 @@ export const invoices = pgTable(
     jobIdx: index('invoices_job_idx').on(t.jobId),
     customerIdx: index('invoices_customer_idx').on(t.customerId),
     statusIdx: index('invoices_status_idx').on(t.status),
+    paymentIntentUnique: uniqueIndex('invoices_stripe_payment_intent_unique')
+      .on(t.stripePaymentIntentId)
+      .where(sql`${t.stripePaymentIntentId} IS NOT NULL`),
+    paymentLinkTokenUnique: uniqueIndex('invoices_payment_link_token_unique')
+      .on(t.paymentLinkToken)
+      .where(sql`${t.paymentLinkToken} IS NOT NULL`),
   }),
 );
 
@@ -657,6 +684,91 @@ export const invoiceLineItems = pgTable(
   (t) => ({
     invoiceIdx: index('invoice_line_items_invoice_idx').on(t.invoiceId),
     franchiseeIdx: index('invoice_line_items_franchisee_idx').on(t.franchiseeId),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Payments + refunds + Stripe webhook idempotency (phase_invoicing_stripe)
+// ---------------------------------------------------------------------------
+
+/**
+ * A payment row is created by the Stripe webhook handler when
+ * payment_intent.succeeded fires. `stripeChargeId` is unique so
+ * webhook replays are idempotent — the row either exists already
+ * or is inserted; never both.
+ */
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'restrict' }),
+    stripePaymentIntentId: text('stripe_payment_intent_id').notNull(),
+    stripeChargeId: text('stripe_charge_id').notNull(),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    applicationFeeAmount: numeric('application_fee_amount', {
+      precision: 12,
+      scale: 2,
+    })
+      .notNull()
+      .default('0'),
+    currency: text('currency').notNull().default('usd'),
+    status: text('status').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('payments_franchisee_idx').on(t.franchiseeId),
+    invoiceIdx: index('payments_invoice_idx').on(t.invoiceId),
+    chargeUnique: uniqueIndex('payments_charge_unique').on(t.stripeChargeId),
+  }),
+);
+
+export const refunds = pgTable(
+  'refunds',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'restrict' }),
+    paymentId: uuid('payment_id').references(() => payments.id, {
+      onDelete: 'set null',
+    }),
+    stripeRefundId: text('stripe_refund_id').notNull(),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    reason: text('reason'),
+    status: text('status').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('refunds_franchisee_idx').on(t.franchiseeId),
+    invoiceIdx: index('refunds_invoice_idx').on(t.invoiceId),
+    refundUnique: uniqueIndex('refunds_stripe_refund_unique').on(t.stripeRefundId),
+  }),
+);
+
+/**
+ * Webhook idempotency. The handler inserts the Stripe `event.id`
+ * before processing; a duplicate insert (unique violation) short-
+ * circuits the handler to a 200 without re-running the side
+ * effects. Deliberately NOT tenant-scoped — the webhook callback
+ * runs before any franchisee has been resolved from the event.
+ */
+export const stripeEvents = pgTable(
+  'stripe_events',
+  {
+    id: text('id').primaryKey(),
+    type: text('type').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    typeIdx: index('stripe_events_type_idx').on(t.type),
   }),
 );
 
