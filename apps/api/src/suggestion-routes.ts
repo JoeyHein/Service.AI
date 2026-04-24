@@ -25,6 +25,7 @@ import * as schema from '@service-ai/db';
 import type { AIClient } from '@service-ai/ai';
 import { runDispatcher } from './dispatcher-runner.js';
 import type { DistanceMatrixClient } from './distance-matrix.js';
+import { computeDailyAiMetrics } from './dispatcher-metrics.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -337,4 +338,50 @@ export function registerSuggestionRoutes(
       return reply.code(200).send({ ok: true, data: outcome.suggestion });
     },
   );
+
+  // ----- GET /api/v1/dispatch/metrics?date=YYYY-MM-DD ----------------------
+  app.get('/api/v1/dispatch/metrics', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+      });
+    }
+    const scope = req.scope;
+    if (!canDispatch(scope)) {
+      return reply.code(403).send({
+        ok: false,
+        error: { code: 'FORBIDDEN', message: 'Dispatch permission required' },
+      });
+    }
+    if (scope.type !== 'franchisee') {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Impersonate a franchisee to read metrics',
+        },
+      });
+    }
+    const q = req.query as Record<string, string | undefined>;
+    const raw = q['date'] ?? new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      return reply.code(400).send({
+        ok: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'date must be YYYY-MM-DD',
+        },
+      });
+    }
+    const date = new Date(`${raw}T00:00:00Z`);
+    const result = await withScope(db, scope, (tx) =>
+      computeDailyAiMetrics({
+        tx,
+        franchiseeId: scope.franchiseeId,
+        date,
+      }),
+    );
+    return reply.code(200).send({ ok: true, data: result });
+  });
 }

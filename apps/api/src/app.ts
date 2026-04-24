@@ -33,6 +33,7 @@ import {
   type PhoneProvisioner,
 } from './phone-routes.js';
 import { registerSuggestionRoutes } from './suggestion-routes.js';
+import { registerDispatcherReflow } from './dispatcher-reflow.js';
 import {
   resolveDistanceMatrixClient,
   type DistanceMatrixClient,
@@ -350,6 +351,9 @@ export function buildApp(opts: AppOptions = {}) {
       ai: opts.aiClient ?? resolveAIClient(),
       distanceMatrix: opts.distanceMatrix ?? resolveDistanceMatrixClient(),
     });
+    // Hook job-cancellation reflow: expires pending AI suggestions
+    // for any job that transitions to 'canceled'. Needs to run AFTER
+    // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
@@ -361,6 +365,11 @@ export function buildApp(opts: AppOptions = {}) {
     registerAssignmentRoutes(app, opts.drizzle, bus);
     registerSseRoutes(app, opts.drizzle, bus);
     registerTechRoutes(app, opts.drizzle);
+    // Dispatcher cancellation reflow must run after the EventBus
+    // is constructed so it can subscribe. Returns an unsubscribe
+    // function that's discarded here — the bus and app lifecycle
+    // are equal so explicit cleanup is unnecessary.
+    registerDispatcherReflow(opts.drizzle, bus);
   }
 
   // Places endpoints don't need the DB but do require the scope plugin —
