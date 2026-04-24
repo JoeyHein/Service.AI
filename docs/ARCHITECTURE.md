@@ -416,6 +416,75 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6i. AI tech assistant — phase_ai_tech_assistant
+
+Two capabilities the field tech reaches from the PWA:
+
+- **Photo quote**: tap → camera → AI identifies make / model /
+  failure → suggests 3 candidate line items from the
+  franchisee's pricebook, each tagged with confidence +
+  supporting KB sources + a `requiresConfirmation` flag for
+  items above the franchisee's dollar cap.
+- **Draft from notes**: rough notes text → customer-facing
+  invoice description (single-turn AI call).
+
+### Data model (migration 0012)
+- `kb_docs`: franchisor-scoped KB (NULL franchisor_id = global).
+  Embeddings stored as jsonb float arrays — at ≤200 docs we
+  compute cosine in JS, which keeps the migration simple. A
+  pgvector switch is AUDIT m1.
+- `ai_feedback`: accept/override telemetry. `subjectKind` enum
+  covers `photo_quote_item`, `notes_invoice_draft`,
+  `dispatcher_assignment` so phase-10 suggestions share the
+  same table.
+- `franchisees.ai_guardrails` default grows
+  `techPhotoQuoteCapCents: 50000` ($500). New franchisees
+  inherit the cap automatically.
+
+### Pluggable adapters
+- `EmbeddingClient` — stub is a deterministic SHA-256 → 32-dim
+  vector. Real OpenAI / VoyageAI wiring is deferred (AUDIT m3).
+- `VisionClient` — stub looks up `imageRef` in a fixture table
+  (`fixture:broken-torsion`, `fixture:off-track`, …) with a
+  low-confidence `fixture:unknown` fallback so every path is
+  testable without real photos. Real Claude Sonnet 4.6 vision
+  wiring is deferred (AUDIT m2).
+
+### RAG pipeline
+`retrieveKnowledge(tx, { franchisorId, query, limit,
+requireTags? })`:
+1. Embed the query.
+2. Load candidates visible to the caller (own franchisor + NULL
+   franchisor rows).
+3. Optional `requireTags` prefilter.
+4. Score with in-memory cosine, sort desc, return top-N.
+
+### photoQuote pipeline
+1. `VisionClient.identify({ imageRef })`.
+2. `retrieveKnowledge` using vision tags → up to 5 KB docs.
+3. Extract `sku:` prefixed tags from vision + matched docs.
+4. Look up SKUs in the franchisee's active published catalog
+   template.
+5. Score each match: `min(1, visionConfidence + 0.05 ×
+   supportingDocCount)`.
+6. Resolve the effective price (override-aware). Flag items
+   above `techPhotoQuoteCapCents` with
+   `requiresConfirmation: true`.
+7. Persist to `ai_conversations` + `ai_messages`.
+
+### notesToInvoice pipeline
+Single `AIClient.turn` with a JSON-only system prompt. Parses
+defensively; non-JSON output becomes the description verbatim.
+
+### API + UI
+- `POST /jobs/:id/photo-quote`, `POST /jobs/:id/notes-to-invoice`,
+  `POST /ai/feedback` — tech / dispatcher / owner / manager;
+  CSR → 403.
+- Tech PWA: `PhotoQuotePanel` on `/tech/jobs/[id]` +
+  `NotesToInvoicePanel` on the invoice page. Accept/Override
+  buttons fire into `/ai/feedback` for future fine-tune +
+  override-rate rollups.
+
 ## 6h. AI dispatcher — phase_ai_dispatcher
 
 The AI dispatcher runs against a franchisee's unassigned jobs,
