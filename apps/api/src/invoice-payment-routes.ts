@@ -28,17 +28,19 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import {
   customers,
+  franchiseAgreements,
   franchisees,
   invoices,
   invoiceLineItems,
   payments,
   refunds,
+  royaltyRules,
   withScope,
   type RequestScope,
   type ScopedTx,
@@ -46,6 +48,11 @@ import {
 import * as schema from '@service-ai/db';
 import type { StripeClient } from './stripe.js';
 import type { EmailSender, SmsSender } from './notify.js';
+import {
+  resolveFeeCents,
+  defaultFallbackFeeCents,
+  type StoredRule,
+} from './royalty-engine.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -162,7 +169,72 @@ export function registerInvoicePaymentRoutes(
           return { kind: 'stripe_not_ready' };
         const totalCents = centsFromDollars(invoice.total);
         if (totalCents <= 0) return { kind: 'empty' };
-        const applicationFeeCents = Math.round(totalCents * 0.05);
+
+        // Resolve the active franchise agreement to compute the
+        // platform fee. Fall back to phase-7 flat 5% when the
+        // franchisee has no active agreement yet — this preserves
+        // existing integration tests and makes onboarding smooth.
+        const agreementRows = await tx
+          .select()
+          .from(franchiseAgreements)
+          .where(
+            and(
+              eq(franchiseAgreements.franchiseeId, franchisee.id),
+              eq(franchiseAgreements.status, 'active'),
+            ),
+          );
+        const activeAgreement = agreementRows[0];
+        let applicationFeeCents: number;
+        if (!activeAgreement) {
+          applicationFeeCents = defaultFallbackFeeCents(totalCents);
+        } else {
+          const rules = await tx
+            .select()
+            .from(royaltyRules)
+            .where(eq(royaltyRules.agreementId, activeAgreement.id))
+            .orderBy(royaltyRules.sortOrder);
+          const stored: StoredRule[] = rules.map((r) => ({
+            id: r.id,
+            ruleType: r.ruleType,
+            params: r.params,
+            sortOrder: r.sortOrder,
+          }));
+          // Context for this invoice: month-to-date gross + fees.
+          // Any partial-month accuracy comes out in the wash at
+          // statement time — the point of `monthGrossCents` /
+          // `monthFeesAccruedCents` is correct tiered + floor
+          // arithmetic, not exact observability.
+          const monthStart = new Date(
+            Date.UTC(
+              new Date().getUTCFullYear(),
+              new Date().getUTCMonth(),
+              1,
+              0, 0, 0, 0,
+            ),
+          );
+          const aggRows = await tx
+            .select({
+              grossCents: sql<string>`COALESCE(SUM(${payments.amount} * 100), 0)`,
+              feesCents: sql<string>`COALESCE(SUM(${payments.applicationFeeAmount} * 100), 0)`,
+            })
+            .from(payments)
+            .where(
+              and(
+                eq(payments.franchiseeId, franchisee.id),
+                gte(payments.createdAt, monthStart),
+              ),
+            );
+          const monthGrossCents = Math.round(Number(aggRows[0]?.grossCents ?? 0));
+          const monthFeesAccruedCents = Math.round(
+            Number(aggRows[0]?.feesCents ?? 0),
+          );
+          applicationFeeCents = resolveFeeCents(stored, {
+            totalCents,
+            jobCountThisMonth: 0,
+            monthGrossCents,
+            monthFeesAccruedCents,
+          });
+        }
 
         const pi = await deps.stripe.createPaymentIntent({
           amount: totalCents,
