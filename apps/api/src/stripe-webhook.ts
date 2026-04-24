@@ -131,6 +131,31 @@ async function handlePaymentIntentSucceeded(
   }
 }
 
+async function handlePaymentIntentFailed(
+  db: Drizzle,
+  pi: PaymentIntentLike & {
+    last_payment_error?: { code?: string } | null;
+  },
+): Promise<void> {
+  if (!pi.id) return;
+  const rows = await db
+    .select()
+    .from(invoices)
+    .where(eq(invoices.stripePaymentIntentId, pi.id));
+  const invoice = rows[0];
+  if (!invoice) {
+    logger.warn({ paymentIntentId: pi.id }, 'payment_intent.payment_failed has no matching invoice');
+    return;
+  }
+  const { schedulePaymentRetry } = await import('./ai-collections.js');
+  const failureCode = pi.last_payment_error?.code ?? 'unknown';
+  await schedulePaymentRetry(db, {
+    franchiseeId: invoice.franchiseeId,
+    invoiceId: invoice.id,
+    failureCode,
+  });
+}
+
 async function handleChargeRefunded(db: Drizzle, charge: ChargeLike): Promise<void> {
   const piId = charge.payment_intent;
   if (!piId) return;
@@ -253,12 +278,12 @@ export function registerStripeWebhook(
           );
           break;
         case 'payment_intent.payment_failed':
-          // Phase 7 just logs failures; invoice stays 'sent' so the
-          // customer can retry with the same link. A failure audit
-          // table lands in phase_ai_collections.
-          logger.info(
-            { eventId: event.id, pi: (event.data.object as PaymentIntentLike).id },
-            'payment_intent.payment_failed',
+          // Phase 12: schedule a payment_retries row based on the
+          // Stripe failure code. Idempotent per attemptIndex so
+          // replayed webhooks don't duplicate.
+          await handlePaymentIntentFailed(
+            db,
+            (event.data.object ?? {}) as PaymentIntentLike,
           );
           break;
         case 'charge.refunded':

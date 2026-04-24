@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./prompts/csr": "./src/prompts/csr.ts",
     "./prompts/dispatcher": "./src/prompts/dispatcher.ts",
+    "./prompts/collections": "./src/prompts/collections.ts",
     "./tools": "./src/tools/index.ts"
   },
   "scripts": {

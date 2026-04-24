@@ -36,6 +36,7 @@ import { registerSuggestionRoutes } from './suggestion-routes.js';
 import { registerDispatcherReflow } from './dispatcher-reflow.js';
 import { registerTechAssistantRoutes } from './tech-assistant-routes.js';
 import { resolveVisionClient, type VisionClient } from './vision.js';
+import { registerCollectionsRoutes } from './collections-routes.js';
 import {
   resolveDistanceMatrixClient,
   type DistanceMatrixClient,
@@ -363,6 +364,13 @@ export function buildApp(opts: AppOptions = {}) {
     registerTechAssistantRoutes(app, opts.drizzle, {
       ai: aiClient,
       vision: opts.vision ?? resolveVisionClient(),
+    });
+    registerCollectionsRoutes(app, opts.drizzle, {
+      ai: aiClient,
+      emailSender,
+      smsSender,
+      stripe,
+      publicBaseUrl,
     });
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER
