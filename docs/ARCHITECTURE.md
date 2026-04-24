@@ -416,6 +416,87 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6h. AI dispatcher — phase_ai_dispatcher
+
+The AI dispatcher runs against a franchisee's unassigned jobs,
+tech roster, current load and travel times; it proposes
+assignments and either auto-applies (above the confidence
+threshold, with all scheduling invariants satisfied) or queues
+for human review with reasoning.
+
+### Six-tool surface
+`apps/api/src/ai-tools/dispatcher-tools.ts`:
+
+- `listUnassignedJobs` — reads scope-filtered unassigned jobs
+  with customer lat/lng.
+- `listTechs({ skill? })` — active tech memberships, joined
+  with `tech_skills` when a skill filter is passed.
+- `getTechCurrentLoad({ techUserId, date? })` — today's
+  scheduled + in-progress count plus the most recent job's end
+  + location for travel-budget anchoring.
+- `computeTravelTime` — wraps the DistanceMatrix adapter.
+- `proposeAssignment` — captures into `deps.captured` (no DB
+  write). Validates job + tech tenancy, so cross-tenant
+  hallucinations return `INVALID_TARGET`.
+- `applyAssignment` — immediate write path used by the
+  suggestion-approve endpoint, not by the agent.
+
+### Runner + scheduling invariants
+`runDispatcher(deps, { scope, franchiseeId })` wraps
+`runAgentLoop` with the dispatcher prompt. For every
+`proposeAssignment` captured:
+
+1. Insert an `ai_suggestions` row (status=pending by default).
+2. Run the scheduling invariants:
+   - **No double-book**: no other assigned job overlaps
+     `[start, end)` for this tech.
+   - **Skill match**: if reasoning contains `requires: <skill>`,
+     the tech must carry that skill in `tech_skills`.
+   - **Travel budget**: travel from the tech's prior-job
+     customer + 15-min buffer fits in the gap.
+3. If invariants pass AND `confidence >= threshold`, apply
+   atomically (update `jobs` + flip suggestion → `applied`).
+4. Otherwise leave as `pending` and stamp `rejectedInvariant`
+   on the returned summary so the UI can show the reason.
+
+The default threshold lives on
+`franchisees.ai_guardrails.dispatcherAutoApplyThreshold` (0.8
+by default; admins can raise or lower). Tests pass a
+`thresholdOverride` per-run.
+
+### Pluggable adapters
+`DistanceMatrixClient` — stub uses haversine with a 35 mph
+fallback (deterministic, good enough for invariant tests).
+Real impl calls Google Distance Matrix via `fetch`; any
+failure falls back to the stub silently with a WARN log so a
+Google outage cannot black-hole the dispatcher.
+
+### API surface
+- `POST /api/v1/dispatch/suggest` — trigger the runner.
+- `GET /api/v1/dispatch/suggestions?status=` — list scoped.
+- `POST /api/v1/dispatch/suggestions/:id/approve` — applies a
+  pending row; stale job → 409 `STALE_SUGGESTION`.
+- `POST /api/v1/dispatch/suggestions/:id/reject` — flips to
+  `rejected`.
+- `GET /api/v1/dispatch/metrics?date=YYYY-MM-DD` — daily rollup
+  computed on demand from `ai_suggestions` (no background job
+  yet — pure projector in the response path).
+
+### Cancellation reflow
+`dispatcher-reflow.ts` subscribes to `job.transitioned` events
+on the in-process EventBus. When `toStatus='canceled'`, any
+pending `ai_suggestions` rows targeting that job flip to
+`expired` so the human dispatcher doesn't later approve a
+no-longer-relevant proposal. Auto-re-suggest on reflow is
+intentionally deferred to a later phase.
+
+### UI
+The dispatch board grows a right-rail `AiSuggestionsPanel`
+showing pending suggestions (tech, reasoning, confidence,
+scheduled time) + Approve / Reject + a "Suggest" button that
+kicks a fresh run. Optimistic row removal with
+`router.refresh()` after the API responds.
+
 ## 6g. AI CSR voice — phase_ai_csr_voice
 
 The voice service takes an inbound Twilio call and books a job

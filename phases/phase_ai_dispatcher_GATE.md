@@ -183,6 +183,10 @@ English reason.**
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_ai_dispatcher_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-24
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: skill match uses reasoning-string convention; m2: no
+auto-re-suggest on reflow; m3: hard-coded 15-min travel
+buffer). Tagged `phase-ai-dispatcher-complete`.
