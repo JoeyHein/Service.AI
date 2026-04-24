@@ -416,6 +416,106 @@ stream re-syncs every session within the gate's **p95 < 500 ms**
 budget (verified by a 10-subscriber latency harness in
 `live-sse-latency.test.ts`), so divergence windows are short.
 
+## 6e. Payments (Stripe Connect Standard) — phase_invoicing_stripe
+
+Every payment in Service.AI flows through a Stripe **Connect
+Standard** account owned by the franchisee. The platform takes a
+fixed **5% application fee**; the rest is held in the connected
+account and pays out per Stripe's default schedule. The royalty
+engine (phase 8) later drives a variable fee but the wiring
+below stays identical — only `applicationFeeAmount` changes.
+
+### Pluggable adapter
+`apps/api/src/stripe.ts` defines a `StripeClient` interface with
+exactly the surface area phase 7 needs: `createConnectAccount`,
+`createAccountLink`, `retrieveAccount`, `createPaymentIntent`,
+`createRefund`, `constructWebhookEvent`. Two implementations:
+
+- `stubStripeClient` — deterministic ids (`acct_stub_*`,
+  `pi_stub_*`, `re_stub_*`), `constructWebhookEvent` accepts any
+  signature and parses the raw body. Dev + every Vitest run uses
+  this.
+- `realStripeClient(secretKey, webhookSecret)` — wraps the
+  `stripe` SDK. Signature verification throws with
+  `code === 'BAD_SIGNATURE'` so the route can translate to 400
+  without leaking SDK internals.
+
+`resolveStripeClient()` upgrades to the real client only when
+**both** `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are set;
+any partial config logs WARN and falls back to the stub so boot
+never depends on Stripe availability.
+
+### Onboarding flow
+Franchisor admins hit `POST /franchisees/:id/connect/onboard`
+which creates (or reuses) the connected account, stamps
+`franchisees.stripe_account_id`, and returns a fresh account-link
+URL (account links expire in ~5 minutes, so every button click
+re-fetches). The page at `/franchisor/franchisees/[id]/billing`
+shows current `charges_enabled` / `payouts_enabled` /
+`details_submitted` booleans synced via
+`GET /connect/status` + the `account.updated` webhook.
+
+### Invoice state machine extensions
+Phase 6 stopped at `draft`. Phase 7 wires:
+
+- `draft → finalized` (`POST /invoices/:id/finalize`): computes
+  `applicationFeeAmount = round(total * 5% * 100)` in cents,
+  creates a PaymentIntent on the franchisee's account, generates
+  a 32-byte base64url `payment_link_token`. 409
+  `STRIPE_NOT_READY` when `stripe_charges_enabled = false`, 400
+  `EMPTY_INVOICE` on zero total.
+- `finalized → sent` (`POST /invoices/:id/send`): dispatches the
+  payment URL via the pluggable `EmailSender` + `SmsSender` (stub
+  today; Resend + Twilio in phase 11). Both channels are
+  soft-skipped when the customer lacks the corresponding contact.
+- `paid` (via webhook): insert a `payments` row keyed on
+  `stripe_charge_id`, flip status + set `paid_at`.
+- `void` on full refund: webhook or `POST /refund` inserts a
+  `refunds` row keyed on `stripe_refund_id`; when cumulative
+  refunded amount equals the total, status transitions to `void`.
+
+Illegal transitions return 409 `INVALID_TRANSITION` with
+`{ from, to }` in the message — same error code shape the
+job-status machine uses.
+
+### Webhook idempotency
+`POST /api/v1/webhooks/stripe` runs **outside** `RequestScope` —
+Stripe has no tenant identity until we resolve the event. The
+route registers a per-URL raw-body parser so
+`constructWebhookEvent` can verify the signature against exact
+bytes. Missing signature → 400 before any DB work. Invalid
+signature → 400.
+
+Idempotency is enforced by inserting the Stripe `event.id` into
+`stripe_events` via `ON CONFLICT DO NOTHING ... RETURNING id`. An
+empty return means replay and the handler short-circuits to 200
+with `{ replay: true }`. If the dispatch itself throws, the
+handler deletes the idempotency row so Stripe's retry is treated
+as fresh.
+
+The four handled event types (`payment_intent.succeeded`,
+`payment_intent.payment_failed`, `charge.refunded`,
+`account.updated`) all use Stripe-provided unique ids
+(`stripe_charge_id`, `stripe_refund_id`, `stripe_account_id`) so
+the side-effect inserts / updates are idempotent even without
+the event-id guard — belt and suspenders.
+
+### Public payment surface
+The customer has no Service.AI account, so the
+`/api/v1/public/invoices/:token` endpoint authenticates by the
+32-byte `payment_link_token` on the invoice row (unique partial
+index, `WHERE payment_link_token IS NOT NULL`). The exposed
+fields are deliberately narrow: customer name, franchisee name,
+subtotal / tax / total, paid status, payment-intent id for
+Stripe Elements. Application fee, stripe account id, line items
+with overrides, etc. stay server-side.
+
+### PDF receipt
+`GET /api/v1/invoices/:id/receipt.pdf` renders a single-page PDF
+via `@react-pdf/renderer`'s `renderToBuffer` — the handler uses
+`React.createElement` (not JSX) so apps/api's server-only
+tsconfig stays simple. Draft invoices → 409 `INVALID_TRANSITION`.
+
 ## 6d. Tech PWA + offline (phase_tech_mobile_pwa)
 
 The tech field view is a Progressive Web App installed on the

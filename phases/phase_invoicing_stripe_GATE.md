@@ -190,6 +190,11 @@ before phase 8 starts.**
 
 ## Gate Decision
 
-_(Filled in by reviewer after all BLOCKER criteria are verified)_
+**Audited in:** `phase_invoicing_stripe_AUDIT_1.md` (cycle 1)
+**Verdict:** PASS — approved 2026-04-23
 
-**Verdict:** _(pending)_
+All BLOCKER criteria verified. Three minors tracked in AUDIT_1
+(m1: Stripe Elements integration deferred to phase 11; m2: 5%
+fee becomes per-franchisee in phase 8 royalty engine; m3:
+webhook endpoint operational hardening). Tagged
+`phase-invoicing-stripe-complete`.
