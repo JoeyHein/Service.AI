@@ -173,6 +173,13 @@ export const franchisees = pgTable(
     stripeChargesEnabled: boolean('stripe_charges_enabled').notNull().default(false),
     stripePayoutsEnabled: boolean('stripe_payouts_enabled').notNull().default(false),
     stripeDetailsSubmitted: boolean('stripe_details_submitted').notNull().default(false),
+    // AI voice (phase_ai_csr_voice, migration 0010).
+    twilioPhoneNumber: text('twilio_phone_number'),
+    aiGuardrails: jsonb('ai_guardrails')
+      .notNull()
+      .default(
+        sql`'{"confidenceThreshold": 0.8, "undoWindowSeconds": 900, "transferOnLowConfidence": true}'::jsonb`,
+      ),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -185,6 +192,9 @@ export const franchisees = pgTable(
     stripeAccountUnique: uniqueIndex('franchisees_stripe_account_unique')
       .on(t.stripeAccountId)
       .where(sql`${t.stripeAccountId} IS NOT NULL`),
+    twilioPhoneUnique: uniqueIndex('franchisees_twilio_phone_unique')
+      .on(t.twilioPhoneNumber)
+      .where(sql`${t.twilioPhoneNumber} IS NOT NULL`),
   }),
 );
 
@@ -769,6 +779,122 @@ export const stripeEvents = pgTable(
   },
   (t) => ({
     typeIdx: index('stripe_events_type_idx').on(t.type),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// AI CSR voice (phase_ai_csr_voice)
+// ---------------------------------------------------------------------------
+
+export const aiCapability = pgEnum('ai_capability', [
+  'csr.voice',
+  'dispatcher',
+  'tech.photoQuote',
+  'collections',
+]);
+
+export const aiMessageRole = pgEnum('ai_message_role', [
+  'system',
+  'user',
+  'assistant',
+  'tool',
+]);
+
+export const callDirection = pgEnum('call_direction', ['inbound', 'outbound']);
+export const callStatus = pgEnum('call_status', [
+  'ringing',
+  'in_progress',
+  'completed',
+  'transferred',
+  'failed',
+]);
+export const callOutcome = pgEnum('call_outcome', [
+  'booked',
+  'transferred',
+  'abandoned',
+  'none',
+]);
+
+export const aiConversations = pgTable(
+  'ai_conversations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    capability: aiCapability('capability').notNull(),
+    subjectCustomerId: uuid('subject_customer_id').references(
+      () => customers.id,
+      { onDelete: 'set null' },
+    ),
+    subjectJobId: uuid('subject_job_id').references(() => jobs.id, {
+      onDelete: 'set null',
+    }),
+    startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('ai_conversations_franchisee_idx').on(t.franchiseeId),
+    capabilityIdx: index('ai_conversations_capability_idx').on(t.capability),
+  }),
+);
+
+export const aiMessages = pgTable(
+  'ai_messages',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => aiConversations.id, { onDelete: 'cascade' }),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    role: aiMessageRole('role').notNull(),
+    content: jsonb('content').notNull(),
+    toolName: text('tool_name'),
+    toolInput: jsonb('tool_input'),
+    toolOutput: jsonb('tool_output'),
+    confidence: numeric('confidence', { precision: 5, scale: 4 }),
+    costUsd: numeric('cost_usd', { precision: 12, scale: 6 }),
+    provider: text('provider'),
+    model: text('model'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    conversationIdx: index('ai_messages_conversation_idx').on(t.conversationId),
+    franchiseeIdx: index('ai_messages_franchisee_idx').on(t.franchiseeId),
+  }),
+);
+
+export const callSessions = pgTable(
+  'call_sessions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id').references(() => aiConversations.id, {
+      onDelete: 'set null',
+    }),
+    twilioCallSid: text('twilio_call_sid').notNull(),
+    fromE164: text('from_e164').notNull(),
+    toE164: text('to_e164').notNull(),
+    direction: callDirection('direction').notNull().default('inbound'),
+    status: callStatus('status').notNull().default('ringing'),
+    outcome: callOutcome('outcome').notNull().default('none'),
+    startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    recordingKey: text('recording_key'),
+    transferReason: text('transfer_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('call_sessions_franchisee_idx').on(t.franchiseeId),
+    twilioUnique: uniqueIndex('call_sessions_twilio_sid_unique').on(t.twilioCallSid),
+    statusIdx: index('call_sessions_status_idx').on(t.status),
   }),
 );
 
