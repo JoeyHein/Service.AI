@@ -783,6 +783,97 @@ export const stripeEvents = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// AI collections (phase_ai_collections)
+// ---------------------------------------------------------------------------
+
+export const collectionsTone = pgEnum('collections_tone', [
+  'friendly',
+  'firm',
+  'final',
+]);
+
+export const collectionsDraftStatus = pgEnum('collections_draft_status', [
+  'pending',
+  'approved',
+  'edited',
+  'rejected',
+  'sent',
+  'failed',
+]);
+
+export const paymentRetryStatus = pgEnum('payment_retry_status', [
+  'scheduled',
+  'succeeded',
+  'failed',
+  'canceled',
+]);
+
+export const collectionsDrafts = pgTable(
+  'collections_drafts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    conversationId: uuid('conversation_id'),
+    tone: collectionsTone('tone').notNull(),
+    smsBody: text('sms_body').notNull(),
+    emailSubject: text('email_subject').notNull(),
+    emailBody: text('email_body').notNull(),
+    status: collectionsDraftStatus('status').notNull().default('pending'),
+    deliveryChannels: jsonb('delivery_channels')
+      .notNull()
+      .default(sql`'{"email": true, "sms": true}'::jsonb`),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decidedByUserId: text('decided_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('collections_drafts_franchisee_idx').on(t.franchiseeId),
+    invoiceIdx: index('collections_drafts_invoice_idx').on(t.invoiceId),
+    statusIdx: index('collections_drafts_status_idx').on(t.status),
+    pendingUnique: uniqueIndex('collections_drafts_pending_unique')
+      .on(t.invoiceId, t.tone)
+      .where(sql`${t.status} = 'pending'`),
+  }),
+);
+
+export const paymentRetries = pgTable(
+  'payment_retries',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    paymentId: uuid('payment_id').references(() => payments.id, {
+      onDelete: 'set null',
+    }),
+    failureCode: text('failure_code').notNull(),
+    scheduledFor: timestamp('scheduled_for', { withTimezone: true }).notNull(),
+    status: paymentRetryStatus('status').notNull().default('scheduled'),
+    attemptIndex: integer('attempt_index').notNull().default(1),
+    resultRef: jsonb('result_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('payment_retries_franchisee_idx').on(t.franchiseeId),
+    invoiceIdx: index('payment_retries_invoice_idx').on(t.invoiceId),
+    statusIdx: index('payment_retries_status_idx').on(t.status),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // AI tech assistant (phase_ai_tech_assistant)
 // ---------------------------------------------------------------------------
 
