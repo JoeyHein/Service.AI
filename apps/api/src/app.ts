@@ -22,6 +22,8 @@ import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
+import { registerPushRoutes } from './push-routes.js';
+import { resolvePushSender, type PushSender } from './push.js';
 import { registerAssignmentRoutes } from './assignment-routes.js';
 import { registerSseRoutes } from './sse-routes.js';
 import { registerTechRoutes } from './techs-routes.js';
@@ -127,6 +129,12 @@ export interface AppOptions {
    * Multi-host deployments swap in a Redis-backed impl.
    */
   eventBus?: EventBus;
+  /**
+   * Web push sender (phase_tech_mobile_pwa). Defaults to
+   * `resolvePushSender()` which returns the stub unless all
+   * VAPID_* env vars are present.
+   */
+  pushSender?: PushSender;
 }
 
 /**
@@ -263,6 +271,12 @@ export function buildApp(opts: AppOptions = {}) {
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
     registerInvoiceRoutes(app, opts.drizzle);
+    registerPushRoutes(app, opts.drizzle);
+    // Resolve the push sender now so a missing-VAPID warning lands
+    // at boot time rather than at first send. Stashed on the app
+    // instance for later phases that actually call it.
+    const pushSender = opts.pushSender ?? resolvePushSender();
+    app.decorate('pushSender', pushSender);
     const bus = opts.eventBus ?? inProcessEventBus();
     registerAssignmentRoutes(app, opts.drizzle, bus);
     registerSseRoutes(app, opts.drizzle, bus);
