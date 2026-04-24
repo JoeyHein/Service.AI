@@ -27,6 +27,7 @@
     "@googlemaps/google-maps-services-js": "^3",
     "@react-pdf/renderer": "^4.5.1",
     "@sentry/node": "^8",
+    "@service-ai/ai": "workspace:^",
     "@service-ai/auth": "workspace:^",
     "@service-ai/contracts": "workspace:^",
     "@service-ai/db": "workspace:^",

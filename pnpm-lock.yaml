@@ -71,6 +71,9 @@ importers:
       '@sentry/node':
         specifier: ^8
         version: 8.55.1
+      '@service-ai/ai':
+        specifier: workspace:^
+        version: link:../../packages/ai
       '@service-ai/auth':
         specifier: workspace:^
         version: link:../../packages/auth
