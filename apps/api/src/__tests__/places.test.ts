@@ -24,11 +24,11 @@ afterEach(async () => {
 });
 
 describe('CJ-04 / stubPlacesClient', () => {
-  it('returns exactly three deterministic candidates for any query', async () => {
+  it('returns a deterministic candidate set for any query (3 US + 2 CA)', async () => {
     const a = await stubPlacesClient.autocomplete('garage');
     const b = await stubPlacesClient.autocomplete('1600');
-    expect(a).toHaveLength(3);
-    expect(b).toHaveLength(3);
+    expect(a).toHaveLength(5);
+    expect(b).toHaveLength(5);
     expect(a.map((c) => c.placeId)).toEqual(b.map((c) => c.placeId));
   });
 
@@ -87,7 +87,7 @@ describe('CJ-04 / places routes', () => {
       url: '/api/v1/places/autocomplete?q=garage',
     });
     expect(auto.statusCode).toBe(200);
-    expect(auto.json().data.candidates).toHaveLength(3);
+    expect(auto.json().data.candidates).toHaveLength(5);
 
     const det = await app.inject({
       method: 'GET',

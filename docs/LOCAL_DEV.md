@@ -98,7 +98,8 @@ exercise the real path.
 | Voice telephony | `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` | Voice path is non-functional |
 | Voice ASR | `DEEPGRAM_API_KEY` | Voice path is non-functional |
 | Voice TTS | `ELEVENLABS_API_KEY` | Voice path is non-functional |
-| Addresses | `GOOGLE_MAPS_API_KEY` | Deterministic stub places |
+| Addresses | `GOOGLE_MAPS_API_KEY` | Deterministic stub places (Denver/Austin/Vancouver/Toronto) |
+| Address country restriction | `PLACES_COUNTRIES` (e.g. `ca` or `ca,us`) | No restriction (global) |
 | Photo storage | `DO_SPACES_*` (5 vars) | In-memory, photos lost on restart |
 | SMS + email | `TWILIO_*` | Logs to stdout |
 

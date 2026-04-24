@@ -94,12 +94,20 @@ const auth = createAuth({
 });
 
 const placesApiKey = process.env['GOOGLE_MAPS_API_KEY'];
+const placesCountries = (process.env['PLACES_COUNTRIES'] ?? '')
+  .split(',')
+  .map((c) => c.trim())
+  .filter(Boolean);
 const placesClient: PlacesClient = placesApiKey
-  ? await googlePlacesClient(placesApiKey)
+  ? await googlePlacesClient(placesApiKey, { countries: placesCountries })
   : stubPlacesClient;
 if (!placesApiKey) {
   console.warn(
     '[warn] GOOGLE_MAPS_API_KEY is unset — using stubPlacesClient. Set a real key for production Places lookups.',
+  );
+} else if (placesCountries.length > 0) {
+  console.log(
+    `[info] Places Autocomplete restricted to countries: ${placesCountries.join(', ')}`,
   );
 }
 

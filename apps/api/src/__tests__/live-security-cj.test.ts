@@ -391,7 +391,7 @@ describe('CJ-08 / places endpoints require auth', () => {
       headers: { cookie: cookies.denverDispatcher },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.candidates).toHaveLength(3);
+    expect(res.json().data.candidates).toHaveLength(5);
   });
 
   it('details rejects unknown placeId with 404', async () => {

@@ -52,6 +52,14 @@ export const stubPlacesClient: PlacesClient = {
         placeId: 'stub-austin-a',
         description: `${q} — 500 Congress Ave, Austin, TX`,
       },
+      {
+        placeId: 'stub-vancouver-a',
+        description: `${q} — 800 Robson St, Vancouver, BC`,
+      },
+      {
+        placeId: 'stub-toronto-a',
+        description: `${q} — 290 Bremner Blvd, Toronto, ON`,
+      },
     ];
   },
   async details(placeId) {
@@ -89,6 +97,28 @@ export const stubPlacesClient: PlacesClient = {
         latitude: 30.265,
         longitude: -97.742,
       },
+      'stub-vancouver-a': {
+        placeId: 'stub-vancouver-a',
+        formattedAddress: '800 Robson St, Vancouver, BC V6Z 2E7, Canada',
+        addressLine1: '800 Robson St',
+        city: 'Vancouver',
+        state: 'BC',
+        postalCode: 'V6Z 2E7',
+        country: 'Canada',
+        latitude: 49.2817,
+        longitude: -123.1198,
+      },
+      'stub-toronto-a': {
+        placeId: 'stub-toronto-a',
+        formattedAddress: '290 Bremner Blvd, Toronto, ON M5V 3L9, Canada',
+        addressLine1: '290 Bremner Blvd',
+        city: 'Toronto',
+        state: 'ON',
+        postalCode: 'M5V 3L9',
+        country: 'Canada',
+        latitude: 43.6426,
+        longitude: -79.3871,
+      },
     };
     return map[placeId] ?? null;
   },
@@ -100,13 +130,24 @@ export const stubPlacesClient: PlacesClient = {
  * dev/test environments. Creating this client only when
  * GOOGLE_MAPS_API_KEY is set lets the app boot without the key.
  */
-export async function googlePlacesClient(apiKey: string): Promise<PlacesClient> {
+export async function googlePlacesClient(
+  apiKey: string,
+  opts: { countries?: string[] } = {},
+): Promise<PlacesClient> {
   const { Client } = await import('@googlemaps/google-maps-services-js');
   const client = new Client({});
+  const components =
+    opts.countries && opts.countries.length > 0
+      ? opts.countries.map((c) => `country:${c.toLowerCase()}`)
+      : undefined;
   return {
     async autocomplete(query) {
       const res = await client.placeAutocomplete({
-        params: { input: query, key: apiKey },
+        params: {
+          input: query,
+          key: apiKey,
+          ...(components ? { components } : {}),
+        },
       });
       return res.data.predictions.map((p) => ({
         placeId: p.place_id,
