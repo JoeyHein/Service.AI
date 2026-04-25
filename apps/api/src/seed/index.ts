@@ -523,6 +523,7 @@ export async function runSeed(pool: InstanceType<typeof Pool>): Promise<SeedResu
 export async function runReset(pool: InstanceType<typeof Pool>): Promise<void> {
   await pool.query(
     `TRUNCATE TABLE
+       notifications_log,
        payment_retries,
        collections_drafts,
        ai_feedback,

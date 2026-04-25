@@ -40,7 +40,7 @@ echo "==> Applying migrations (0001 → 0013)"
 # can't blindly re-run migrations against an already-migrated DB).
 already_migrated=$(
   docker exec -i servicetitan-postgres psql -U builder -d servicetitan -tAc \
-    "SELECT to_regclass('public.payment_retries') IS NOT NULL"
+    "SELECT to_regclass('public.notifications_log') IS NOT NULL"
 )
 if [ "$already_migrated" = "t" ]; then
   echo "    schema already up-to-date (payment_retries present) — skipping"

@@ -40,6 +40,7 @@ import {
   franchisees,
   invoices,
   jobs,
+  notificationsLog,
   payments,
   users,
   withScope,
@@ -61,6 +62,24 @@ export interface DashboardTiles {
   avgTicketCents: number;
   voiceCalls: number;
   collectionsPending: number;
+  emailsSent: number;
+  smsSent: number;
+}
+
+export interface AgingBuckets {
+  current: number;
+  d1to7: number;
+  d8to14: number;
+  d15to30: number;
+  d31to60: number;
+  d60plus: number;
+}
+
+export interface QuotesPipeline {
+  draft: number;
+  finalized: number;
+  sent: number;
+  paid: number;
 }
 
 export interface TechRanking {
@@ -88,6 +107,8 @@ export interface RecentJob {
 export interface OwnerDashboard {
   period: { start: string; end: string; label: string };
   tiles: DashboardTiles;
+  agingBuckets: AgingBuckets;
+  quotesPipeline: QuotesPipeline;
   topTechs: TechRanking[];
   topCustomers: CustomerRanking[];
   recentJobs: RecentJob[];
@@ -169,9 +190,10 @@ export async function computeOwnerDashboard(
       0,
     );
 
-    // --- Open AR: finalized/sent invoices with no matching paid invoice ---
+    // --- Open AR + aging: finalized/sent invoices split into buckets
+    //     by days past due_date (or 'current' if not yet due). ---
     const arRows = await tx
-      .select({ total: invoices.total })
+      .select({ total: invoices.total, dueDate: invoices.dueDate })
       .from(invoices)
       .where(
         and(
@@ -180,10 +202,29 @@ export async function computeOwnerDashboard(
           isNull(invoices.deletedAt),
         ),
       );
-    const openArCents = arRows.reduce(
-      (acc, r) => acc + Math.round(Number(r.total) * 100),
-      0,
-    );
+    const nowMs = (input.now ?? new Date()).getTime();
+    const agingBuckets: AgingBuckets = {
+      current: 0,
+      d1to7: 0,
+      d8to14: 0,
+      d15to30: 0,
+      d31to60: 0,
+      d60plus: 0,
+    };
+    let openArCents = 0;
+    for (const r of arRows) {
+      const cents = Math.round(Number(r.total) * 100);
+      openArCents += cents;
+      const daysOver = r.dueDate
+        ? Math.floor((nowMs - r.dueDate.getTime()) / (24 * 3600_000))
+        : -1;
+      if (daysOver <= 0) agingBuckets.current += cents;
+      else if (daysOver <= 7) agingBuckets.d1to7 += cents;
+      else if (daysOver <= 14) agingBuckets.d8to14 += cents;
+      else if (daysOver <= 30) agingBuckets.d15to30 += cents;
+      else if (daysOver <= 60) agingBuckets.d31to60 += cents;
+      else agingBuckets.d60plus += cents;
+    }
 
     // --- Jobs completed in period (by actual_end) ---
     const jobsCompletedRows = await tx
@@ -241,6 +282,56 @@ export async function computeOwnerDashboard(
         ),
       );
     const collectionsPending = collectionsPendingRows[0]?.c ?? 0;
+
+    // --- Notifications volume in period (outbound only) ---
+    const notifCountsRows = await tx
+      .select({
+        channel: notificationsLog.channel,
+        c: sql<number>`count(*)::int`,
+      })
+      .from(notificationsLog)
+      .where(
+        and(
+          inArray(notificationsLog.franchiseeId, franchiseeIds),
+          eq(notificationsLog.direction, 'outbound'),
+          gte(notificationsLog.sentAt, start),
+          lt(notificationsLog.sentAt, end),
+        ),
+      )
+      .groupBy(notificationsLog.channel);
+    let emailsSent = 0;
+    let smsSent = 0;
+    for (const row of notifCountsRows) {
+      if (row.channel === 'email') emailsSent = row.c;
+      else if (row.channel === 'sms') smsSent = row.c;
+    }
+
+    // --- Quotes pipeline: invoice status distribution (any age) ---
+    const pipelineRows = await tx
+      .select({
+        status: invoices.status,
+        c: sql<number>`count(*)::int`,
+      })
+      .from(invoices)
+      .where(
+        and(
+          inArray(invoices.franchiseeId, franchiseeIds),
+          isNull(invoices.deletedAt),
+        ),
+      )
+      .groupBy(invoices.status);
+    const quotesPipeline: QuotesPipeline = {
+      draft: 0,
+      finalized: 0,
+      sent: 0,
+      paid: 0,
+    };
+    for (const row of pipelineRows) {
+      if (row.status === 'draft') quotesPipeline.draft = row.c;
+      else if (row.status === 'finalized') quotesPipeline.finalized = row.c;
+      else if (row.status === 'sent') quotesPipeline.sent = row.c;
+      else if (row.status === 'paid') quotesPipeline.paid = row.c;
+    }
 
     const avgTicketCents =
       jobsCompleted > 0 ? Math.round(revenueCents / jobsCompleted) : 0;
@@ -346,7 +437,11 @@ export async function computeOwnerDashboard(
         avgTicketCents,
         voiceCalls,
         collectionsPending,
+        emailsSent,
+        smsSent,
       },
+      agingBuckets,
+      quotesPipeline,
       topTechs,
       topCustomers,
       recentJobs,
@@ -369,7 +464,18 @@ function emptyDashboard(
       avgTicketCents: 0,
       voiceCalls: 0,
       collectionsPending: 0,
+      emailsSent: 0,
+      smsSent: 0,
     },
+    agingBuckets: {
+      current: 0,
+      d1to7: 0,
+      d8to14: 0,
+      d15to30: 0,
+      d31to60: 0,
+      d60plus: 0,
+    },
+    quotesPipeline: { draft: 0, finalized: 0, sent: 0, paid: 0 },
     topTechs: [],
     topCustomers: [],
     recentJobs: [],

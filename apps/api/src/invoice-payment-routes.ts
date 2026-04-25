@@ -379,12 +379,20 @@ export function registerInvoicePaymentRoutes(
         });
       }
       const channels: Array<'email' | 'sms'> = [];
+      const sendContext = {
+        franchiseeId: outcome.invoice.franchiseeId,
+        invoiceId: outcome.invoice.id,
+        jobId: outcome.invoice.jobId,
+        customerId: outcome.customer.id,
+        relatedKind: 'invoice',
+      };
       if (outcome.customer.email) {
         await deps.emailSender.send({
           to: outcome.customer.email,
           subject: 'Your invoice from ' + (outcome.customer.name ?? 'us'),
           text: `Your invoice is ready. Pay securely: ${outcome.paymentUrl}`,
           tag: 'invoice-send',
+          context: sendContext,
         });
         channels.push('email');
       }
@@ -393,6 +401,7 @@ export function registerInvoicePaymentRoutes(
           to: outcome.customer.phone,
           body: `Your invoice: ${outcome.paymentUrl}`,
           tag: 'invoice-send',
+          context: sendContext,
         });
         channels.push('sms');
       }

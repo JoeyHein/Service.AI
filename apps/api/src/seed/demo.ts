@@ -22,6 +22,7 @@ import {
   invoices,
   jobs,
   memberships,
+  notificationsLog,
   payments,
   users,
 } from '@service-ai/db';
@@ -235,45 +236,141 @@ async function runDemoSeed(): Promise<void> {
 
       if (spec.invoiceTotal !== null && spec.status === 'completed') {
         const total = spec.invoiceTotal;
-        const subtotal = Math.round(total / 1.08 * 100) / 100;
+        const subtotal = Math.round((total / 1.08) * 100) / 100;
         const taxAmount = Math.round((total - subtotal) * 100) / 100;
+        // A handful of completed invoices stay open with manually
+        // tuned due dates so the aging chart shows multiple buckets.
+        // Map keyed by JOB_SPECS index → days overdue (negative = future).
+        const openWithOverdueDays: Record<number, number> = {
+          0: -25, // current ($485, due in 25 days)
+          5: 4,   // d1to7  ($540)
+          7: 12,  // d8to14 ($925)
+          11: 22, // d15to30 ($195)
+          13: 45, // d31to60 ($1050)
+          14: 65, // d60plus ($2200)
+        };
+        const overdueDays = openWithOverdueDays[i];
+        const stayOpen = overdueDays !== undefined;
+        const status: 'paid' | 'sent' = stayOpen ? 'sent' : 'paid';
+        const finalized = actualEnd ?? now;
+        const dueDate = stayOpen
+          ? new Date(now.getTime() - overdueDays * 24 * 3600_000)
+          : new Date(finalized.getTime() + 30 * 24 * 3600_000);
         const [inv] = await db
           .insert(invoices)
           .values({
             franchiseeId: denver.id,
             jobId: j.id,
             customerId: customer.id,
-            status: 'paid',
+            status,
             subtotal: String(subtotal),
             taxRate: '0.0800',
             taxAmount: String(taxAmount),
             total: String(total),
-            paidAt: actualEnd ?? now,
-            sentAt: actualEnd ?? now,
-            finalizedAt: actualEnd ?? now,
+            paidAt: status === 'paid' ? finalized : null,
+            sentAt: finalized,
+            finalizedAt: finalized,
+            dueDate,
           })
           .returning({ id: invoices.id });
         if (!inv) continue;
         invoiceInserts++;
-        await db.insert(payments).values({
-          franchiseeId: denver.id,
-          invoiceId: inv.id,
-          stripePaymentIntentId: `pi_demo_${j.id.slice(0, 8)}`,
-          stripeChargeId: `ch_demo_${j.id.slice(0, 8)}`,
-          amount: String(total),
-          applicationFeeAmount: String(Math.round(total * 0.029 * 100) / 100),
-          status: 'succeeded',
-          createdAt: actualEnd ?? now,
-        });
-        paymentInserts++;
+        if (status === 'paid') {
+          await db.insert(payments).values({
+            franchiseeId: denver.id,
+            invoiceId: inv.id,
+            stripePaymentIntentId: `pi_demo_${j.id.slice(0, 8)}`,
+            stripeChargeId: `ch_demo_${j.id.slice(0, 8)}`,
+            amount: String(total),
+            applicationFeeAmount: String(Math.round(total * 0.029 * 100) / 100),
+            status: 'succeeded',
+            createdAt: finalized,
+          });
+          paymentInserts++;
+        }
       }
     }
 
+    // Add a few quotes (draft invoices) so the pipeline tile lights up.
+    const draftCustomers = customerRows.slice(-3);
+    for (let q = 0; q < draftCustomers.length; q++) {
+      const customer = draftCustomers[q]!;
+      const [j] = await db
+        .insert(jobs)
+        .values({
+          franchiseeId: denver.id,
+          customerId: customer.id,
+          status: 'unassigned',
+          title: 'Quote — multi-door replacement',
+          description: 'Demo quote awaiting acceptance',
+        })
+        .returning({ id: jobs.id });
+      if (!j) continue;
+      const total = 1850 + q * 320;
+      await db.insert(invoices).values({
+        franchiseeId: denver.id,
+        jobId: j.id,
+        customerId: customer.id,
+        status: 'draft',
+        subtotal: String(Math.round((total / 1.08) * 100) / 100),
+        taxRate: '0.0800',
+        taxAmount: String(
+          Math.round((total - total / 1.08) * 100) / 100,
+        ),
+        total: String(total),
+      });
+      invoiceInserts++;
+    }
+
+    // Sample outbound notifications across the last 14 days. Roughly
+    // 2 emails + 1 SMS per completed job, for owner-dashboard volume.
+    const completedJobIds = JOB_SPECS
+      .map((s, idx) => ({ s, idx }))
+      .filter((r) => r.s.status === 'completed');
+    let notifInserts = 0;
+    for (let i = 0; i < completedJobIds.length; i++) {
+      const customer = customerRows[i % customerRows.length]!;
+      const sentAt = new Date(
+        now.getTime() - (i + 1) * 18 * 3600_000,
+      );
+      await db.insert(notificationsLog).values({
+        franchiseeId: denver.id,
+        channel: 'email',
+        direction: 'outbound',
+        toAddress: `${customer.id}@demo.test`,
+        subject: 'Your service appointment is confirmed',
+        bodyPreview: 'Demo confirmation email body',
+        relatedKind: 'job-confirmation',
+        sentAt,
+      });
+      await db.insert(notificationsLog).values({
+        franchiseeId: denver.id,
+        channel: 'email',
+        direction: 'outbound',
+        toAddress: `${customer.id}@demo.test`,
+        subject: 'Your invoice from Elevated Doors',
+        bodyPreview: 'Demo invoice email body',
+        relatedKind: 'invoice',
+        sentAt: new Date(sentAt.getTime() + 3600_000),
+      });
+      await db.insert(notificationsLog).values({
+        franchiseeId: denver.id,
+        channel: 'sms',
+        direction: 'outbound',
+        toAddress: `+1303555${1000 + i}`,
+        bodyPreview: 'Demo SMS — your tech is en route',
+        relatedKind: 'tech-en-route',
+        sentAt: new Date(sentAt.getTime() + 7200_000),
+      });
+      notifInserts += 3;
+    }
+
     console.log('Demo data seeded:');
-    console.log(`  customers: ${customerRows.length}`);
-    console.log(`  jobs:      ${jobInserts}`);
-    console.log(`  invoices:  ${invoiceInserts}`);
-    console.log(`  payments:  ${paymentInserts}`);
+    console.log(`  customers:     ${customerRows.length}`);
+    console.log(`  jobs:          ${jobInserts + draftCustomers.length}`);
+    console.log(`  invoices:      ${invoiceInserts}`);
+    console.log(`  payments:      ${paymentInserts}`);
+    console.log(`  notifications: ${notifInserts}`);
     console.log('');
     console.log('Sign in as denver.owner@elevateddoors.test / changeme123!A');
     console.log('and visit /dashboard.');

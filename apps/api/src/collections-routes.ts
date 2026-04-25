@@ -263,6 +263,11 @@ export function registerCollectionsRoutes(
         email?: boolean;
         sms?: boolean;
       };
+      const sendContext = {
+        franchiseeId: outcome.row.franchiseeId,
+        invoiceId: outcome.row.invoiceId,
+        relatedKind: 'collections',
+      };
       if (channelsCfg.email !== false && outcome.customerEmail) {
         try {
           await deps.emailSender.send({
@@ -270,6 +275,7 @@ export function registerCollectionsRoutes(
             subject: outcome.row.emailSubject,
             text: outcome.row.emailBody,
             tag: 'collections-send',
+            context: sendContext,
           });
           channels.push('email');
         } catch (err) {
@@ -282,6 +288,7 @@ export function registerCollectionsRoutes(
             to: outcome.customerPhone,
             body: outcome.row.smsBody,
             tag: 'collections-send',
+            context: sendContext,
           });
           channels.push('sms');
         } catch (err) {

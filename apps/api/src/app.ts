@@ -49,6 +49,7 @@ import { resolveStripeClient, type StripeClient } from './stripe.js';
 import {
   resolveEmailSender,
   resolveSmsSender,
+  withDbLogging,
   type EmailSender,
   type SmsSender,
 } from './notify.js';
@@ -341,8 +342,14 @@ export function buildApp(opts: AppOptions = {}) {
     registerInvoiceRoutes(app, opts.drizzle);
     const stripe = opts.stripe ?? resolveStripeClient();
     const publicBaseUrl = opts.publicBaseUrl ?? 'http://localhost:3000';
-    const emailSender = opts.emailSender ?? resolveEmailSender();
-    const smsSender = opts.smsSender ?? resolveSmsSender();
+    const rawEmailSender = opts.emailSender ?? resolveEmailSender();
+    const rawSmsSender = opts.smsSender ?? resolveSmsSender();
+    const wrapped = withDbLogging(opts.drizzle, {
+      email: rawEmailSender,
+      sms: rawSmsSender,
+    });
+    const emailSender = wrapped.email;
+    const smsSender = wrapped.sms;
     registerConnectRoutes(app, opts.drizzle, { stripe, publicBaseUrl });
     registerInvoicePaymentRoutes(app, opts.drizzle, {
       stripe,

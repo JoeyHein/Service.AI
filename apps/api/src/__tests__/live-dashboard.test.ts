@@ -20,6 +20,7 @@ import {
   customers,
   invoices,
   jobs,
+  notificationsLog,
   payments,
 } from '@service-ai/db';
 import { buildApp } from '../app.js';
@@ -123,6 +124,7 @@ async function seedDashboardData(
         total: String(opts.revenuePerJob),
         paidAt: end,
         finalizedAt: end,
+        dueDate: new Date(end.getTime() + 30 * 24 * 3600_000),
       })
       .returning({ id: invoices.id });
     await db.insert(payments).values({
@@ -186,6 +188,85 @@ beforeAll(async () => {
     revenuePerJob: 1000,
     jobsCount: 2,
   });
+
+  // Pass-2 fixtures: 1 open invoice 10d overdue ($800) + 1 draft
+  // quote ($300) + 2 emails + 1 SMS for Denver — to exercise aging
+  // bucket d8to14, quotes pipeline draft+sent, and notif tiles.
+  const denverCustomerRows = await db
+    .insert(customers)
+    .values({ franchiseeId: ids.denverId, name: 'Aging Customer' })
+    .returning({ id: customers.id });
+  const overdueCustomerId = denverCustomerRows[0]!.id;
+  const overdueJobRows = await db
+    .insert(jobs)
+    .values({
+      franchiseeId: ids.denverId,
+      customerId: overdueCustomerId,
+      status: 'completed',
+      title: 'Overdue invoice job',
+      actualEnd: new Date(Date.now() - 40 * 24 * 3600_000),
+    })
+    .returning({ id: jobs.id });
+  await db.insert(invoices).values({
+    franchiseeId: ids.denverId,
+    jobId: overdueJobRows[0]!.id,
+    customerId: overdueCustomerId,
+    status: 'sent',
+    subtotal: '800',
+    taxRate: '0',
+    taxAmount: '0',
+    total: '800',
+    finalizedAt: new Date(Date.now() - 40 * 24 * 3600_000),
+    sentAt: new Date(Date.now() - 40 * 24 * 3600_000),
+    dueDate: new Date(Date.now() - 10 * 24 * 3600_000),
+  });
+  const draftJobRows = await db
+    .insert(jobs)
+    .values({
+      franchiseeId: ids.denverId,
+      customerId: overdueCustomerId,
+      status: 'unassigned',
+      title: 'Quote — draft',
+    })
+    .returning({ id: jobs.id });
+  await db.insert(invoices).values({
+    franchiseeId: ids.denverId,
+    jobId: draftJobRows[0]!.id,
+    customerId: overdueCustomerId,
+    status: 'draft',
+    subtotal: '300',
+    taxRate: '0',
+    taxAmount: '0',
+    total: '300',
+  });
+  await db.insert(notificationsLog).values([
+    {
+      franchiseeId: ids.denverId,
+      channel: 'email',
+      direction: 'outbound',
+      toAddress: 'a@test',
+      subject: 'first',
+      bodyPreview: 'b',
+      sentAt: new Date(),
+    },
+    {
+      franchiseeId: ids.denverId,
+      channel: 'email',
+      direction: 'outbound',
+      toAddress: 'b@test',
+      subject: 'second',
+      bodyPreview: 'b',
+      sentAt: new Date(),
+    },
+    {
+      franchiseeId: ids.denverId,
+      channel: 'sms',
+      direction: 'outbound',
+      toAddress: '+1303',
+      bodyPreview: 'sms',
+      sentAt: new Date(),
+    },
+  ]);
 
   cookies = {
     platformAdmin: await signIn('joey@opendc.ca'),
@@ -305,6 +386,55 @@ describe('Owner dashboard — scope isolation', () => {
     const d = res.json().data;
     expect(d.tiles.revenueCents).toBe(400_000);
     expect(d.tiles.jobsCompleted).toBe(6);
+  });
+});
+
+describe('Owner dashboard — pass 2 fields', () => {
+  it('aging bucket d8to14 contains the overdue $800 invoice', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.denverOwner },
+    });
+    const d = res.json().data;
+    expect(d.agingBuckets.d8to14).toBe(80_000);
+    expect(d.tiles.openArCents).toBe(80_000);
+  });
+
+  it('quotes pipeline reports draft + paid counts', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.denverOwner },
+    });
+    const d = res.json().data;
+    expect(d.quotesPipeline.draft).toBe(1);
+    expect(d.quotesPipeline.sent).toBe(1);
+    expect(d.quotesPipeline.paid).toBe(4); // from seedDashboardData
+  });
+
+  it('emailsSent + smsSent count outbound notifications in period', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.denverOwner },
+    });
+    const d = res.json().data;
+    expect(d.tiles.emailsSent).toBe(2);
+    expect(d.tiles.smsSent).toBe(1);
+  });
+
+  it('austin owner does not see denver notifications or aging', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.austinOwner },
+    });
+    const d = res.json().data;
+    expect(d.tiles.emailsSent).toBe(0);
+    expect(d.tiles.smsSent).toBe(0);
+    expect(d.agingBuckets.d8to14).toBe(0);
+    expect(d.quotesPipeline.draft).toBe(0);
   });
 });
 

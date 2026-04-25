@@ -10,6 +10,24 @@ interface Tiles {
   avgTicketCents: number;
   voiceCalls: number;
   collectionsPending: number;
+  emailsSent: number;
+  smsSent: number;
+}
+
+interface AgingBuckets {
+  current: number;
+  d1to7: number;
+  d8to14: number;
+  d15to30: number;
+  d31to60: number;
+  d60plus: number;
+}
+
+interface QuotesPipeline {
+  draft: number;
+  finalized: number;
+  sent: number;
+  paid: number;
 }
 
 interface TechRow {
@@ -37,6 +55,8 @@ interface RecentJob {
 interface Dashboard {
   period: { start: string; end: string; label: string };
   tiles: Tiles;
+  agingBuckets: AgingBuckets;
+  quotesPipeline: QuotesPipeline;
   topTechs: TechRow[];
   topCustomers: CustomerRow[];
   recentJobs: RecentJob[];
@@ -149,7 +169,18 @@ export default async function DashboardPage({
             avgTicketCents: 0,
             voiceCalls: 0,
             collectionsPending: 0,
+            emailsSent: 0,
+            smsSent: 0,
           },
+          agingBuckets: {
+            current: 0,
+            d1to7: 0,
+            d8to14: 0,
+            d15to30: 0,
+            d31to60: 0,
+            d60plus: 0,
+          },
+          quotesPipeline: { draft: 0, finalized: 0, sent: 0, paid: 0 },
           topTechs: [],
           topCustomers: [],
           recentJobs: [],
@@ -252,6 +283,16 @@ export default async function DashboardPage({
           href={d.tiles.collectionsPending > 0 ? '/collections' : undefined}
         />
         <Tile
+          label="Emails sent"
+          value={String(d.tiles.emailsSent)}
+          testId="tile-emails-sent"
+        />
+        <Tile
+          label="SMS sent"
+          value={String(d.tiles.smsSent)}
+          testId="tile-sms-sent"
+        />
+        <Tile
           label="Period"
           value={d.period.label}
           tone="muted"
@@ -260,6 +301,15 @@ export default async function DashboardPage({
       </div>
 
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Panel title="AR aging" testId="panel-aging">
+          <AgingChart buckets={d.agingBuckets} />
+        </Panel>
+        <Panel title="Quotes & invoices pipeline" testId="panel-pipeline">
+          <PipelineBar pipeline={d.quotesPipeline} />
+        </Panel>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Panel title="Top technicians (by revenue)" testId="panel-top-techs">
           {d.topTechs.length === 0 ? (
             <Empty>No completed jobs with assigned techs yet.</Empty>
@@ -436,4 +486,134 @@ function Panel({
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="text-sm text-slate-500 py-4">{children}</div>;
+}
+
+const AGING_COLORS: Record<keyof AgingBuckets, string> = {
+  current: 'bg-emerald-500',
+  d1to7: 'bg-yellow-400',
+  d8to14: 'bg-amber-500',
+  d15to30: 'bg-orange-500',
+  d31to60: 'bg-rose-500',
+  d60plus: 'bg-rose-700',
+};
+
+const AGING_LABELS: Record<keyof AgingBuckets, string> = {
+  current: 'Current',
+  d1to7: '1–7d',
+  d8to14: '8–14d',
+  d15to30: '15–30d',
+  d31to60: '31–60d',
+  d60plus: '60d+',
+};
+
+function AgingChart({ buckets }: { buckets: AgingBuckets }) {
+  const total =
+    buckets.current +
+    buckets.d1to7 +
+    buckets.d8to14 +
+    buckets.d15to30 +
+    buckets.d31to60 +
+    buckets.d60plus;
+  if (total === 0) {
+    return (
+      <Empty>No open invoices — every finalized invoice has been paid.</Empty>
+    );
+  }
+  const order: (keyof AgingBuckets)[] = [
+    'current',
+    'd1to7',
+    'd8to14',
+    'd15to30',
+    'd31to60',
+    'd60plus',
+  ];
+  return (
+    <div className="text-sm" data-testid="aging-chart">
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        {order.map((k) => {
+          const v = buckets[k];
+          if (v === 0) return null;
+          const pct = (v / total) * 100;
+          return (
+            <div
+              key={k}
+              className={AGING_COLORS[k]}
+              style={{ width: `${pct}%` }}
+              title={`${AGING_LABELS[k]}: ${(v / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}`}
+            />
+          );
+        })}
+      </div>
+      <ul className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        {order.map((k) => (
+          <li
+            key={k}
+            className="flex items-center justify-between text-slate-600"
+            data-testid={`aging-row-${k}`}
+          >
+            <span className="flex items-center gap-2">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${AGING_COLORS[k]}`}
+              />
+              {AGING_LABELS[k]}
+            </span>
+            <span className="font-medium text-slate-800">
+              {money(buckets[k])}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PipelineBar({ pipeline }: { pipeline: QuotesPipeline }) {
+  const order: Array<{ key: keyof QuotesPipeline; label: string; color: string }> = [
+    { key: 'draft', label: 'Quotes (draft)', color: 'bg-slate-400' },
+    { key: 'finalized', label: 'Finalized', color: 'bg-blue-400' },
+    { key: 'sent', label: 'Sent', color: 'bg-amber-500' },
+    { key: 'paid', label: 'Paid', color: 'bg-emerald-500' },
+  ];
+  const total = order.reduce((acc, s) => acc + pipeline[s.key], 0);
+  if (total === 0) {
+    return <Empty>No invoices yet.</Empty>;
+  }
+  return (
+    <div className="text-sm" data-testid="pipeline-bar">
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
+        {order.map((s) => {
+          const v = pipeline[s.key];
+          if (v === 0) return null;
+          const pct = (v / total) * 100;
+          return (
+            <div
+              key={s.key}
+              className={s.color}
+              style={{ width: `${pct}%` }}
+              title={`${s.label}: ${v}`}
+            />
+          );
+        })}
+      </div>
+      <ul className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        {order.map((s) => (
+          <li
+            key={s.key}
+            className="flex items-center justify-between text-slate-600"
+            data-testid={`pipeline-row-${s.key}`}
+          >
+            <span className="flex items-center gap-2">
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${s.color}`}
+              />
+              {s.label}
+            </span>
+            <span className="font-medium text-slate-800">
+              {pipeline[s.key]}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }

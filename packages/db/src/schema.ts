@@ -652,6 +652,7 @@ export const invoices = pgTable(
     sentAt: timestamp('sent_at', { withTimezone: true }),
     paidAt: timestamp('paid_at', { withTimezone: true }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
+    dueDate: timestamp('due_date', { withTimezone: true }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1310,5 +1311,65 @@ export const pushSubscriptions = pgTable(
     endpointUnique: uniqueIndex('push_subscriptions_endpoint_unique')
       .on(t.endpoint)
       .where(sql`${t.deletedAt} IS NULL`),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Notifications log (phase 14 pass 2 — owner dashboard)
+// ---------------------------------------------------------------------------
+
+export const notificationChannel = pgEnum('notification_channel', [
+  'email',
+  'sms',
+]);
+
+export const notificationDirection = pgEnum('notification_direction', [
+  'outbound',
+  'inbound',
+]);
+
+/**
+ * One row per outbound (and eventually inbound) email / SMS. The
+ * senders in apps/api persist a row on every send so the owner
+ * dashboard can show volume tiles and drill into a customer's
+ * communication history without scanning provider APIs.
+ */
+export const notificationsLog = pgTable(
+  'notifications_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    franchiseeId: uuid('franchisee_id')
+      .notNull()
+      .references(() => franchisees.id, { onDelete: 'cascade' }),
+    channel: notificationChannel('channel').notNull(),
+    direction: notificationDirection('direction').notNull().default('outbound'),
+    toAddress: text('to_address').notNull(),
+    fromAddress: text('from_address'),
+    subject: text('subject'),
+    bodyPreview: text('body_preview'),
+    providerRef: text('provider_ref'),
+    jobId: uuid('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+    invoiceId: uuid('invoice_id').references(() => invoices.id, {
+      onDelete: 'set null',
+    }),
+    customerId: uuid('customer_id').references(() => customers.id, {
+      onDelete: 'set null',
+    }),
+    relatedKind: text('related_kind'),
+    status: text('status').notNull().default('sent'),
+    errorMessage: text('error_message'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    sentAt: timestamp('sent_at', { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    franchiseeIdx: index('notifications_log_franchisee_idx').on(t.franchiseeId),
+    channelIdx: index('notifications_log_channel_idx').on(
+      t.franchiseeId,
+      t.channel,
+    ),
+    sentIdx: index('notifications_log_sent_idx').on(t.franchiseeId, t.sentAt),
   }),
 );
