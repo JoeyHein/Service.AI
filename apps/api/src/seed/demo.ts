@@ -14,16 +14,19 @@
  */
 
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, eq, like } from 'drizzle-orm';
+import { and, eq, like, sql } from 'drizzle-orm';
 import pkg from 'pg';
 import {
+  callSessions,
   customers,
   franchisees,
+  invoiceLineItems,
   invoices,
   jobs,
   memberships,
   notificationsLog,
   payments,
+  serviceItems,
   users,
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
@@ -179,6 +182,60 @@ async function runDemoSeed(): Promise<void> {
     }
     const techIds: [string, string] = [tech1.id, tech2.id];
 
+    // Stamp hourly rates so the profit projector can compute labor.
+    // tech1 = $65/hr, tech2 = $80/hr (the senior tech).
+    await db
+      .update(memberships)
+      .set({ hourlyRate: '65.00' })
+      .where(
+        and(
+          eq(memberships.userId, tech1.id),
+          eq(memberships.role, 'tech'),
+        ),
+      );
+    await db
+      .update(memberships)
+      .set({ hourlyRate: '80.00' })
+      .where(
+        and(
+          eq(memberships.userId, tech2.id),
+          eq(memberships.role, 'tech'),
+        ),
+      );
+
+    // Stamp cogs on every service item under Elevated Doors so the
+    // materials projector has data to work with. Use 35% of base
+    // price as a generic placeholder — the pricebook editor lets
+    // operators tune per-item later.
+    await db
+      .update(serviceItems)
+      .set({
+        cogsPrice: sql`ROUND(${serviceItems.basePrice} * 0.35, 2)::numeric(12,2)`,
+      })
+      .where(
+        eq(
+          serviceItems.franchisorId,
+          sql`(SELECT franchisor_id FROM franchisees WHERE id = ${denver.id})`,
+        ),
+      );
+
+    // Pick a representative service item for line-item seeding.
+    const [seedItem] = await db
+      .select({
+        id: serviceItems.id,
+        sku: serviceItems.sku,
+        name: serviceItems.name,
+        basePrice: serviceItems.basePrice,
+      })
+      .from(serviceItems)
+      .where(
+        eq(
+          serviceItems.franchisorId,
+          sql`(SELECT franchisor_id FROM franchisees WHERE id = ${denver.id})`,
+        ),
+      )
+      .limit(1);
+
     // Insert customers
     const customerRows = await db
       .insert(customers)
@@ -275,6 +332,25 @@ async function runDemoSeed(): Promise<void> {
           .returning({ id: invoices.id });
         if (!inv) continue;
         invoiceInserts++;
+        if (seedItem) {
+          // Scale qty so the line equals the invoice subtotal at the
+          // SKU's base_price. Cogs (cogs_price = 35% of base_price)
+          // therefore lands at ~35% of the invoice — realistic gross
+          // margin for the trade.
+          const basePrice = Number(seedItem.basePrice);
+          const qty = basePrice > 0 ? subtotal / basePrice : 1;
+          await db.insert(invoiceLineItems).values({
+            invoiceId: inv.id,
+            franchiseeId: denver.id,
+            serviceItemId: seedItem.id,
+            sku: seedItem.sku,
+            name: seedItem.name,
+            quantity: qty.toFixed(3),
+            unitPrice: String(seedItem.basePrice),
+            lineTotal: String(subtotal),
+            sortOrder: 0,
+          });
+        }
         if (status === 'paid') {
           await db.insert(payments).values({
             franchiseeId: denver.id,
@@ -365,12 +441,60 @@ async function runDemoSeed(): Promise<void> {
       notifInserts += 3;
     }
 
+    // 18 inbound voice calls in last 14 days, mix of completed +
+    // ringing + failed so the answered-% tile shows ~83%.
+    let callInserts = 0;
+    const callOutcomes: Array<{
+      status: 'completed' | 'failed' | 'ringing';
+      durationSec: number;
+    }> = [
+      { status: 'completed', durationSec: 245 },
+      { status: 'completed', durationSec: 372 },
+      { status: 'completed', durationSec: 88 },
+      { status: 'completed', durationSec: 510 },
+      { status: 'completed', durationSec: 156 },
+      { status: 'completed', durationSec: 412 },
+      { status: 'completed', durationSec: 91 },
+      { status: 'completed', durationSec: 223 },
+      { status: 'completed', durationSec: 178 },
+      { status: 'completed', durationSec: 314 },
+      { status: 'completed', durationSec: 462 },
+      { status: 'completed', durationSec: 95 },
+      { status: 'completed', durationSec: 287 },
+      { status: 'completed', durationSec: 199 },
+      { status: 'completed', durationSec: 145 },
+      { status: 'failed', durationSec: 12 },
+      { status: 'failed', durationSec: 8 },
+      { status: 'ringing', durationSec: 0 },
+    ];
+    for (let i = 0; i < callOutcomes.length; i++) {
+      const o = callOutcomes[i]!;
+      const startedAt = new Date(now.getTime() - (i + 1) * 8 * 3600_000);
+      const endedAt =
+        o.status === 'ringing'
+          ? null
+          : new Date(startedAt.getTime() + o.durationSec * 1000);
+      await db.insert(callSessions).values({
+        franchiseeId: denver.id,
+        twilioCallSid: `CA_demo_${i}_${Date.now()}`,
+        fromE164: `+1303555${2000 + i}`,
+        toE164: '+13035550100',
+        direction: 'inbound',
+        status: o.status,
+        outcome: o.status === 'completed' ? 'booked' : 'none',
+        startedAt,
+        endedAt,
+      });
+      callInserts++;
+    }
+
     console.log('Demo data seeded:');
     console.log(`  customers:     ${customerRows.length}`);
     console.log(`  jobs:          ${jobInserts + draftCustomers.length}`);
     console.log(`  invoices:      ${invoiceInserts}`);
     console.log(`  payments:      ${paymentInserts}`);
     console.log(`  notifications: ${notifInserts}`);
+    console.log(`  call sessions: ${callInserts}`);
     console.log('');
     console.log('Sign in as denver.owner@elevateddoors.test / changeme123!A');
     console.log('and visit /dashboard.');

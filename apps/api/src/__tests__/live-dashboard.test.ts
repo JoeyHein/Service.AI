@@ -17,12 +17,17 @@ import {
   sessions,
   accounts,
   verifications,
+  callSessions,
   customers,
+  invoiceLineItems,
   invoices,
   jobs,
+  memberships,
   notificationsLog,
   payments,
+  serviceItems,
 } from '@service-ai/db';
+import { eq, and as drizzleAnd } from 'drizzle-orm';
 import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
@@ -239,6 +244,72 @@ beforeAll(async () => {
     taxAmount: '0',
     total: '300',
   });
+  // Pass-3 fixtures: stamp $50/hr on the denver tech, give the
+  // catalog item a $100 cogs, attach a line item to one of the
+  // seedDashboardData invoices for denver so cogs has a row, and
+  // insert 4 voice calls (3 completed @ 60s avg, 1 failed) so
+  // answered % = 75 and avg duration = 60s.
+  await db
+    .update(memberships)
+    .set({ hourlyRate: '50.00' })
+    .where(
+      drizzleAnd(
+        eq(memberships.userId, denverTechRow.rows[0]!.id),
+        eq(memberships.role, 'tech'),
+      ),
+    );
+  // Pick (or insert) a service_item we control + give it a cogs.
+  const [anyItem] = await db
+    .select({
+      id: serviceItems.id,
+      sku: serviceItems.sku,
+      name: serviceItems.name,
+      basePrice: serviceItems.basePrice,
+    })
+    .from(serviceItems)
+    .limit(1);
+  if (anyItem) {
+    await db
+      .update(serviceItems)
+      .set({ cogsPrice: '100.00' })
+      .where(eq(serviceItems.id, anyItem.id));
+    // Find one of denver's seeded invoices and attach a line item.
+    const [oneInv] = await db
+      .select({ id: invoices.id, total: invoices.total })
+      .from(invoices)
+      .where(eq(invoices.franchiseeId, ids.denverId))
+      .limit(1);
+    if (oneInv) {
+      await db.insert(invoiceLineItems).values({
+        invoiceId: oneInv.id,
+        franchiseeId: ids.denverId,
+        serviceItemId: anyItem.id,
+        sku: anyItem.sku,
+        name: anyItem.name,
+        quantity: '1.000',
+        unitPrice: String(oneInv.total),
+        lineTotal: String(oneInv.total),
+        sortOrder: 0,
+      });
+    }
+  }
+  // 3 completed calls @ 60s each, 1 failed → 75% answered, 60s avg.
+  for (let k = 0; k < 4; k++) {
+    const status = k < 3 ? 'completed' : 'failed';
+    const startedAt = new Date(Date.now() - (k + 1) * 3600_000);
+    const endedAt = new Date(startedAt.getTime() + 60_000);
+    await db.insert(callSessions).values({
+      franchiseeId: ids.denverId,
+      twilioCallSid: `CA_test_${k}_${Date.now()}`,
+      fromE164: `+13035551${100 + k}`,
+      toE164: '+13035550100',
+      direction: 'inbound',
+      status,
+      startedAt,
+      endedAt,
+    });
+  }
+
   await db.insert(notificationsLog).values([
     {
       franchiseeId: ids.denverId,
@@ -435,6 +506,60 @@ describe('Owner dashboard — pass 2 fields', () => {
     expect(d.tiles.smsSent).toBe(0);
     expect(d.agingBuckets.d8to14).toBe(0);
     expect(d.quotesPipeline.draft).toBe(0);
+  });
+});
+
+describe('Owner dashboard — pass 3 fields', () => {
+  it('voiceAnsweredPct + voiceAvgDurationSec match seeded calls', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.denverOwner },
+    });
+    const t = res.json().data.tiles;
+    expect(t.voiceAnsweredPct).toBe(75);
+    expect(t.voiceAvgDurationSec).toBe(60);
+  });
+
+  it('austin owner sees zero voice analytics (denver-only fixtures)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.austinOwner },
+    });
+    const t = res.json().data.tiles;
+    expect(t.voiceAnsweredPct).toBe(0);
+    expect(t.voiceAvgDurationSec).toBe(0);
+  });
+
+  it('profit projector subtracts COGS + labor from revenue', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.denverOwner },
+    });
+    const t = res.json().data.tiles;
+    // Denver: 4 jobs × $500 revenue = $200_000 cents.
+    // COGS: one line item × $100 cogs_price = $10_000 cents.
+    // Labor: 4 jobs × 2h × $50/hr = $400 = $40_000 cents.
+    // Profit = 200_000 - 10_000 - 40_000 = $150_000 cents. Margin = 75%.
+    expect(t.revenueCents).toBe(200_000);
+    expect(t.profitCents).toBe(150_000);
+    expect(t.marginBps).toBe(7500);
+  });
+
+  it('austin owner sees zero profit (no rate or cogs seeded for austin)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/dashboard/owner?period=30d',
+      headers: { cookie: cookies.austinOwner },
+    });
+    const t = res.json().data.tiles;
+    // Austin: revenue 200_000, cogs 0 (no line items), labor 0
+    // (no hourly rate stamped on austin tech).
+    expect(t.revenueCents).toBe(200_000);
+    expect(t.profitCents).toBe(200_000);
+    expect(t.marginBps).toBe(10_000);
   });
 });
 

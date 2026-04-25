@@ -12,6 +12,10 @@ interface Tiles {
   collectionsPending: number;
   emailsSent: number;
   smsSent: number;
+  profitCents: number;
+  marginBps: number;
+  voiceAnsweredPct: number;
+  voiceAvgDurationSec: number;
 }
 
 interface AgingBuckets {
@@ -83,6 +87,13 @@ function money(cents: number): string {
     currency: 'USD',
     maximumFractionDigits: 0,
   });
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
 }
 
 function statusPill(status: string): string {
@@ -171,6 +182,10 @@ export default async function DashboardPage({
             collectionsPending: 0,
             emailsSent: 0,
             smsSent: 0,
+            profitCents: 0,
+            marginBps: 0,
+            voiceAnsweredPct: 0,
+            voiceAvgDurationSec: 0,
           },
           agingBuckets: {
             current: 0,
@@ -281,6 +296,30 @@ export default async function DashboardPage({
           tone={d.tiles.collectionsPending > 0 ? 'warn' : 'default'}
           testId="tile-collections-pending"
           href={d.tiles.collectionsPending > 0 ? '/collections' : undefined}
+        />
+        <Tile
+          label="Gross profit"
+          value={money(d.tiles.profitCents)}
+          tone={d.tiles.profitCents >= 0 ? 'default' : 'warn'}
+          testId="tile-profit"
+        />
+        <Tile
+          label="Gross margin"
+          value={`${(d.tiles.marginBps / 100).toFixed(1)}%`}
+          tone={d.tiles.marginBps >= 0 ? 'default' : 'warn'}
+          testId="tile-margin"
+        />
+        <Tile
+          label="Calls answered"
+          value={`${d.tiles.voiceAnsweredPct}%`}
+          tone="info"
+          testId="tile-voice-answered"
+        />
+        <Tile
+          label="Avg call"
+          value={formatDuration(d.tiles.voiceAvgDurationSec)}
+          tone="info"
+          testId="tile-voice-avg-duration"
         />
         <Tile
           label="Emails sent"

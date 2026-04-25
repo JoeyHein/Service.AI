@@ -35,13 +35,17 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import {
   aiConversations,
+  callSessions,
   collectionsDrafts,
   customers,
   franchisees,
+  invoiceLineItems,
   invoices,
   jobs,
+  memberships,
   notificationsLog,
   payments,
+  serviceItems,
   users,
   withScope,
   type RequestScope,
@@ -64,6 +68,12 @@ export interface DashboardTiles {
   collectionsPending: number;
   emailsSent: number;
   smsSent: number;
+  /** Gross profit cents — revenue minus COGS minus labor cost. */
+  profitCents: number;
+  /** Gross margin percentage as int×100 (e.g. 4231 = 42.31%). */
+  marginBps: number;
+  voiceAnsweredPct: number;
+  voiceAvgDurationSec: number;
 }
 
 export interface AgingBuckets {
@@ -270,6 +280,30 @@ export async function computeOwnerDashboard(
       );
     const voiceCalls = voiceCallsRows[0]?.c ?? 0;
 
+    // --- Voice analytics: % answered (status=completed) + avg
+    //     duration in seconds (ended_at - started_at). ---
+    const voiceAnalyticsRows = await tx
+      .select({
+        total: sql<number>`count(*)::int`,
+        answered: sql<number>`count(*) filter (where ${callSessions.status} = 'completed')::int`,
+        avgSec: sql<string>`COALESCE(AVG(EXTRACT(EPOCH FROM (${callSessions.endedAt} - ${callSessions.startedAt}))) FILTER (WHERE ${callSessions.endedAt} IS NOT NULL), 0)`,
+      })
+      .from(callSessions)
+      .where(
+        and(
+          inArray(callSessions.franchiseeId, franchiseeIds),
+          gte(callSessions.startedAt, start),
+          lt(callSessions.startedAt, end),
+        ),
+      );
+    const totalCalls = voiceAnalyticsRows[0]?.total ?? 0;
+    const answeredCalls = voiceAnalyticsRows[0]?.answered ?? 0;
+    const voiceAnsweredPct =
+      totalCalls > 0 ? Math.round((answeredCalls / totalCalls) * 100) : 0;
+    const voiceAvgDurationSec = Math.round(
+      Number(voiceAnalyticsRows[0]?.avgSec ?? 0),
+    );
+
     // --- Collections drafts pending review (not period-scoped —
     //     it's a "what needs my attention right now" metric) ---
     const collectionsPendingRows = await tx
@@ -335,6 +369,67 @@ export async function computeOwnerDashboard(
 
     const avgTicketCents =
       jobsCompleted > 0 ? Math.round(revenueCents / jobsCompleted) : 0;
+
+    // --- Profit (gross): revenue − COGS − labor. ---
+    // Materials COGS = sum over invoice_line_items joined to
+    // service_items, multiplied by line quantity. Lines pointing at
+    // service_items with NULL cogs_price contribute 0.
+    const cogsRows = await tx
+      .select({
+        cogs: sql<string>`COALESCE(SUM(${invoiceLineItems.quantity} * ${serviceItems.cogsPrice}), 0)`,
+      })
+      .from(invoiceLineItems)
+      .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+      .innerJoin(jobs, eq(jobs.id, invoices.jobId))
+      .leftJoin(serviceItems, eq(serviceItems.id, invoiceLineItems.serviceItemId))
+      .where(
+        and(
+          inArray(invoiceLineItems.franchiseeId, franchiseeIds),
+          eq(jobs.status, 'completed'),
+          gte(jobs.actualEnd, start),
+          lt(jobs.actualEnd, end),
+          isNull(jobs.deletedAt),
+        ),
+      );
+    const cogsCents = Math.round(Number(cogsRows[0]?.cogs ?? 0) * 100);
+
+    // Labor cost = sum over completed jobs with assigned techs:
+    //   (actual_end - actual_start) hours × tech.hourly_rate
+    // Techs without an hourly rate contribute 0 labor cost.
+    const laborRows = await tx
+      .select({
+        laborDollars: sql<string>`COALESCE(SUM(EXTRACT(EPOCH FROM (${jobs.actualEnd} - ${jobs.actualStart})) / 3600.0 * ${memberships.hourlyRate}), 0)`,
+      })
+      .from(jobs)
+      .innerJoin(
+        memberships,
+        and(
+          eq(memberships.userId, jobs.assignedTechUserId),
+          eq(memberships.role, 'tech'),
+          isNull(memberships.deletedAt),
+        ),
+      )
+      .where(
+        and(
+          inArray(jobs.franchiseeId, franchiseeIds),
+          eq(jobs.status, 'completed'),
+          gte(jobs.actualEnd, start),
+          lt(jobs.actualEnd, end),
+          isNull(jobs.deletedAt),
+          sql`${jobs.assignedTechUserId} IS NOT NULL`,
+          sql`${jobs.actualStart} IS NOT NULL`,
+          sql`${jobs.actualEnd} IS NOT NULL`,
+        ),
+      );
+    const laborCents = Math.round(
+      Number(laborRows[0]?.laborDollars ?? 0) * 100,
+    );
+
+    const profitCents = revenueCents - cogsCents - laborCents;
+    const marginBps =
+      revenueCents > 0
+        ? Math.round((profitCents / revenueCents) * 10_000)
+        : 0;
 
     // --- Top 5 techs by attributed revenue (completed jobs → invoices) ---
     const topTechsRows = await tx
@@ -439,6 +534,10 @@ export async function computeOwnerDashboard(
         collectionsPending,
         emailsSent,
         smsSent,
+        profitCents,
+        marginBps,
+        voiceAnsweredPct,
+        voiceAvgDurationSec,
       },
       agingBuckets,
       quotesPipeline,
@@ -466,6 +565,10 @@ function emptyDashboard(
       collectionsPending: 0,
       emailsSent: 0,
       smsSent: 0,
+      profitCents: 0,
+      marginBps: 0,
+      voiceAnsweredPct: 0,
+      voiceAvgDurationSec: 0,
     },
     agingBuckets: {
       current: 0,

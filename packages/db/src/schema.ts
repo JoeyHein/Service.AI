@@ -229,6 +229,12 @@ export const memberships = pgTable(
       onDelete: 'cascade',
     }),
     locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
+    /**
+     * Optional dollar/hour rate for techs. Used by the owner
+     * dashboard's profit projector. NULL = "not modeled" and the
+     * projector treats labor cost as 0 for that tech.
+     */
+    hourlyRate: numeric('hourly_rate_cents', { precision: 12, scale: 2 }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -551,6 +557,12 @@ export const serviceItems = pgTable(
     unit: text('unit').notNull(),
     basePrice: numeric('base_price', { precision: 12, scale: 2 }).notNull(),
     floorPrice: numeric('floor_price', { precision: 12, scale: 2 }),
+    /**
+     * Cost of goods sold per unit. Optional — NULL means
+     * "unknown / not modeled" and the profit projector treats
+     * line-items selling this SKU as zero materials cost.
+     */
+    cogsPrice: numeric('cogs_price', { precision: 12, scale: 2 }),
     ceilingPrice: numeric('ceiling_price', { precision: 12, scale: 2 }),
     sortOrder: integer('sort_order').notNull().default(0),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
