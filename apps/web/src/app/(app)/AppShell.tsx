@@ -71,12 +71,14 @@ export function AppShell({
             >
               Jobs
             </Link>
-            <Link
-              href="/dispatch"
-              className="text-sm text-blue-700 hover:underline"
-            >
-              Dispatch
-            </Link>
+            {isFranchiseeScope && (
+              <Link
+                href="/dispatch"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Dispatch
+              </Link>
+            )}
             {isPlatformOrFranchisor && (
               <Link
                 href="/franchisor"
