@@ -14,7 +14,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -28,7 +27,7 @@ let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
 let ids: { denverId: string; austinId: string };
-let cookies: { denverOwner: string; austinOwner: string; denverDispatcher: string };
+let cookies: { denverManager: string; austinManager: string; denverDispatcher: string };
 
 async function checkReachable(): Promise<boolean> {
   const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
@@ -69,8 +68,8 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -86,7 +85,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -94,8 +92,8 @@ beforeAll(async () => {
   await app.ready();
 
   cookies = {
-    denverOwner: await signIn('denver.owner@elevateddoors.test'),
-    austinOwner: await signIn('austin.owner@elevateddoors.test'),
+    denverManager: await signIn('denver.owner@elevateddoors.test'),
+    austinManager: await signIn('austin.owner@elevateddoors.test'),
     denverDispatcher: await signIn('denver.dispatcher@elevateddoors.test'),
   };
 }, 60_000);
@@ -138,7 +136,7 @@ describe('CJ-02 / customers CRUD', () => {
     const create = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({
         name: 'Acme Overhead Doors',
         email: 'acme@example.test',
@@ -153,7 +151,7 @@ describe('CJ-02 / customers CRUD', () => {
     const list = await app.inject({
       method: 'GET',
       url: '/api/v1/customers?search=Acme',
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(list.statusCode).toBe(200);
     expect(list.json().data.rows.map((r: { id: string }) => r.id)).toContain(id);
@@ -162,7 +160,7 @@ describe('CJ-02 / customers CRUD', () => {
     const read = await app.inject({
       method: 'GET',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(read.statusCode).toBe(200);
     expect(read.json().data.name).toBe('Acme Overhead Doors');
@@ -170,7 +168,7 @@ describe('CJ-02 / customers CRUD', () => {
     const update = await app.inject({
       method: 'PATCH',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ phone: '555-0111', notes: 'VIP' }),
     });
     expect(update.statusCode).toBe(200);
@@ -180,7 +178,7 @@ describe('CJ-02 / customers CRUD', () => {
     const del1 = await app.inject({
       method: 'DELETE',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(del1.statusCode).toBe(200);
     expect(del1.json().data.deleted).toBe(true);
@@ -188,7 +186,7 @@ describe('CJ-02 / customers CRUD', () => {
     const del2 = await app.inject({
       method: 'DELETE',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(del2.statusCode).toBe(200);
     expect(del2.json().data.alreadyDeleted).toBe(true);
@@ -197,7 +195,7 @@ describe('CJ-02 / customers CRUD', () => {
     const postDel = await app.inject({
       method: 'GET',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(postDel.statusCode).toBe(404);
   });
@@ -206,7 +204,7 @@ describe('CJ-02 / customers CRUD', () => {
     const create = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Denver Only Co' }),
     });
     const id = create.json().data.id as string;
@@ -214,14 +212,14 @@ describe('CJ-02 / customers CRUD', () => {
     const read = await app.inject({
       method: 'GET',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.austinOwner },
+      headers: { cookie: cookies.austinManager },
     });
     expect(read.statusCode).toBe(404);
 
     const update = await app.inject({
       method: 'PATCH',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ notes: 'hijacked' }),
     });
     expect(update.statusCode).toBe(404);
@@ -229,36 +227,36 @@ describe('CJ-02 / customers CRUD', () => {
     const del = await app.inject({
       method: 'DELETE',
       url: `/api/v1/customers/${id}`,
-      headers: { cookie: cookies.austinOwner },
+      headers: { cookie: cookies.austinManager },
     });
     expect(del.statusCode).toBe(404);
   });
 
-  it('list returns only caller-scoped customers (no leak across franchisees)', async () => {
+  it('list returns only caller-scoped customers (no leak across branches)', async () => {
     await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Denver Iso A' }),
     });
     await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Austin Iso A' }),
     });
 
     const denverList = await app.inject({
       method: 'GET',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     const names = denverList.json().data.rows.map((r: { name: string }) => r.name);
     expect(names).toContain('Denver Iso A');
     expect(names).not.toContain('Austin Iso A');
   });
 
-  it('dispatcher in same franchisee can create + list customers', async () => {
+  it('dispatcher in same branch can create + list customers', async () => {
     const create = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
@@ -279,7 +277,7 @@ describe('CJ-02 / customers CRUD', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ email: 'not-an-email' }),
     });
     expect(res.statusCode).toBe(400);
@@ -290,7 +288,7 @@ describe('CJ-02 / customers CRUD', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/customers/not-a-uuid',
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -303,13 +301,13 @@ describe('CJ-02 / customers CRUD', () => {
       .from(schema.locations)
       .where(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (schema.locations as any).franchiseeId
+        (schema.locations as any).branchId
           ? // drizzle eq via column reference
             undefined
           : undefined,
       );
     void austinLoc;
-    const locs = await pool.query(`SELECT id FROM locations WHERE franchisee_id = $1`, [
+    const locs = await pool.query(`SELECT id FROM locations WHERE branch_id = $1`, [
       ids.austinId,
     ]);
     const austinLocId = (locs.rows[0] as { id: string }).id;
@@ -317,7 +315,7 @@ describe('CJ-02 / customers CRUD', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Should Fail', locationId: austinLocId }),
     });
     expect(res.statusCode).toBe(400);

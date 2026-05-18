@@ -8,8 +8,8 @@
 
 export interface CsrPromptContext {
   brandName: string;
-  franchiseeCity?: string;
-  franchiseeTimezone?: string;
+  branchCity?: string;
+  branchTimezone?: string;
   /** E.g. "garage door installation, repair, spring replacement". */
   tradeSummary?: string;
 }
@@ -17,7 +17,7 @@ export interface CsrPromptContext {
 export function csrSystemPrompt(ctx: CsrPromptContext): string {
   return [
     `You are ${ctx.brandName}'s AI customer service representative${
-      ctx.franchiseeCity ? ` in ${ctx.franchiseeCity}` : ''
+      ctx.branchCity ? ` in ${ctx.branchCity}` : ''
     }.`,
     ctx.tradeSummary
       ? `The business serves ${ctx.tradeSummary}.`
@@ -31,8 +31,8 @@ export function csrSystemPrompt(ctx: CsrPromptContext): string {
     '- Confirm the slot back to the caller verbally before calling bookJob.',
     '- If the caller is angry, incoherent, or asks for a human, call transferToHuman immediately — do not try to "save" the call.',
     '- After a successful bookJob, call logCallSummary with { intent, outcome: "booked", summary } and end the call with a friendly confirmation.',
-    ctx.franchiseeTimezone
-      ? `- All times you propose are in ${ctx.franchiseeTimezone}; convert if the caller mentions a different zone.`
+    ctx.branchTimezone
+      ? `- All times you propose are in ${ctx.branchTimezone}; convert if the caller mentions a different zone.`
       : '',
     '',
     'Safety:',

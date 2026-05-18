@@ -2,55 +2,52 @@
  * List techs for dispatch (TASK-DB-01).
  *
  *   GET /api/v1/techs                    requires scope
- *                                        franchisee → own franchisee;
- *                                        platform/franchisor → need
- *                                        ?franchiseeId=<uuid>
+ *                                        branch → own branch;
+ *                                        platform/corporate → need
+ *                                        ?branchId=<uuid>
  *
  * Returns { userId, name, email } for each active `tech` membership in
- * the target franchisee. Used by the dispatch board to render one
+ * the target branch. Used by the dispatch board to render one
  * column per tech.
  */
 import type { FastifyInstance } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { franchisees, memberships, users, withScope, type RequestScope } from '@service-ai/db';
+import { branches, memberships, users, withScope, type RequestScope } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
-async function resolveFranchisee(
+async function resolveBranch(
   db: Drizzle,
   scope: RequestScope,
-  queryFranchiseeId: string | null,
+  queryBranchId: string | null,
 ): Promise<
-  | { ok: true; franchiseeId: string }
+  | { ok: true; branchId: string }
   | { ok: false; status: number; code: string; message: string }
 > {
-  if (scope.type === 'franchisee') {
-    if (queryFranchiseeId && queryFranchiseeId !== scope.franchiseeId) {
-      return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Franchisee not in scope' };
+  if (scope.type === 'branch') {
+    if (queryBranchId && queryBranchId !== scope.branchId) {
+      return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Branch not in scope' };
     }
-    return { ok: true, franchiseeId: scope.franchiseeId };
+    return { ok: true, branchId: scope.branchId };
   }
-  if (!queryFranchiseeId) {
+  if (!queryBranchId) {
     return {
       ok: false,
       status: 400,
       code: 'VALIDATION_ERROR',
-      message: 'franchiseeId query param is required for admin callers',
+      message: 'branchId query param is required for corporate callers',
     };
   }
   const rows = await db
-    .select({ franchisorId: franchisees.franchisorId })
-    .from(franchisees)
-    .where(eq(franchisees.id, queryFranchiseeId));
+    .select({ id: branches.id })
+    .from(branches)
+    .where(eq(branches.id, queryBranchId));
   if (rows.length === 0) {
-    return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Franchisee not found' };
+    return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Branch not found' };
   }
-  if (scope.type === 'franchisor' && rows[0]!.franchisorId !== scope.franchisorId) {
-    return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Franchisee not in scope' };
-  }
-  return { ok: true, franchiseeId: queryFranchiseeId };
+  return { ok: true, branchId: queryBranchId };
 }
 
 export function registerTechRoutes(app: FastifyInstance, db: Drizzle): void {
@@ -63,7 +60,7 @@ export function registerTechRoutes(app: FastifyInstance, db: Drizzle): void {
     }
     const scope = req.scope;
     const q = req.query as Record<string, string | undefined>;
-    const target = await resolveFranchisee(db, scope, q['franchiseeId']?.trim() || null);
+    const target = await resolveBranch(db, scope, q['branchId']?.trim() || null);
     if (!target.ok) {
       return reply.code(target.status).send({
         ok: false,
@@ -81,7 +78,7 @@ export function registerTechRoutes(app: FastifyInstance, db: Drizzle): void {
         .innerJoin(users, eq(users.id, memberships.userId))
         .where(
           and(
-            eq(memberships.franchiseeId, target.franchiseeId),
+            eq(memberships.branchId, target.branchId),
             eq(memberships.role, 'tech'),
             isNull(memberships.deletedAt),
           ),

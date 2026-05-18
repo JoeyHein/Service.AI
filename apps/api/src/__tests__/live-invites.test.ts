@@ -2,7 +2,7 @@
  * Live Postgres integration tests for TASK-TEN-05 invitation flow.
  *
  * Builds a real Drizzle handle + Better Auth instance against the docker
- * postgres, creates a franchisor_admin user via sign-up, and exercises the
+ * postgres, creates a corporate_admin user via sign-up, and exercises the
  * full lifecycle:
  *   - POST /api/v1/invites → invite row + email delivered
  *   - GET  /api/v1/invites → lists the pending invite
@@ -38,8 +38,8 @@ const DATABASE_URL =
   process.env['DATABASE_URL'] ??
   'postgresql://builder:builder@localhost:5434/servicetitan';
 
-const FRANCHISOR_ID = '99999999-9999-4000-9999-999999999999';
-const FRANCHISEE_ID = '88888888-8888-4000-8888-888888888888';
+const CORPORATE_ID = '99999999-9999-4000-9999-999999999999';
+const BRANCH_ID = '88888888-8888-4000-8888-888888888888';
 const INVITER_EMAIL = 'live-invite-inviter@opendc.ca';
 const INVITEE_EMAIL = 'live-invite-invitee@opendc.ca';
 const OTHER_EMAIL = 'live-invite-other@opendc.ca';
@@ -167,16 +167,16 @@ async function resetState() {
     INVITEE_EMAIL,
     OTHER_EMAIL,
   ]);
-  await pool.query('DELETE FROM franchisees WHERE id = $1', [FRANCHISEE_ID]);
-  await pool.query('DELETE FROM franchisors WHERE id = $1', [FRANCHISOR_ID]);
+  await pool.query('DELETE FROM branches WHERE id = $1', [BRANCH_ID]);
+  await pool.query('DELETE FROM corporate WHERE id = $1', [CORPORATE_ID]);
 
   await pool.query(
-    `INSERT INTO franchisors (id, name, slug) VALUES ($1, 'Live Invite Franchisor', 'live-invite-fr')`,
-    [FRANCHISOR_ID],
+    `INSERT INTO corporate (id, name, slug) VALUES ($1, 'Live Invite Corporate', 'live-invite-co')`,
+    [CORPORATE_ID],
   );
   await pool.query(
-    `INSERT INTO franchisees (id, franchisor_id, name, slug) VALUES ($1, $2, 'Live Invite Franchisee', 'live-invite-fe')`,
-    [FRANCHISEE_ID, FRANCHISOR_ID],
+    `INSERT INTO branches (id, corporate_id, name, slug) VALUES ($1, $2, 'Live Invite Branch', 'live-invite-br')`,
+    [BRANCH_ID, CORPORATE_ID],
   );
 }
 
@@ -197,17 +197,15 @@ async function buildLiveApp() {
     drizzle: db,
     magicLinkSender: sender,
     acceptUrlBase: 'http://localhost:3000',
-    // Resolve every member to a franchisor_admin of FRANCHISOR_ID so we can
-    // exercise the create path without having to pre-insert memberships.
+    // Resolve every caller to a corporate admin so the create path runs
+    // without having to pre-insert memberships.
     membershipResolver: {
       async memberships() {
         return [
           {
-            scopeType: 'franchisor',
-            role: 'franchisor_admin',
-            franchisorId: FRANCHISOR_ID,
-            franchiseeId: null,
-            locationId: null,
+            scopeType: 'corporate',
+            role: 'corporate_admin',
+            branchId: null,
           },
         ];
       },
@@ -239,8 +237,8 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
       payload: JSON.stringify({
         email: INVITEE_EMAIL,
         role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: FRANCHISEE_ID,
+        scopeType: 'branch',
+        branchId: BRANCH_ID,
       }),
     });
     expect(create.statusCode).toBe(201);
@@ -269,7 +267,7 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
     expect(getAccept.json().data).toMatchObject({
       email: INVITEE_EMAIL,
       role: 'dispatcher',
-      scopeType: 'franchisee',
+      scopeType: 'branch',
     });
 
     // Sign up the invitee and redeem
@@ -290,7 +288,7 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
     const db = drizzle(pool, { schema });
     const m = await db.select().from(memberships).where(eq(memberships.userId, inviteeId));
     expect(m).toHaveLength(1);
-    expect(m[0]?.franchiseeId).toBe(FRANCHISEE_ID);
+    expect(m[0]?.branchId).toBe(BRANCH_ID);
     expect(m[0]?.role).toBe('dispatcher');
 
     // Second accept: INVITE_USED
@@ -313,8 +311,8 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
       payload: JSON.stringify({
         email: INVITEE_EMAIL,
         role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: FRANCHISEE_ID,
+        scopeType: 'branch',
+        branchId: BRANCH_ID,
       }),
     });
     expect(create.statusCode).toBe(201);
@@ -347,8 +345,8 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
       payload: JSON.stringify({
         email: INVITEE_EMAIL,
         role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: FRANCHISEE_ID,
+        scopeType: 'branch',
+        branchId: BRANCH_ID,
       }),
     });
     const { id, acceptUrl } = create.json().data;
@@ -375,8 +373,8 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
       payload: JSON.stringify({
         email: INVITEE_EMAIL,
         role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: FRANCHISEE_ID,
+        scopeType: 'branch',
+        branchId: BRANCH_ID,
       }),
     });
     const { acceptUrl } = create.json().data;
@@ -403,8 +401,8 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
       payload: JSON.stringify({
         email: INVITEE_EMAIL,
         role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: FRANCHISEE_ID,
+        scopeType: 'branch',
+        branchId: BRANCH_ID,
       }),
     });
     const token = (create.json().data.acceptUrl as string).split('/').pop()!;
@@ -419,39 +417,58 @@ describe('Invitation flow end-to-end (live Postgres)', () => {
     expect(postAccept.json().error.code).toBe('EMAIL_MISMATCH');
   });
 
-  it('create invite for role outside matrix returns 403 ROLE_NOT_INVITABLE', async () => {
-    const { app } = await buildLiveApp();
-    const { cookie: inviterCookie } = await createUserWithSession(app, INVITER_EMAIL);
-
-    // franchisor_admin inviting a franchisee at a franchisee that does not
-    // belong to their franchisor should be rejected.
-    const otherFranchisorId = '77777777-7777-4000-7777-777777777777';
-    const otherFranchiseeId = '66666666-6666-4000-6666-666666666666';
+  it('manager-scoped inviter targeting another branch returns 403 ROLE_NOT_INVITABLE', async () => {
+    // Build an app whose membership resolver returns a manager-scoped
+    // (branch BRANCH_ID) membership so canInvite enforces "manager can
+    // only invite into their own branch".
+    const otherBranchId = '66666666-6666-4000-6666-666666666666';
     await pool.query(
-      `INSERT INTO franchisors (id, name, slug) VALUES ($1, 'Other', 'live-invite-other') ON CONFLICT DO NOTHING`,
-      [otherFranchisorId],
-    );
-    await pool.query(
-      `INSERT INTO franchisees (id, franchisor_id, name, slug) VALUES ($1, $2, 'Other Fe', 'live-invite-other-fe') ON CONFLICT DO NOTHING`,
-      [otherFranchiseeId, otherFranchisorId],
+      `INSERT INTO branches (id, corporate_id, name, slug) VALUES ($1, $2, 'Other Branch', 'live-invite-other-br') ON CONFLICT DO NOTHING`,
+      [otherBranchId, CORPORATE_ID],
     );
 
-    const create = await app.inject({
-      method: 'POST',
-      url: '/api/v1/invites',
-      headers: { cookie: inviterCookie, 'content-type': 'application/json' },
-      payload: JSON.stringify({
-        email: INVITEE_EMAIL,
-        role: 'dispatcher',
-        scopeType: 'franchisee',
-        franchiseeId: otherFranchiseeId,
-      }),
+    const db = drizzle(pool, { schema });
+    const auth = createAuth({
+      db,
+      authSchema: { user: users, session: sessions, account: accounts, verification: verifications },
+      baseUrl: 'http://localhost',
+      secret: 'x'.repeat(32),
     });
-    expect(create.statusCode).toBe(403);
-    expect(create.json().error.code).toBe('ROLE_NOT_INVITABLE');
-
-    await pool.query('DELETE FROM franchisees WHERE id = $1', [otherFranchiseeId]);
-    await pool.query('DELETE FROM franchisors WHERE id = $1', [otherFranchisorId]);
+    const { sender } = recordingSender();
+    const managerApp = buildApp({
+      db: { query: async () => ({ rows: [] }) },
+      redis: { ping: async () => 'PONG' },
+      logger: false,
+      auth,
+      drizzle: db,
+      magicLinkSender: sender,
+      acceptUrlBase: 'http://localhost:3000',
+      membershipResolver: {
+        async memberships() {
+          return [{ scopeType: 'branch', role: 'manager', branchId: BRANCH_ID }];
+        },
+      },
+    });
+    await managerApp.ready();
+    try {
+      const { cookie } = await createUserWithSession(managerApp, INVITER_EMAIL);
+      const create = await managerApp.inject({
+        method: 'POST',
+        url: '/api/v1/invites',
+        headers: { cookie, 'content-type': 'application/json' },
+        payload: JSON.stringify({
+          email: INVITEE_EMAIL,
+          role: 'dispatcher',
+          scopeType: 'branch',
+          branchId: otherBranchId,
+        }),
+      });
+      expect(create.statusCode).toBe(403);
+      expect(create.json().error.code).toBe('ROLE_NOT_INVITABLE');
+    } finally {
+      await managerApp.close();
+      await pool.query('DELETE FROM branches WHERE id = $1', [otherBranchId]);
+    }
   });
 });
 

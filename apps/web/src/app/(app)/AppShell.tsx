@@ -5,11 +5,14 @@ import { useRouter } from 'next/navigation';
 import { useTransition, type ReactNode } from 'react';
 import { apiClientFetch } from '../../lib/api.js';
 import type { MeResponse } from '../../lib/session.js';
-import { HqBanner } from './HqBanner';
 
 /**
  * The persistent chrome for every authenticated route. Displays the
  * user's resolved scope in the header and exposes the sign-out button.
+ *
+ * Post-CHR-06: the franchisor / impersonation chrome (HqBanner, "View as"
+ * links) is gone. Corporate admins see the corporate hub nav; branch-
+ * scoped users see their day-to-day links.
  */
 export function AppShell({
   session,
@@ -33,20 +36,15 @@ export function AppShell({
     ? describeScope(session.scope)
     : 'no active membership';
 
-  const isFranchisorAdmin =
-    !session.impersonating && session.scope?.type === 'franchisor';
-  const isPlatformOrFranchisor =
-    !session.impersonating &&
-    (session.scope?.type === 'platform' || session.scope?.type === 'franchisor');
+  const isCorporate = session.scope?.type === 'corporate';
   const isTech =
-    session.scope?.type === 'franchisee' && session.scope.role === 'tech';
-  const isFranchiseeScope = session.scope?.type === 'franchisee';
+    session.scope?.type === 'branch' && session.scope.role === 'tech';
+  const isBranchScope = session.scope?.type === 'branch';
+  const isManager =
+    session.scope?.type === 'branch' && session.scope.role === 'manager';
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {session.impersonating && (
-        <HqBanner impersonating={session.impersonating} />
-      )}
       <header className="bg-white border-b border-slate-200">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
           <div className="flex items-center gap-3">
@@ -71,7 +69,16 @@ export function AppShell({
             >
               Jobs
             </Link>
-            {isFranchiseeScope && (
+            {isManager && (
+              <Link
+                href="/branch"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-branch"
+              >
+                Branch
+              </Link>
+            )}
+            {isBranchScope && (
               <Link
                 href="/dispatch"
                 className="text-sm text-blue-700 hover:underline"
@@ -79,29 +86,64 @@ export function AppShell({
                 Dispatch
               </Link>
             )}
-            {isPlatformOrFranchisor && (
+            {isBranchScope && (
               <Link
-                href="/franchisor"
+                href="/quotes/new"
                 className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-franchisor-network"
+                data-testid="nav-new-quote"
               >
-                Network
+                New quote
               </Link>
             )}
-            {isFranchisorAdmin && (
+            {isCorporate && (
               <Link
-                href="/franchisor/franchisees"
+                href="/corporate"
                 className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-corporate"
               >
-                Franchisees
+                Corporate
               </Link>
             )}
-            {isPlatformOrFranchisor && (
+            {isCorporate && (
               <Link
-                href="/franchisor/catalog"
+                href="/corporate/branches"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-corporate-branches"
+              >
+                Branches
+              </Link>
+            )}
+            {isCorporate && (
+              <Link
+                href="/corporate/managers"
                 className="text-sm text-blue-700 hover:underline"
               >
-                Catalog
+                Managers
+              </Link>
+            )}
+            {isCorporate && (
+              <Link
+                href="/corporate/comp-plans"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Comp plans
+              </Link>
+            )}
+            {isCorporate && (
+              <Link
+                href="/corporate/pricebook-suggestions"
+                className="text-sm text-blue-700 hover:underline"
+              >
+                Price requests
+              </Link>
+            )}
+            {isCorporate && (
+              <Link
+                href="/corporate/settings/margins"
+                className="text-sm text-blue-700 hover:underline"
+                data-testid="nav-corporate-margins"
+              >
+                Margins
               </Link>
             )}
             <Link
@@ -110,14 +152,6 @@ export function AppShell({
             >
               Pricebook
             </Link>
-            {isPlatformOrFranchisor && (
-              <Link
-                href="/franchisor/audit"
-                className="text-sm text-blue-700 hover:underline"
-              >
-                Audit log
-              </Link>
-            )}
             {isTech && (
               <Link
                 href="/tech"
@@ -127,16 +161,7 @@ export function AppShell({
                 Tech view
               </Link>
             )}
-            {isFranchiseeScope && (
-              <Link
-                href="/statements"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-statements"
-              >
-                Statements
-              </Link>
-            )}
-            {isFranchiseeScope && (
+            {isBranchScope && (
               <Link
                 href="/collections"
                 className="text-sm text-blue-700 hover:underline"
@@ -173,12 +198,10 @@ export function AppShell({
 
 function describeScope(scope: NonNullable<MeResponse['scope']>): string {
   switch (scope.type) {
-    case 'platform':
-      return 'Platform admin';
-    case 'franchisor':
-      return `Franchisor admin · ${scope.role}`;
-    case 'franchisee':
-      return `Franchisee · ${scope.role}`;
+    case 'corporate':
+      return `Corporate admin · ${scope.role}`;
+    case 'branch':
+      return `Branch · ${scope.role}`;
     default:
       return scope.role ?? 'member';
   }

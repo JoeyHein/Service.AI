@@ -2,7 +2,7 @@
  * Demo-data seed — optional, for local dev only.
  *
  * Creates 15 customers + 30 jobs + invoices + payments for the
- * Denver franchisee so the owner dashboard lights up. Idempotent:
+ * Denver branch so the owner dashboard lights up. Idempotent:
  * if any customer already exists whose name starts with "Demo —",
  * the script bails without inserting anything.
  *
@@ -17,9 +17,9 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq, like, sql } from 'drizzle-orm';
 import pkg from 'pg';
 import {
+  branches,
   callSessions,
   customers,
-  franchisees,
   invoiceLineItems,
   invoices,
   jobs,
@@ -134,15 +134,15 @@ async function runDemoSeed(): Promise<void> {
   const db = drizzle(pool, { schema });
 
   try {
-    // Resolve Denver franchisee id
+    // Resolve Denver branch id
     const [denver] = await db
-      .select({ id: franchisees.id })
-      .from(franchisees)
-      .where(eq(franchisees.slug, 'denver'))
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.slug, 'denver'))
       .limit(1);
     if (!denver) {
       console.error(
-        'Denver franchisee not found. Run `pnpm seed` first to create the base tenant tree.',
+        'Denver branch not found. Run `pnpm seed` first to create the base tenant tree.',
       );
       process.exit(1);
     }
@@ -153,7 +153,7 @@ async function runDemoSeed(): Promise<void> {
       .from(customers)
       .where(
         and(
-          eq(customers.franchiseeId, denver.id),
+          eq(customers.branchId, denver.id),
           like(customers.name, `${DEMO_NAME_PREFIX}%`),
         ),
       )
@@ -170,7 +170,7 @@ async function runDemoSeed(): Promise<void> {
       .innerJoin(memberships, eq(memberships.userId, users.id))
       .where(
         and(
-          eq(memberships.franchiseeId, denver.id),
+          eq(memberships.branchId, denver.id),
           eq(memberships.role, 'tech'),
         ),
       );
@@ -203,21 +203,15 @@ async function runDemoSeed(): Promise<void> {
         ),
       );
 
-    // Stamp cogs on every service item under Elevated Doors so the
-    // materials projector has data to work with. Use 35% of base
-    // price as a generic placeholder — the pricebook editor lets
-    // operators tune per-item later.
+    // Stamp cogs on every service item so the materials projector has
+    // data to work with. Use 35% of base price as a generic placeholder —
+    // the pricebook editor lets operators tune per-item later. Catalog is
+    // corporate-wide under the hub model so no per-branch filter is needed.
     await db
       .update(serviceItems)
       .set({
         cogsPrice: sql`ROUND(${serviceItems.basePrice} * 0.35, 2)::numeric(12,2)`,
-      })
-      .where(
-        eq(
-          serviceItems.franchisorId,
-          sql`(SELECT franchisor_id FROM franchisees WHERE id = ${denver.id})`,
-        ),
-      );
+      });
 
     // Pick a representative service item for line-item seeding.
     const [seedItem] = await db
@@ -228,12 +222,6 @@ async function runDemoSeed(): Promise<void> {
         basePrice: serviceItems.basePrice,
       })
       .from(serviceItems)
-      .where(
-        eq(
-          serviceItems.franchisorId,
-          sql`(SELECT franchisor_id FROM franchisees WHERE id = ${denver.id})`,
-        ),
-      )
       .limit(1);
 
     // Insert customers
@@ -241,7 +229,7 @@ async function runDemoSeed(): Promise<void> {
       .insert(customers)
       .values(
         CUSTOMER_NAMES.map((name) => ({
-          franchiseeId: denver.id,
+          branchId: denver.id,
           name: `${DEMO_NAME_PREFIX}${name}`,
           email: `${name.toLowerCase().replace(/[^a-z]+/g, '.')}@demo.test`,
           phone: `+1303555${Math.floor(Math.random() * 9000 + 1000)}`,
@@ -274,7 +262,7 @@ async function runDemoSeed(): Promise<void> {
       const [j] = await db
         .insert(jobs)
         .values({
-          franchiseeId: denver.id,
+          branchId: denver.id,
           customerId: customer.id,
           status: spec.status,
           title: JOB_TITLES[spec.titleIdx]!,
@@ -316,7 +304,7 @@ async function runDemoSeed(): Promise<void> {
         const [inv] = await db
           .insert(invoices)
           .values({
-            franchiseeId: denver.id,
+            branchId: denver.id,
             jobId: j.id,
             customerId: customer.id,
             status,
@@ -341,7 +329,7 @@ async function runDemoSeed(): Promise<void> {
           const qty = basePrice > 0 ? subtotal / basePrice : 1;
           await db.insert(invoiceLineItems).values({
             invoiceId: inv.id,
-            franchiseeId: denver.id,
+            branchId: denver.id,
             serviceItemId: seedItem.id,
             sku: seedItem.sku,
             name: seedItem.name,
@@ -353,7 +341,7 @@ async function runDemoSeed(): Promise<void> {
         }
         if (status === 'paid') {
           await db.insert(payments).values({
-            franchiseeId: denver.id,
+            branchId: denver.id,
             invoiceId: inv.id,
             stripePaymentIntentId: `pi_demo_${j.id.slice(0, 8)}`,
             stripeChargeId: `ch_demo_${j.id.slice(0, 8)}`,
@@ -374,7 +362,7 @@ async function runDemoSeed(): Promise<void> {
       const [j] = await db
         .insert(jobs)
         .values({
-          franchiseeId: denver.id,
+          branchId: denver.id,
           customerId: customer.id,
           status: 'unassigned',
           title: 'Quote — multi-door replacement',
@@ -384,7 +372,7 @@ async function runDemoSeed(): Promise<void> {
       if (!j) continue;
       const total = 1850 + q * 320;
       await db.insert(invoices).values({
-        franchiseeId: denver.id,
+        branchId: denver.id,
         jobId: j.id,
         customerId: customer.id,
         status: 'draft',
@@ -410,7 +398,7 @@ async function runDemoSeed(): Promise<void> {
         now.getTime() - (i + 1) * 18 * 3600_000,
       );
       await db.insert(notificationsLog).values({
-        franchiseeId: denver.id,
+        branchId: denver.id,
         channel: 'email',
         direction: 'outbound',
         toAddress: `${customer.id}@demo.test`,
@@ -420,7 +408,7 @@ async function runDemoSeed(): Promise<void> {
         sentAt,
       });
       await db.insert(notificationsLog).values({
-        franchiseeId: denver.id,
+        branchId: denver.id,
         channel: 'email',
         direction: 'outbound',
         toAddress: `${customer.id}@demo.test`,
@@ -430,7 +418,7 @@ async function runDemoSeed(): Promise<void> {
         sentAt: new Date(sentAt.getTime() + 3600_000),
       });
       await db.insert(notificationsLog).values({
-        franchiseeId: denver.id,
+        branchId: denver.id,
         channel: 'sms',
         direction: 'outbound',
         toAddress: `+1303555${1000 + i}`,
@@ -475,7 +463,7 @@ async function runDemoSeed(): Promise<void> {
           ? null
           : new Date(startedAt.getTime() + o.durationSec * 1000);
       await db.insert(callSessions).values({
-        franchiseeId: denver.id,
+        branchId: denver.id,
         twilioCallSid: `CA_demo_${i}_${Date.now()}`,
         fromE164: `+1303555${2000 + i}`,
         toE164: '+13035550100',

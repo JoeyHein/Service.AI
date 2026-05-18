@@ -29,7 +29,7 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let db: ReturnType<typeof drizzle<typeof schema>>;
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 let denverTechUserId: string;
 let denverJobId: string;
 let captured: ProposedAssignment[];
@@ -48,11 +48,10 @@ async function checkReachable(): Promise<boolean> {
 
 function denverScope(): RequestScope {
   return {
-    type: 'franchisee',
+    type: 'branch',
     userId: 'dispatcher-bot',
     role: 'dispatcher',
-    franchisorId: ids.franchisorId,
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
   };
 }
 
@@ -69,7 +68,7 @@ function makeDeps(): DispatcherToolDeps {
 }
 
 const ctx: ToolContext = {
-  franchiseeId: '', // set in beforeAll
+  branchId: '', // set in beforeAll
   userId: null,
   guardrails: {
     confidenceThreshold: 0.8,
@@ -86,11 +85,11 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
-  ctx.franchiseeId = ids.denverId;
+  ctx.branchId = ids.denverId;
   db = drizzle(pool, { schema });
 
   // Resolve the denver tech user id + create a customer + job for tests.
@@ -104,7 +103,7 @@ beforeAll(async () => {
     tx
       .insert(schema.customers)
       .values({
-        franchiseeId: ids.denverId,
+        branchId: ids.denverId,
         name: 'Dispatcher Test Customer',
         latitude: '39.74' as unknown as string,
         longitude: '-104.99' as unknown as string,
@@ -117,7 +116,7 @@ beforeAll(async () => {
     tx
       .insert(schema.jobs)
       .values({
-        franchiseeId: ids.denverId,
+        branchId: ids.denverId,
         customerId,
         title: 'DI-03 open job',
         status: 'unassigned',
@@ -159,7 +158,7 @@ describe('DI-03 / listTechs', () => {
   it('filters by skill when provided', async () => {
     // Add a skill for denver tech1.
     await pool.query(
-      `INSERT INTO tech_skills (user_id, franchisee_id, skill)
+      `INSERT INTO tech_skills (user_id, branch_id, skill)
          VALUES ($1, $2, 'springs')
        ON CONFLICT DO NOTHING`,
       [denverTechUserId, ids.denverId],
@@ -212,7 +211,7 @@ describe('DI-03 / computeTravelTime', () => {
 });
 
 describe('DI-03 / proposeAssignment', () => {
-  it('captures the proposal when job + tech both belong to the franchisee', async () => {
+  it('captures the proposal when job + tech both belong to the branch', async () => {
     const deps = makeDeps();
     const tools = buildDispatcherToolSet(deps);
     const res = await tools.proposeAssignment!.execute(
@@ -233,11 +232,11 @@ describe('DI-03 / proposeAssignment', () => {
   it('cross-tenant jobId → INVALID_TARGET, nothing captured', async () => {
     // Insert an austin job directly.
     const austinCustomer = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Austin Ghost') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Austin Ghost') RETURNING id`,
       [ids.austinId],
     );
     const austinJob = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'austin ghost job', 'unassigned') RETURNING id`,
       [ids.austinId, austinCustomer.rows[0]!.id],
     );
@@ -265,14 +264,14 @@ describe('DI-03 / applyAssignment', () => {
     const custRow = await withScope(db, denverScope(), (tx) =>
       tx
         .insert(schema.customers)
-        .values({ franchiseeId: ids.denverId, name: 'Apply Target' })
+        .values({ branchId: ids.denverId, name: 'Apply Target' })
         .returning(),
     );
     const jobRow = await withScope(db, denverScope(), (tx) =>
       tx
         .insert(schema.jobs)
         .values({
-          franchiseeId: ids.denverId,
+          branchId: ids.denverId,
           customerId: custRow[0]!.id,
           title: 'apply target',
           status: 'unassigned',

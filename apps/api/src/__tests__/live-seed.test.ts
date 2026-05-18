@@ -2,12 +2,12 @@
  * Live Postgres tests for TASK-TEN-09 seed + production resolvers.
  *
  * Runs the seed module directly against the docker Postgres and verifies:
- *   - row counts after a reset + seed match the gate (1 franchisor, 2
- *     franchisees, 2 locations, 13 users, 13 memberships).
- *   - re-running seed is a no-op (counts unchanged, same franchisor UUID).
+ *   - row counts after a reset + seed match the gate (1 corporate, 2
+ *     branches, 2 locations, 13 users, 13 memberships).
+ *   - re-running seed is a no-op (counts unchanged, same corporate UUID).
  *   - every seeded user can sign in with DEV_SEED_PASSWORD.
  *   - the production MembershipResolver returns the seeded membership
- *     for a franchisee-scoped user.
+ *     for a branch-scoped user.
  *
  * Auto-skips when DATABASE_URL is unreachable.
  */
@@ -23,8 +23,8 @@ import {
   sessions,
   accounts,
   verifications,
-  franchisors,
-  franchisees,
+  corporate,
+  branches,
   locations,
   memberships,
 } from '@service-ai/db';
@@ -74,32 +74,32 @@ async function countRow(table: string): Promise<number> {
 }
 
 /**
- * Scope row-count assertions to the seed's own franchisor so concurrent
+ * Scope row-count assertions to the seed's own corporate row so concurrent
  * live-* test files running in parallel don't bleed into the numbers.
  * Vitest executes test FILES concurrently by default — global counts
  * would be unreliable even after beforeEach reset, because another file
  * could be mid-setup when we query.
  */
-async function seedScopedCounts(franchisorId: string): Promise<{
-  franchisees: number;
+async function seedScopedCounts(corporateId: string): Promise<{
+  branches: number;
   locations: number;
   memberships: number;
   users: number;
 }> {
-  const franchiseesCount = await pool.query(
-    'SELECT count(*)::int AS c FROM franchisees WHERE franchisor_id = $1',
-    [franchisorId],
+  const branchesCount = await pool.query(
+    'SELECT count(*)::int AS c FROM branches WHERE corporate_id = $1',
+    [corporateId],
   );
   const locationsCount = await pool.query(
     `SELECT count(*)::int AS c FROM locations
-      WHERE franchisee_id IN (SELECT id FROM franchisees WHERE franchisor_id = $1)`,
-    [franchisorId],
+      WHERE branch_id IN (SELECT id FROM branches WHERE corporate_id = $1)`,
+    [corporateId],
   );
   const membershipsCount = await pool.query(
     `SELECT count(*)::int AS c FROM memberships
-      WHERE role = 'platform_admin'
-         OR franchisee_id IN (SELECT id FROM franchisees WHERE franchisor_id = $1)`,
-    [franchisorId],
+      WHERE scope_type = 'corporate' AND scope_id = $1
+         OR branch_id IN (SELECT id FROM branches WHERE corporate_id = $1)`,
+    [corporateId],
   );
   const usersCount = await pool.query(
     `SELECT count(*)::int AS c FROM users
@@ -107,7 +107,7 @@ async function seedScopedCounts(franchisorId: string): Promise<{
          OR email LIKE '%@elevateddoors.test'`,
   );
   return {
-    franchisees: (franchiseesCount.rows[0] as { c: number }).c,
+    branches: (branchesCount.rows[0] as { c: number }).c,
     locations: (locationsCount.rows[0] as { c: number }).c,
     memberships: (membershipsCount.rows[0] as { c: number }).c,
     users: (usersCount.rows[0] as { c: number }).c,
@@ -117,15 +117,15 @@ async function seedScopedCounts(franchisorId: string): Promise<{
 describe('Seed — row counts after reset+seed', () => {
   it('creates exactly the gate-mandated counts', async () => {
     const result = await runSeed(pool);
-    const counts = await seedScopedCounts(result.franchisorId);
-    expect(counts.franchisees).toBe(2);
+    const counts = await seedScopedCounts(result.corporateId);
+    expect(counts.branches).toBe(2);
     expect(counts.locations).toBe(2);
     expect(counts.users).toBe(13);
     expect(counts.memberships).toBe(13);
 
-    // Global franchisor-with-our-slug count must be 1.
+    // Global corporate-with-our-slug count must be 1.
     const { rows } = await pool.query(
-      "SELECT count(*)::int AS c FROM franchisors WHERE slug = 'elevated-doors'",
+      "SELECT count(*)::int AS c FROM corporate WHERE slug = 'elevated-doors'",
     );
     expect((rows[0] as { c: number }).c).toBe(1);
   });
@@ -133,17 +133,17 @@ describe('Seed — row counts after reset+seed', () => {
   it('is idempotent — second runSeed does not duplicate rows', async () => {
     const first = await runSeed(pool);
     const second = await runSeed(pool);
-    expect(second.franchisorId).toBe(first.franchisorId);
-    expect(second.platformAdminUserId).toBe(first.platformAdminUserId);
-    const counts = await seedScopedCounts(first.franchisorId);
-    expect(counts.franchisees).toBe(2);
+    expect(second.corporateId).toBe(first.corporateId);
+    expect(second.corporateAdminUserId).toBe(first.corporateAdminUserId);
+    const counts = await seedScopedCounts(first.corporateId);
+    expect(counts.branches).toBe(2);
     expect(counts.users).toBe(13);
     expect(counts.memberships).toBe(13);
   });
 });
 
 describe('Seed — auth chain', () => {
-  it('every seeded franchisee user can sign in with DEV_SEED_PASSWORD', async () => {
+  it('every seeded branch user can sign in with DEV_SEED_PASSWORD', async () => {
     await runSeed(pool);
 
     const db = drizzle(pool, { schema });
@@ -161,13 +161,13 @@ describe('Seed — auth chain', () => {
     });
     await app.ready();
     try {
-      const franchiseeEmails = [
+      const branchEmails = [
         'denver.owner@elevateddoors.test',
         'denver.dispatcher@elevateddoors.test',
         'austin.tech1@elevateddoors.test',
         'austin.csr@elevateddoors.test',
       ];
-      for (const email of franchiseeEmails) {
+      for (const email of branchEmails) {
         const res = await app.inject({
           method: 'POST',
           url: '/api/auth/sign-in/email',
@@ -181,32 +181,31 @@ describe('Seed — auth chain', () => {
     }
   });
 
-  it('production MembershipResolver returns seeded membership for a franchisee user', async () => {
+  it('production MembershipResolver returns seeded membership for a branch user', async () => {
     await runSeed(pool);
     const db = drizzle(pool, { schema });
     const resolver = membershipResolver(db);
 
-    const [ownerRow] = await db
+    const [managerRow] = await db
       .select({ id: users.id })
       .from(users)
       .where(eq(users.email, 'denver.owner@elevateddoors.test'));
-    expect(ownerRow).toBeDefined();
-    const rows = await resolver.memberships(ownerRow!.id);
+    expect(managerRow).toBeDefined();
+    const rows = await resolver.memberships(managerRow!.id);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.role).toBe('franchisee_owner');
-    expect(rows[0]?.franchisorId).toBeTruthy();
-    expect(rows[0]?.franchiseeId).toBeTruthy();
+    expect(rows[0]?.role).toBe('manager');
+    expect(rows[0]?.branchId).toBeTruthy();
   });
 });
 
 describe('Seed reset', () => {
   it('clears every tenant + auth table while preserving the schema', async () => {
     await runSeed(pool);
-    // After seed, the seeded franchisor + users must exist.
-    const beforeFr = await pool.query(
-      "SELECT count(*)::int AS c FROM franchisors WHERE slug='elevated-doors'",
+    // After seed, the seeded corporate + users must exist.
+    const beforeCo = await pool.query(
+      "SELECT count(*)::int AS c FROM corporate WHERE slug='elevated-doors'",
     );
-    expect((beforeFr.rows[0] as { c: number }).c).toBe(1);
+    expect((beforeCo.rows[0] as { c: number }).c).toBe(1);
 
     await runReset(pool);
 
@@ -214,8 +213,8 @@ describe('Seed reset', () => {
     // will race with us; we only assert this right after our own reset.
     expect(await countRow('users')).toBe(0);
     expect(await countRow('memberships')).toBe(0);
-    expect(await countRow('franchisors')).toBe(0);
-    expect(await countRow('franchisees')).toBe(0);
+    expect(await countRow('corporate')).toBe(0);
+    expect(await countRow('branches')).toBe(0);
     expect(await countRow('locations')).toBe(0);
 
     // Schema (tables themselves) still exists.
@@ -223,7 +222,8 @@ describe('Seed reset', () => {
     const names = rows.map((r: { tablename: string }) => r.tablename);
     expect(names).toContain('users');
     expect(names).toContain('memberships');
-    expect(names).toContain('franchisors');
+    expect(names).toContain('corporate');
+    expect(names).toContain('branches');
   });
 });
 
@@ -232,7 +232,7 @@ void users;
 void sessions;
 void accounts;
 void verifications;
-void franchisors;
-void franchisees;
+void corporate;
+void branches;
 void locations;
 void memberships;

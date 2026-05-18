@@ -2,12 +2,12 @@
  * RAG retriever over the kb_docs table (phase_ai_tech_assistant).
  *
  * At the ≤200-doc scale we compute cosine similarity in JS after
- * pulling the candidate set with a simple SQL filter (own
- * franchisor + global docs). Swap to pgvector when the corpus
- * outgrows in-memory scoring — tracked as AUDIT m1.
+ * pulling the candidate set with a simple SELECT. The franchisor_id
+ * column on kb_docs was dropped by migration 0016 (corporate hub
+ * redesign), so the corpus is now a single corporate-wide pool. Swap
+ * to pgvector when the corpus outgrows in-memory scoring.
  */
 
-import { eq, isNull, or } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { kbDocs, type ScopedTx } from '@service-ai/db';
 import * as schema from '@service-ai/db';
@@ -20,7 +20,6 @@ import {
 type Drizzle = NodePgDatabase<typeof schema>;
 
 export interface RetrieveInput {
-  franchisorId: string | null;
   query: string;
   limit?: number;
   /** Optional tag filter applied before scoring. */
@@ -42,7 +41,6 @@ export interface RagDeps {
 
 async function loadCandidates(
   tx: ScopedTx | Drizzle,
-  franchisorId: string | null,
 ): Promise<
   Array<{
     id: string;
@@ -53,19 +51,6 @@ async function loadCandidates(
     embedding: unknown;
   }>
 > {
-  if (franchisorId) {
-    return tx
-      .select({
-        id: kbDocs.id,
-        title: kbDocs.title,
-        body: kbDocs.body,
-        source: kbDocs.source,
-        tags: kbDocs.tags,
-        embedding: kbDocs.embedding,
-      })
-      .from(kbDocs)
-      .where(or(eq(kbDocs.franchisorId, franchisorId), isNull(kbDocs.franchisorId)));
-  }
   return tx
     .select({
       id: kbDocs.id,
@@ -100,7 +85,7 @@ export async function retrieveKnowledge(
   const limit = Math.max(1, Math.min(input.limit ?? 3, 25));
   const queryVec = await embedding.embed(input.query);
 
-  const rows = await loadCandidates(tx, input.franchisorId);
+  const rows = await loadCandidates(tx);
   const scored: RetrievedDoc[] = [];
   for (const r of rows) {
     const docEmbedding = toNumberArray(r.embedding);

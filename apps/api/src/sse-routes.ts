@@ -12,8 +12,6 @@
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq } from 'drizzle-orm';
-import { franchisees } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 import type { EventBus, DispatchEvent } from './event-bus.js';
 
@@ -23,7 +21,7 @@ const HEARTBEAT_MS = 15_000;
 
 export function registerSseRoutes(
   app: FastifyInstance,
-  db: Drizzle,
+  _db: Drizzle,
   bus: EventBus,
 ): void {
   app.get(
@@ -37,22 +35,10 @@ export function registerSseRoutes(
       }
       const scope = req.scope;
 
-      // Build a scope-filter predicate once per connection. For
-      // franchisor callers we need the set of their franchisee ids.
-      let franchiseeIdsForFranchisor = new Set<string>();
-      if (scope.type === 'franchisor') {
-        const rows = await db
-          .select({ id: franchisees.id })
-          .from(franchisees)
-          .where(eq(franchisees.franchisorId, scope.franchisorId));
-        franchiseeIdsForFranchisor = new Set(rows.map((r) => r.id));
-      }
-
+      // CHR-02: corporate sees every branch's events; branch sees only its own.
       function matches(event: DispatchEvent): boolean {
-        if (scope.type === 'platform') return true;
-        if (scope.type === 'franchisor')
-          return franchiseeIdsForFranchisor.has(event.franchiseeId);
-        return event.franchiseeId === scope.franchiseeId;
+        if (scope.type === 'corporate') return true;
+        return event.branchId === scope.branchId;
       }
 
       reply.raw.writeHead(200, {

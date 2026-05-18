@@ -23,8 +23,7 @@ describe('CJ-01 / Drizzle schema', () => {
     const keys = Object.keys(customers);
     for (const col of [
       'id',
-      'franchiseeId',
-      'locationId',
+      'branchId',
       'name',
       'email',
       'phone',
@@ -44,7 +43,7 @@ describe('CJ-01 / Drizzle schema', () => {
     const keys = Object.keys(jobs);
     for (const col of [
       'id',
-      'franchiseeId',
+      'branchId',
       'customerId',
       'status',
       'title',

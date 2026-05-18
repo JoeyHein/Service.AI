@@ -23,7 +23,6 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let db: ReturnType<typeof drizzle<typeof schema>>;
-let franchisorId: string;
 
 async function checkReachable(): Promise<boolean> {
   const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
@@ -42,8 +41,7 @@ beforeAll(async () => {
   if (!reachable) return;
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
-  const seed = await runSeed(pool);
-  franchisorId = seed.franchisorId;
+  await runSeed(pool);
   db = drizzle(pool, { schema });
 }, 60_000);
 
@@ -56,17 +54,15 @@ beforeEach((ctx) => {
 });
 
 describe('TA-02 / retrieveKnowledge', () => {
-  it('seeds at least 35 kb_docs for the franchisor', async () => {
+  it('seeds at least 35 kb_docs (corporate-wide)', async () => {
     const { rows } = await pool.query<{ c: string }>(
-      `SELECT count(*) AS c FROM kb_docs WHERE franchisor_id = $1`,
-      [franchisorId],
+      `SELECT count(*) AS c FROM kb_docs`,
     );
     expect(Number(rows[0]?.c)).toBeGreaterThanOrEqual(35);
   });
 
   it('query tag-text returns top-3 by cosine', async () => {
     const docs = await retrieveKnowledge(db, {
-      franchisorId,
       query: 'torsion broken-spring',
       limit: 3,
     });
@@ -79,12 +75,10 @@ describe('TA-02 / retrieveKnowledge', () => {
 
   it('requireTags filter narrows the candidate set', async () => {
     const all = await retrieveKnowledge(db, {
-      franchisorId,
       query: 'anything',
       limit: 10,
     });
     const onlyClopay = await retrieveKnowledge(db, {
-      franchisorId,
       query: 'anything',
       limit: 10,
       requireTags: ['clopay'],
@@ -95,9 +89,8 @@ describe('TA-02 / retrieveKnowledge', () => {
     }
   });
 
-  it('null franchisorId caller sees every doc', async () => {
+  it('null corporateId caller sees every doc', async () => {
     const nullScoped = await retrieveKnowledge(db, {
-      franchisorId: null,
       query: 'opener',
       limit: 25,
     });

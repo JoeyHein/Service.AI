@@ -31,7 +31,7 @@ export interface ReceiptLine {
 }
 
 export interface ReceiptInput {
-  franchiseeName: string;
+  branchName: string;
   customerName: string;
   customerEmail: string | null;
   invoiceNumber: string;
@@ -103,7 +103,7 @@ function buildDocument(input: ReceiptInput) {
         h(
           View,
           null,
-          h(Text, { style: styles.brand }, input.franchiseeName),
+          h(Text, { style: styles.brand }, input.branchName),
           h(Text, { style: styles.metaRow }, 'Service.AI — Powered by Stripe'),
         ),
         h(

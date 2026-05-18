@@ -1,8 +1,8 @@
 /**
  * Live Postgres tests for TASK-DB-02 assignment API + TASK-DB-03 SSE
  * event stream. Verifies:
- *   - assign to a same-franchisee tech succeeds
- *   - cross-franchisee tech → 400 INVALID_TARGET
+ *   - assign to a same-branch tech succeeds
+ *   - cross-branch tech → 400 INVALID_TARGET
  *   - non-tech user (dispatcher) → 400 INVALID_TARGET
  *   - assigning an unassigned job auto-transitions to scheduled
  *   - unassign clears assigned_tech_user_id
@@ -21,7 +21,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { inProcessEventBus, type EventBus, type DispatchEvent } from '../event-bus.js';
@@ -107,8 +106,8 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -125,7 +124,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -172,7 +170,7 @@ describe('DB-02 / assign', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('assigns same-franchisee tech and auto-transitions to scheduled', async () => {
+  it('assigns same-branch tech and auto-transitions to scheduled', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${denverJobId}/assign`,
@@ -193,7 +191,7 @@ describe('DB-02 / assign', () => {
     expect((rows[0] as { reason: string }).reason).toBe('auto-transition on assign');
   });
 
-  it('cross-franchisee tech → 400 INVALID_TARGET', async () => {
+  it('cross-branch tech → 400 INVALID_TARGET', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${denverJobId}/assign`,
@@ -204,7 +202,7 @@ describe('DB-02 / assign', () => {
     expect(res.json().error.code).toBe('INVALID_TARGET');
   });
 
-  it('non-tech user (dispatcher in same franchisee) → 400 INVALID_TARGET', async () => {
+  it('non-tech user (dispatcher in same branch) → 400 INVALID_TARGET', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${denverJobId}/assign`,
@@ -252,7 +250,7 @@ describe('DB-03 / SSE event bus (no HTTP stream — via direct bus subscribe)', 
     // without depending on Fastify inject's SSE support.
     const events: DispatchEvent[] = [];
     const unsub = bus.subscribe(
-      (e) => e.franchiseeId === ids.denverId,
+      (e) => e.branchId === ids.denverId,
       (e) => events.push(e),
     );
     try {
@@ -278,7 +276,7 @@ describe('DB-03 / SSE event bus (no HTTP stream — via direct bus subscribe)', 
   it('scope predicate excludes out-of-scope events', async () => {
     const events: DispatchEvent[] = [];
     const unsub = bus.subscribe(
-      (e) => e.franchiseeId === ids.austinId,
+      (e) => e.branchId === ids.austinId,
       (e) => events.push(e),
     );
     try {

@@ -16,7 +16,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export interface ProvisionNumberInput {
-  franchiseeId: string;
+  branchId: string;
   /** Optional area code; falls back to 555. */
   areaCode?: string;
   /** Display name. */
@@ -66,8 +66,8 @@ function nextStubSid(prefix: string): string {
 }
 
 /**
- * Stub uses a deterministic hash of `franchiseeId` to pick digits
- * for the provisioned number so the same franchisee gets a
+ * Stub uses a deterministic hash of `branchId` to pick digits
+ * for the provisioned number so the same branch gets a
  * stable number across reboots. Area code defaults to "555".
  */
 export function stubTelephonyClient(): TelephonyClient {
@@ -84,9 +84,9 @@ export function stubTelephonyClient(): TelephonyClient {
     return out;
   }
   return {
-    async provisionNumber({ franchiseeId, areaCode }) {
+    async provisionNumber({ branchId, areaCode }) {
       const ac = areaCode ?? '555';
-      const suffix = hashDigits(franchiseeId, 7);
+      const suffix = hashDigits(branchId, 7);
       return {
         phoneNumberE164: `+1${ac}${suffix}`,
         twilioSid: `PN${nextStubSid('')}`,
@@ -137,7 +137,7 @@ export async function realTelephonyClient(
   const { default: twilio } = await import('twilio');
   const client = twilio(opts.accountSid, opts.authToken);
   return {
-    async provisionNumber({ franchiseeId, areaCode, friendlyName }) {
+    async provisionNumber({ branchId, areaCode, friendlyName }) {
       const available = await client
         .availablePhoneNumbers('US')
         .local.list({ areaCode: areaCode ? Number(areaCode) : undefined, limit: 1 });
@@ -147,7 +147,7 @@ export async function realTelephonyClient(
       }
       const created = await client.incomingPhoneNumbers.create({
         phoneNumber: candidate.phoneNumber,
-        friendlyName: friendlyName ?? franchiseeId,
+        friendlyName: friendlyName ?? branchId,
       });
       return {
         phoneNumberE164: created.phoneNumber,

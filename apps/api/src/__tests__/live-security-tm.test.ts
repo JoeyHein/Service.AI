@@ -23,7 +23,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -115,7 +114,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',

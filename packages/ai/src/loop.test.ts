@@ -8,7 +8,7 @@ import { runAgentLoop } from './loop.js';
 import type { Tool, ToolContext } from './tools/types.js';
 
 const ctx: ToolContext = {
-  franchiseeId: 'fe-1',
+  branchId: 'fe-1',
   userId: null,
   guardrails: {
     confidenceThreshold: 0.8,

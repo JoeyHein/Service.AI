@@ -1,6 +1,5 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useMemo, useState, useTransition } from 'react';
 import { apiClientFetch } from '../../../lib/api.js';
 
@@ -13,13 +12,24 @@ export interface PricebookRow {
   basePrice: string;
   floorPrice: string | null;
   ceilingPrice: string | null;
-  overrideId: string | null;
-  overridePrice: string | null;
   effectivePrice: string;
-  overridden: boolean;
 }
 
-export function PricebookTable({ rows }: { rows: PricebookRow[] }) {
+/**
+ * Branch pricebook table. The corporate-hub redesign (CHR-08/09) removed
+ * the inline override flow — branches no longer set their own prices.
+ * Managers can suggest a change via the "Suggest" button, which lands
+ * in /corporate/pricebook-suggestions for corporate review.
+ *
+ * Non-manager branch roles see the table read-only.
+ */
+export function PricebookTable({
+  rows,
+  canSuggest,
+}: {
+  rows: PricebookRow[];
+  canSuggest: boolean;
+}) {
   const grouped = useMemo(() => {
     const m = new Map<string, PricebookRow[]>();
     for (const r of rows) {
@@ -50,7 +60,7 @@ export function PricebookTable({ rows }: { rows: PricebookRow[] }) {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {list.map((r) => (
-                <PriceRow key={r.serviceItemId} row={r} />
+                <PriceRow key={r.serviceItemId} row={r} canSuggest={canSuggest} />
               ))}
             </tbody>
           </table>
@@ -60,12 +70,17 @@ export function PricebookTable({ rows }: { rows: PricebookRow[] }) {
   );
 }
 
-function PriceRow({ row }: { row: PricebookRow }) {
-  const router = useRouter();
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(
-    row.overridePrice ?? row.basePrice ?? '',
-  );
+function PriceRow({
+  row,
+  canSuggest,
+}: {
+  row: PricebookRow;
+  canSuggest: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  const [reason, setReason] = useState('');
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -74,48 +89,28 @@ function PriceRow({ row }: { row: PricebookRow }) {
   const floor = row.floorPrice == null ? null : Number(row.floorPrice);
   const ceiling = row.ceilingPrice == null ? null : Number(row.ceilingPrice);
 
-  function save() {
+  function submit() {
     const n = Number(value);
     if (!Number.isFinite(n) || n < 0) {
-      setError('Price must be a non-negative number.');
-      return;
-    }
-    if (floor !== null && n < floor) {
-      setError(`Below floor $${floor.toFixed(2)}.`);
-      return;
-    }
-    if (ceiling !== null && n > ceiling) {
-      setError(`Above ceiling $${ceiling.toFixed(2)}.`);
+      setError('Suggested price must be a non-negative number.');
       return;
     }
     setError(null);
     startTransition(async () => {
-      const res = await apiClientFetch('/api/v1/pricebook/overrides', {
+      const res = await apiClientFetch('/api/v1/pricebook/suggestions', {
         method: 'POST',
-        body: JSON.stringify({ serviceItemId: row.serviceItemId, overridePrice: n }),
+        body: JSON.stringify({
+          serviceItemId: row.serviceItemId,
+          suggestedPriceCents: Math.round(n * 100),
+          reason: reason.trim() || undefined,
+        }),
       });
       if (res.status !== 200 && res.status !== 201) {
-        setError(res.body.error?.message ?? 'Save failed.');
+        setError(res.body.error?.message ?? 'Submit failed.');
         return;
       }
-      setEditing(false);
-      router.refresh();
-    });
-  }
-
-  function revert() {
-    if (!row.overrideId) return;
-    startTransition(async () => {
-      const res = await apiClientFetch(
-        `/api/v1/pricebook/overrides/${row.overrideId}`,
-        { method: 'DELETE' },
-      );
-      if (res.status !== 200) {
-        setError(res.body.error?.message ?? 'Revert failed.');
-        return;
-      }
-      setEditing(false);
-      router.refresh();
+      setSubmitted(true);
+      setOpen(false);
     });
   }
 
@@ -129,89 +124,76 @@ function PriceRow({ row }: { row: PricebookRow }) {
       </td>
       <td className="px-4 py-2 text-right text-xs text-slate-500 tabular-nums">
         base ${base.toFixed(2)}
+        {(floor !== null || ceiling !== null) && (
+          <div className="text-[10px] text-slate-500">
+            {floor !== null && `floor $${floor.toFixed(2)}`}
+            {floor !== null && ceiling !== null && ' · '}
+            {ceiling !== null && `ceiling $${ceiling.toFixed(2)}`}
+          </div>
+        )}
       </td>
-      <td className="px-4 py-2 text-right tabular-nums">
-        {editing ? (
+      <td className="px-4 py-2 text-right tabular-nums font-medium text-slate-900">
+        ${effective.toFixed(2)}
+      </td>
+      <td className="px-4 py-2 text-right">
+        {!canSuggest ? null : submitted ? (
+          <span className="text-xs text-emerald-700">Suggested ✓</span>
+        ) : open ? (
           <div className="flex flex-col items-end gap-1">
             <div className="flex items-center gap-1">
               <span className="text-slate-500">$</span>
               <input
                 type="number"
                 step="0.01"
+                placeholder="new price"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 className="w-24 rounded border border-slate-300 px-2 py-1 text-sm tabular-nums text-right"
               />
             </div>
-            {(floor !== null || ceiling !== null) && (
-              <div className="text-[10px] text-slate-500">
-                {floor !== null && `floor $${floor.toFixed(2)}`}
-                {floor !== null && ceiling !== null && ' · '}
-                {ceiling !== null && `ceiling $${ceiling.toFixed(2)}`}
-              </div>
-            )}
+            <input
+              type="text"
+              placeholder="reason (optional)"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="w-48 rounded border border-slate-300 px-2 py-1 text-xs"
+            />
             {error && (
               <div className="text-[11px] text-red-700" role="alert">
                 {error}
               </div>
             )}
-          </div>
-        ) : (
-          <>
-            <span
-              className={row.overridden ? 'font-medium text-slate-900' : 'text-slate-800'}
-            >
-              ${effective.toFixed(2)}
-            </span>
-            {row.overridden && (
-              <div className="text-[10px] text-blue-700">overridden</div>
-            )}
-          </>
-        )}
-      </td>
-      <td className="px-4 py-2 text-right">
-        {editing ? (
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={save}
-              disabled={pending}
-              className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              Save
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(false);
-                setError(null);
-              }}
-              className="text-xs text-slate-500 hover:underline"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <div className="flex gap-2 justify-end">
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="text-xs text-blue-700 hover:underline"
-              data-testid={`override-${row.sku}`}
-            >
-              Override
-            </button>
-            {row.overridden && (
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={revert}
+                onClick={submit}
                 disabled={pending}
-                className="text-xs text-red-700 hover:underline disabled:opacity-50"
+                className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-60"
               >
-                Revert
+                {pending ? 'Sending…' : 'Submit'}
               </button>
-            )}
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  setError(null);
+                  setValue('');
+                  setReason('');
+                }}
+                className="text-xs text-slate-500 hover:underline"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="text-xs text-blue-700 hover:underline"
+          >
+            Suggest
+          </button>
         )}
       </td>
     </tr>

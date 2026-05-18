@@ -1,14 +1,10 @@
 /**
- * Tests for TASK-TEN-03: RequestScope → GUC flattening and RLS policy
- * migration structure.
+ * Tests for the corporate-hub RequestScope → GUC flattening (CHR-02).
  *
- * Unit tests (unconditional): scopeToGucs returns the right shape for every
- * variant. RLS migration SQL contains every expected CREATE POLICY name and
- * the .down.sql drops them all.
- *
- * Integration test (skipped when Postgres is unreachable): withScope opens a
- * transaction, sets the three GUCs, and Postgres reads them back. Matches
- * the reachability-gated pattern already used by health-checks.test.ts.
+ * Unit tests (unconditional): scopeToGucs returns the right shape for
+ * every variant. Migration-structure assertions cover the original
+ * franchise RLS migration (0003) plus the corporate redesign migration
+ * (0016) — the latter is the live source of truth post-CHR-01.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -17,113 +13,138 @@ import { fileURLToPath } from 'node:url';
 import { scopeToGucs, type RequestScope } from '../scope.js';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const RLS_SQL = resolve(PKG_ROOT, 'migrations', '0003_rls_policies.sql');
-const RLS_DOWN_SQL = resolve(PKG_ROOT, 'migrations', '0003_rls_policies.down.sql');
+const CHR_UP = resolve(
+  PKG_ROOT,
+  'migrations',
+  '0016_corporate_hub_redesign.sql',
+);
+const CHR_DOWN = resolve(
+  PKG_ROOT,
+  'migrations',
+  '0016_corporate_hub_redesign.down.sql',
+);
 
 describe('scopeToGucs', () => {
-  it('flattens a platform_admin scope (no franchisor/franchisee)', () => {
+  it('flattens a corporate scope (no branch)', () => {
     const scope: RequestScope = {
-      type: 'platform',
+      type: 'corporate',
       userId: 'u1',
-      role: 'platform_admin',
+      role: 'corporate_admin',
     };
     expect(scopeToGucs(scope)).toEqual({
-      role: 'platform_admin',
-      franchisorId: '',
-      franchiseeId: '',
+      role: 'corporate_admin',
+      branchId: '',
       userId: 'u1',
     });
   });
 
-  it('flattens a franchisor_admin scope (franchisor, no franchisee)', () => {
+  it('flattens a manager scope', () => {
     const scope: RequestScope = {
-      type: 'franchisor',
-      userId: 'u1',
-      role: 'franchisor_admin',
-      franchisorId: '11111111-1111-1111-1111-111111111111',
+      type: 'branch',
+      userId: 'u2',
+      role: 'manager',
+      branchId: '22222222-2222-2222-2222-222222222222',
     };
     expect(scopeToGucs(scope)).toEqual({
-      role: 'franchisor_admin',
-      franchisorId: '11111111-1111-1111-1111-111111111111',
-      franchiseeId: '',
-      userId: 'u1',
+      role: 'manager',
+      branchId: '22222222-2222-2222-2222-222222222222',
+      userId: 'u2',
     });
   });
 
-  it('flattens a franchisee-scoped role (all three set)', () => {
-    const scope: RequestScope = {
-      type: 'franchisee',
-      userId: 'u1',
-      role: 'dispatcher',
-      franchisorId: '11111111-1111-1111-1111-111111111111',
-      franchiseeId: '22222222-2222-2222-2222-222222222222',
-      locationId: '33333333-3333-3333-3333-333333333333',
-    };
-    expect(scopeToGucs(scope)).toEqual({
-      role: 'dispatcher',
-      franchisorId: '11111111-1111-1111-1111-111111111111',
-      franchiseeId: '22222222-2222-2222-2222-222222222222',
-      userId: 'u1',
-    });
-  });
-
-  it('preserves the role string for each franchisee role variant', () => {
-    const roles = ['franchisee_owner', 'location_manager', 'dispatcher', 'tech', 'csr'] as const;
-    for (const role of roles) {
+  it.each(['manager', 'dispatcher', 'tech', 'csr'] as const)(
+    'preserves the role string for %s',
+    (role) => {
       const out = scopeToGucs({
-        type: 'franchisee',
+        type: 'branch',
         userId: 'u',
         role,
-        franchisorId: '11111111-1111-1111-1111-111111111111',
-        franchiseeId: '22222222-2222-2222-2222-222222222222',
+        branchId: '22222222-2222-2222-2222-222222222222',
       });
       expect(out.role).toBe(role);
-    }
-  });
+    },
+  );
 });
 
-describe('RLS policy migration SQL structure', () => {
-  const up = readFileSync(RLS_SQL, 'utf8');
-  const down = readFileSync(RLS_DOWN_SQL, 'utf8');
+describe('CHR-01 migration structure (0016_corporate_hub_redesign)', () => {
+  const up = readFileSync(CHR_UP, 'utf8');
+  const down = readFileSync(CHR_DOWN, 'utf8');
 
-  const tables = ['franchisees', 'locations', 'memberships', 'audit_log'] as const;
-  const roles = ['platform_admin', 'franchisor_admin', 'scoped'] as const;
-
-  it('enables FORCE ROW LEVEL SECURITY on every tenant-scoped table', () => {
-    for (const t of tables) {
-      expect(up).toMatch(new RegExp(`ALTER TABLE ${t} FORCE ROW LEVEL SECURITY`));
+  it('creates all seven new corporate-hub tables', () => {
+    for (const t of [
+      'corporate',
+      'branches',
+      'branch_managers',
+      'comp_plans',
+      'user_comp_assignments',
+      'commission_ledger',
+      'pricebook_suggestions',
+    ]) {
+      expect(up).toMatch(new RegExp(`CREATE TABLE ${t}\\b`));
     }
   });
 
-  it('defines one CREATE POLICY per (table, role) combination', () => {
-    for (const t of tables) {
-      for (const r of roles) {
-        expect(up).toMatch(
-          new RegExp(`CREATE POLICY ${t}_${r} ON ${t}`),
-        );
-      }
+  it('drops every legacy franchise table', () => {
+    for (const t of [
+      'pricebook_overrides',
+      'royalty_statements',
+      'royalty_rules',
+      'franchise_agreements',
+      'franchisees',
+      'franchisors',
+    ]) {
+      expect(up).toMatch(new RegExp(`DROP TABLE IF EXISTS ${t}\\b`));
     }
   });
 
-  it('reads the three expected GUCs via current_setting', () => {
-    expect(up).toMatch(/current_setting\('app\.role', true\)/);
-    expect(up).toMatch(/current_setting\('app\.franchisor_id', true\)/);
-    expect(up).toMatch(/current_setting\('app\.franchisee_id', true\)/);
-  });
-
-  it('down migration drops every policy the up migration created', () => {
-    for (const t of tables) {
-      for (const r of roles) {
-        expect(down).toMatch(
-          new RegExp(`DROP POLICY IF EXISTS ${t}_${r}\\s+ON ${t}`),
-        );
-      }
+  it('renames franchisee_id → branch_id on every business table', () => {
+    for (const t of [
+      'locations',
+      'customers',
+      'jobs',
+      'invoices',
+      'invoice_line_items',
+      'payments',
+      'refunds',
+    ]) {
+      expect(up).toMatch(
+        new RegExp(`ALTER TABLE ${t}\\s+RENAME COLUMN franchisee_id\\s+TO branch_id`),
+      );
     }
   });
 
-  it('down migration clears FORCE ROW LEVEL SECURITY', () => {
-    for (const t of tables) {
-      expect(down).toMatch(new RegExp(`ALTER TABLE IF EXISTS ${t}\\s+NO FORCE ROW LEVEL SECURITY`));
+  it('renames target_franchisee_id → target_branch_id on audit_log', () => {
+    expect(up).toMatch(
+      /ALTER TABLE audit_log\s+RENAME COLUMN target_franchisee_id\s+TO target_branch_id/,
+    );
+  });
+
+  it('writes the pricebook_overrides snapshot CSV before destructive DDL', () => {
+    expect(up).toMatch(/\\copy pricebook_overrides TO '\.\.\/\.\.\/docs\/migrations\/0016_pricebook_overrides_snapshot\.csv'/);
+  });
+
+  it('down migration restores franchisors + franchisees', () => {
+    expect(down).toMatch(/CREATE TABLE franchisors\b/);
+    expect(down).toMatch(/CREATE TABLE franchisees\b/);
+  });
+
+  it('down migration drops every corporate-hub table', () => {
+    for (const t of [
+      'pricebook_suggestions',
+      'commission_ledger',
+      'user_comp_assignments',
+      'comp_plans',
+      'branch_managers',
+      'branches',
+      'corporate',
+    ]) {
+      expect(down).toMatch(new RegExp(`DROP TABLE IF EXISTS ${t}\\b`));
     }
+  });
+
+  it('down migration renames branch_id back to franchisee_id', () => {
+    expect(down).toMatch(
+      /ALTER TABLE locations\s+RENAME COLUMN branch_id\s+TO franchisee_id/,
+    );
   });
 });

@@ -16,7 +16,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { inProcessEventBus, type EventBus, type DispatchEvent } from '../event-bus.js';
@@ -106,8 +105,8 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -124,7 +123,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -200,7 +198,7 @@ describe('DB-06 / cross-tenant attacks are blocked', () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it('austin dispatcher listing /api/v1/techs without franchiseeId gets their austin techs only', async () => {
+  it('austin dispatcher listing /api/v1/techs without branchId gets their austin techs only', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/techs',
@@ -212,10 +210,10 @@ describe('DB-06 / cross-tenant attacks are blocked', () => {
     expect(rows.some((r) => r.userId === denverTechUserId)).toBe(false);
   });
 
-  it('franchisee-scoped caller passing ?franchiseeId for another franchisee → 404', async () => {
+  it('branch-scoped caller passing ?branchId for another branch → 404', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/techs?franchiseeId=${ids.austinId}`,
+      url: `/api/v1/techs?branchId=${ids.austinId}`,
       headers: { cookie: cookies.denverDispatcher },
     });
     expect(res.statusCode).toBe(404);
@@ -264,11 +262,11 @@ describe('DB-06 / EventBus scope filtering (what SSE relies on)', () => {
     const denverEvents: DispatchEvent[] = [];
     const austinEvents: DispatchEvent[] = [];
     const uD = bus.subscribe(
-      (e) => e.franchiseeId === ids.denverId,
+      (e) => e.branchId === ids.denverId,
       (e) => denverEvents.push(e),
     );
     const uA = bus.subscribe(
-      (e) => e.franchiseeId === ids.austinId,
+      (e) => e.branchId === ids.austinId,
       (e) => austinEvents.push(e),
     );
     try {
@@ -290,7 +288,7 @@ describe('DB-06 / EventBus scope filtering (what SSE relies on)', () => {
   it('events carry ids only — no customer names, prices, etc.', async () => {
     const captured: DispatchEvent[] = [];
     const u = bus.subscribe(
-      (e) => e.franchiseeId === ids.denverId,
+      (e) => e.branchId === ids.denverId,
       (e) => captured.push(e),
     );
     try {
@@ -304,8 +302,8 @@ describe('DB-06 / EventBus scope filtering (what SSE relies on)', () => {
       for (const e of captured) {
         const allowed = [
           'type',
-          'franchiseeId',
-          'franchisorId',
+          'branchId',
+          'corporateId',
           'jobId',
           'assignedTechUserId',
           'fromStatus',
@@ -325,7 +323,7 @@ describe('DB-06 / EventBus scope filtering (what SSE relies on)', () => {
 
 // --- 5. Techs endpoint access ---
 describe('DB-06 / techs endpoint access', () => {
-  it('dispatcher, tech, owner, csr all get the same list for their franchisee', async () => {
+  it('dispatcher, tech, manager, csr all get the same list for their branch', async () => {
     const roles = ['denverDispatcher', 'denverTech', 'denverOwner'] as const;
     for (const role of roles) {
       const res = await app.inject({
@@ -362,7 +360,7 @@ describe('DB-06 / validation', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('unassign on another franchisee\'s job → 404', async () => {
+  it('unassign on another branch\'s job → 404', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${austinJobId}/unassign`,
@@ -385,7 +383,7 @@ describe('DB-06 / validation', () => {
     expect(res.json().error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('GET /api/v1/techs as platform admin without franchiseeId → 400', async () => {
+  it('GET /api/v1/techs as platform admin without branchId → 400', async () => {
     // Sign in as the seeded platform admin.
     const cookie = await signIn('joey@opendc.ca');
     const res = await app.inject({
@@ -397,11 +395,11 @@ describe('DB-06 / validation', () => {
     expect(res.json().error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('GET /api/v1/techs as platform admin with valid franchiseeId → 200', async () => {
+  it('GET /api/v1/techs as platform admin with valid branchId → 200', async () => {
     const cookie = await signIn('joey@opendc.ca');
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/techs?franchiseeId=${ids.denverId}`,
+      url: `/api/v1/techs?branchId=${ids.denverId}`,
       headers: { cookie },
     });
     expect(res.statusCode).toBe(200);
@@ -409,21 +407,21 @@ describe('DB-06 / validation', () => {
     expect(ids_).toContain(denverTechUserId);
   });
 
-  it('GET /api/v1/techs as admin with non-existent franchiseeId → 404', async () => {
+  it('GET /api/v1/techs as admin with non-existent branchId → 404', async () => {
     const cookie = await signIn('joey@opendc.ca');
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/techs?franchiseeId=00000000-0000-0000-0000-000000000000',
+      url: '/api/v1/techs?branchId=00000000-0000-0000-0000-000000000000',
       headers: { cookie },
     });
     expect(res.statusCode).toBe(404);
   });
 });
 
-describe('DB-06 / tech cannot assign their own job (role isn\'t dispatcher — still works because scope is all same-franchisee)', () => {
+describe('DB-06 / tech cannot assign their own job (role isn\'t dispatcher — still works because scope is all same-branch)', () => {
   // Techs CAN call the assign endpoint (v1 doesn't split role further
-  // inside a franchisee); this test records that policy. If later we
-  // want to lock assignment to dispatcher/owner/location_manager only,
+  // inside a branch); this test records that policy. If later we
+  // want to lock assignment to dispatcher/manager only,
   // this case becomes a negative test.
   it('denver tech assigning themselves to a denver job succeeds', async () => {
     const fresh = await createCustomerAndJob(cookies.denverDispatcher, 'Tech self assign');

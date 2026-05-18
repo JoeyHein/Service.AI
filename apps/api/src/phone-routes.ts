@@ -1,18 +1,20 @@
 /**
- * Twilio phone provisioning endpoints (TASK-CV-06).
+ * Twilio phone provisioning endpoints.
  *
  *   POST /api/v1/franchisees/:id/phone/provision
- *     Provisions a Twilio number via the TelephonyClient adapter,
- *     stamps franchisees.twilio_phone_number. Idempotent — returns
- *     the existing number without re-provisioning when already set.
+ *     Provisions a Twilio number via the TelephonyClient adapter and
+ *     stamps branches.twilio_phone_number. Idempotent — returns the
+ *     existing number without re-provisioning when already set.
  *
  *   GET  /api/v1/franchisees/:id/phone
  *     Returns the current provisioned number (or null).
  *
  *   PATCH /api/v1/franchisees/:id/ai-guardrails
- *     Updates the per-franchisee guardrail config jsonb.
+ *     410 GONE — per-branch ai_guardrails was removed in the corporate
+ *     hub redesign. Defaults apply globally until per-branch guardrails
+ *     are reintroduced.
  *
- * All three are admin-only: platform_admin + owning franchisor_admin.
+ * Admin-only: corporate_admin only.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -20,7 +22,7 @@ import { eq } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import {
-  franchisees,
+  branches,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
@@ -37,37 +39,28 @@ export interface PhoneProvisionOutput {
 
 export interface PhoneProvisioner {
   provision(input: {
-    franchiseeId: string;
+    branchId: string;
     areaCode?: string;
     friendlyName?: string;
   }): Promise<PhoneProvisionOutput>;
 }
-
-const GuardrailsSchema = z.object({
-  confidenceThreshold: z.number().min(0).max(1).optional(),
-  undoWindowSeconds: z.number().int().min(0).max(86400).optional(),
-  transferOnLowConfidence: z.boolean().optional(),
-});
 
 const ProvisionBody = z.object({
   areaCode: z.string().regex(/^\d{3}$/).optional(),
   friendlyName: z.string().max(200).optional(),
 });
 
-function canAdminFranchisee(scope: RequestScope, franchisorId: string): boolean {
-  if (scope.type === 'platform') return true;
-  if (scope.type === 'franchisor' && scope.franchisorId === franchisorId)
-    return true;
-  return false;
+function canAdminBranch(scope: RequestScope): boolean {
+  return scope.type === 'corporate';
 }
 
+// TODO(CHR-06): rewrite route segment as /api/v1/corporate/branches/:id/phone.
 export function registerPhoneRoutes(
   app: FastifyInstance,
   db: Drizzle,
   provisioner: PhoneProvisioner,
 ): void {
-  // ----- POST /franchisees/:id/phone/provision -----------------------------
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string } }>( // TODO(CHR-06): rename route segment
     '/api/v1/franchisees/:id/phone/provision',
     async (req, reply) => {
       if (req.scope === null) {
@@ -93,30 +86,29 @@ export function registerPhoneRoutes(
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()
-          .from(franchisees)
-          .where(eq(franchisees.id, req.params.id));
-        const fe = rows[0];
-        if (!fe) return { kind: 'not_found' as const };
-        if (!canAdminFranchisee(scope, fe.franchisorId))
-          return { kind: 'forbidden' as const };
-        if (fe.twilioPhoneNumber) {
+          .from(branches)
+          .where(eq(branches.id, req.params.id));
+        const br = rows[0];
+        if (!br) return { kind: 'not_found' as const };
+        if (!canAdminBranch(scope)) return { kind: 'forbidden' as const };
+        if (br.twilioPhoneNumber) {
           return {
             kind: 'already' as const,
-            phoneNumberE164: fe.twilioPhoneNumber,
+            phoneNumberE164: br.twilioPhoneNumber,
           };
         }
         const result = await provisioner.provision({
-          franchiseeId: fe.id,
+          branchId: br.id,
           areaCode: parsed.data.areaCode,
-          friendlyName: parsed.data.friendlyName ?? fe.name,
+          friendlyName: parsed.data.friendlyName ?? br.name,
         });
         await tx
-          .update(franchisees)
+          .update(branches)
           .set({
             twilioPhoneNumber: result.phoneNumberE164,
             updatedAt: new Date(),
           })
-          .where(eq(franchisees.id, fe.id));
+          .where(eq(branches.id, br.id));
         return {
           kind: 'ok' as const,
           phoneNumberE164: result.phoneNumberE164,
@@ -126,7 +118,7 @@ export function registerPhoneRoutes(
       if (outcome.kind === 'not_found') {
         return reply.code(404).send({
           ok: false,
-          error: { code: 'NOT_FOUND', message: 'Franchisee not found' },
+          error: { code: 'NOT_FOUND', message: 'Branch not found' },
         });
       }
       if (outcome.kind === 'forbidden') {
@@ -155,8 +147,7 @@ export function registerPhoneRoutes(
     },
   );
 
-  // ----- GET /franchisees/:id/phone -----------------------------------------
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string } }>( // TODO(CHR-06): rename route segment
     '/api/v1/franchisees/:id/phone',
     async (req, reply) => {
       if (req.scope === null) {
@@ -175,21 +166,20 @@ export function registerPhoneRoutes(
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()
-          .from(franchisees)
-          .where(eq(franchisees.id, req.params.id));
-        const fe = rows[0];
-        if (!fe) return { kind: 'not_found' as const };
-        if (!canAdminFranchisee(scope, fe.franchisorId))
-          return { kind: 'forbidden' as const };
+          .from(branches)
+          .where(eq(branches.id, req.params.id));
+        const br = rows[0];
+        if (!br) return { kind: 'not_found' as const };
+        if (!canAdminBranch(scope)) return { kind: 'forbidden' as const };
         return {
           kind: 'ok' as const,
-          phoneNumberE164: fe.twilioPhoneNumber,
+          phoneNumberE164: br.twilioPhoneNumber,
         };
       });
       if (outcome.kind === 'not_found') {
         return reply.code(404).send({
           ok: false,
-          error: { code: 'NOT_FOUND', message: 'Franchisee not found' },
+          error: { code: 'NOT_FOUND', message: 'Branch not found' },
         });
       }
       if (outcome.kind === 'forbidden') {
@@ -205,71 +195,21 @@ export function registerPhoneRoutes(
     },
   );
 
-  // ----- PATCH /franchisees/:id/ai-guardrails -------------------------------
-  app.patch<{ Params: { id: string } }>(
-    '/api/v1/franchisees/:id/ai-guardrails',
-    async (req, reply) => {
-      if (req.scope === null) {
-        return reply.code(401).send({
-          ok: false,
-          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
-        });
-      }
-      if (!UUID_RE.test(req.params.id)) {
-        return reply.code(400).send({
-          ok: false,
-          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
-        });
-      }
-      const parsed = GuardrailsSchema.safeParse(req.body ?? {});
-      if (!parsed.success) {
-        return reply.code(400).send({
-          ok: false,
-          error: { code: 'VALIDATION_ERROR', message: parsed.error.message },
-        });
-      }
-      const scope = req.scope;
-      const outcome = await withScope(db, scope, async (tx) => {
-        const rows = await tx
-          .select()
-          .from(franchisees)
-          .where(eq(franchisees.id, req.params.id));
-        const fe = rows[0];
-        if (!fe) return { kind: 'not_found' as const };
-        if (!canAdminFranchisee(scope, fe.franchisorId))
-          return { kind: 'forbidden' as const };
-        const current = (fe.aiGuardrails ?? {}) as Record<string, unknown>;
-        const merged = { ...current, ...parsed.data };
-        await tx
-          .update(franchisees)
-          .set({ aiGuardrails: merged, updatedAt: new Date() })
-          .where(eq(franchisees.id, fe.id));
-        return { kind: 'ok' as const, guardrails: merged };
-      });
-      if (outcome.kind === 'not_found') {
-        return reply.code(404).send({
-          ok: false,
-          error: { code: 'NOT_FOUND', message: 'Franchisee not found' },
-        });
-      }
-      if (outcome.kind === 'forbidden') {
-        return reply.code(403).send({
-          ok: false,
-          error: { code: 'FORBIDDEN', message: 'Admin-only' },
-        });
-      }
-      return reply.code(200).send({
-        ok: true,
-        data: outcome.guardrails,
-      });
-    },
+  app.patch('/api/v1/franchisees/:id/ai-guardrails', (_req, reply) => // TODO(CHR-06): rename route segment
+    reply.code(410).send({
+      ok: false,
+      error: {
+        code: 'GUARDRAILS_REMOVED',
+        message:
+          'Per-branch ai_guardrails was removed in the corporate hub redesign (migration 0016).',
+      },
+    }),
   );
 }
 
 // ---------------------------------------------------------------------------
-// Default stub provisioner (used when no real TelephonyClient is
-// wired — e.g. tests, local dev). Deterministic +1555xxxxxxx per
-// franchiseeId so the value is stable across reboots.
+// Default stub provisioner — deterministic +1555xxxxxxx per branchId so
+// the value is stable across reboots.
 // ---------------------------------------------------------------------------
 
 export function stubPhoneProvisioner(): PhoneProvisioner {
@@ -279,20 +219,15 @@ export function stubPhoneProvisioner(): PhoneProvisioner {
     for (let i = 0; i < seed.length; i++) {
       h = (h * 31 + seed.charCodeAt(i)) & 0x7fffffff;
     }
-    let out = '';
-    for (let i = 0; i < n; i++) {
-      out += String(h % 10);
-      h = Math.floor(h / 10) || 3;
-    }
-    return out;
+    return String(h).padStart(n, '0').slice(0, n);
   }
   return {
-    async provision({ franchiseeId, areaCode }) {
-      counter += 1;
-      const ac = areaCode ?? '555';
+    async provision(input) {
+      counter++;
+      const tail = hashDigits(input.branchId + ':' + counter, 7);
       return {
-        phoneNumberE164: `+1${ac}${hashDigits(franchiseeId, 7)}`,
-        twilioSid: `PNstub${counter}`,
+        phoneNumberE164: `+1555${tail}`,
+        twilioSid: `PNstub${tail}${counter}`,
       };
     },
   };

@@ -14,7 +14,7 @@
  *
  * Line-item validation:
  *   - every line must reference a service_items row in the caller's
- *     franchisor AND a published template
+ *     corporate AND a published template
  *   - unit_price is defaulted to the item's base_price but may be
  *     overridden within [floor, ceiling] — below/above returns
  *     400 PRICE_OUT_OF_BOUNDS (reuses the phase-4 error code).
@@ -73,13 +73,13 @@ interface ResolvedLine {
 }
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 interface ResolveCtx {
   tx: ScopedTx;
-  franchiseeId: string;
+  branchId: string;
 }
 
 /**
@@ -103,7 +103,6 @@ async function resolveLines(
         id: serviceItems.id,
         sku: serviceItems.sku,
         name: serviceItems.name,
-        franchisorId: serviceItems.franchisorId,
         basePrice: serviceItems.basePrice,
         floorPrice: serviceItems.floorPrice,
         ceilingPrice: serviceItems.ceilingPrice,
@@ -213,11 +212,11 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
         const feScope = scopedFranchiseeId(scope);
-        if (feScope && job.franchiseeId !== feScope)
+        if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
 
         const resolved = await resolveLines(
-          { tx, franchiseeId: job.franchiseeId },
+          { tx, branchId: job.branchId },
           parsed.data.lines,
         );
         if (!resolved.ok)
@@ -234,7 +233,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
         const inserted = await tx
           .insert(invoices)
           .values({
-            franchiseeId: job.franchiseeId,
+            branchId: job.branchId,
             jobId: job.id,
             customerId: job.customerId,
             status: 'draft',
@@ -252,7 +251,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
           await tx.insert(invoiceLineItems).values(
             resolved.resolved.map((l, idx) => ({
               invoiceId: invoice.id,
-              franchiseeId: job.franchiseeId,
+              branchId: job.branchId,
               serviceItemId: l.serviceItemId,
               sku: l.sku,
               name: l.name,
@@ -313,14 +312,8 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
       const inv = rows[0];
       if (!inv) return null;
       const feScope = scopedFranchiseeId(scope);
-      if (feScope && inv.franchiseeId !== feScope) return null;
-      if (scope.type === 'franchisor') {
-        const feRows = await tx
-          .select({ franchisorId: schema.franchisees.franchisorId })
-          .from(schema.franchisees)
-          .where(eq(schema.franchisees.id, inv.franchiseeId));
-        if (feRows[0]?.franchisorId !== scope.franchisorId) return null;
-      }
+      if (feScope && inv.branchId !== feScope) return null;
+      // CHR-02: corporate sees every branch's invoice natively.
       const lines = await tx
         .select()
         .from(invoiceLineItems)
@@ -372,7 +365,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
         const inv = rows[0];
         if (!inv) return { kind: 'not_found' as const };
         const feScope = scopedFranchiseeId(scope);
-        if (feScope && inv.franchiseeId !== feScope)
+        if (feScope && inv.branchId !== feScope)
           return { kind: 'not_found' as const };
         if (inv.status !== 'draft') return { kind: 'not_editable' as const };
 
@@ -383,7 +376,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
           parsed.data.taxRate !== undefined ? parsed.data.taxRate : Number(inv.taxRate);
         if (lines !== undefined) {
           const resolved = await resolveLines(
-            { tx, franchiseeId: inv.franchiseeId },
+            { tx, branchId: inv.branchId },
             lines,
           );
           if (!resolved.ok)
@@ -399,7 +392,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
             await tx.insert(invoiceLineItems).values(
               resolved.resolved.map((l, idx) => ({
                 invoiceId: inv.id,
-                franchiseeId: inv.franchiseeId,
+                branchId: inv.branchId,
                 serviceItemId: l.serviceItemId,
                 sku: l.sku,
                 name: l.name,
@@ -509,7 +502,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
         const inv = rows[0];
         if (!inv) return { kind: 'not_found' as const };
         const feScope = scopedFranchiseeId(scope);
-        if (feScope && inv.franchiseeId !== feScope)
+        if (feScope && inv.branchId !== feScope)
           return { kind: 'not_found' as const };
         if (inv.deletedAt !== null) return { kind: 'already' as const };
         if (inv.status !== 'draft') return { kind: 'not_editable' as const };

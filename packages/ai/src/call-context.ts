@@ -1,21 +1,20 @@
 /**
- * Resolves which franchisee owns an incoming Twilio call. The
+ * Resolves which branch owns an incoming Twilio call. The
  * inbound `To` number is looked up against
- * `franchisees.twilio_phone_number`; an unknown number returns
+ * `branches.twilio_phone_number`; an unknown number returns
  * null so the webhook route can hand up politely.
  */
 
 import { eq } from 'drizzle-orm';
-import { franchisees } from '@service-ai/db';
+import { branches } from '@service-ai/db';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type * as schema from '@service-ai/db';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
 export interface ResolvedCallTenant {
-  franchiseeId: string;
-  franchisorId: string;
-  franchiseeName: string;
+  branchId: string;
+  branchName: string;
   guardrails: {
     confidenceThreshold: number;
     undoWindowSeconds: number;
@@ -35,36 +34,15 @@ export async function resolveTenantByToNumber(
 ): Promise<ResolvedCallTenant | null> {
   const rows = await db
     .select()
-    .from(franchisees)
-    .where(eq(franchisees.twilioPhoneNumber, toE164));
-  const fe = rows[0];
-  if (!fe) return null;
-  const guardrails = parseGuardrails(fe.aiGuardrails);
+    .from(branches)
+    .where(eq(branches.twilioPhoneNumber, toE164));
+  const b = rows[0];
+  if (!b) return null;
+  // ai_guardrails moved out of branches in the corporate model; defaults
+  // are applied here until per-branch guardrails are reintroduced.
   return {
-    franchiseeId: fe.id,
-    franchisorId: fe.franchisorId,
-    franchiseeName: fe.name,
-    guardrails,
+    branchId: b.id,
+    branchName: b.name,
+    guardrails: { ...DEFAULT_GUARDRAILS },
   };
-}
-
-function parseGuardrails(raw: unknown): typeof DEFAULT_GUARDRAILS {
-  if (raw && typeof raw === 'object') {
-    const obj = raw as Record<string, unknown>;
-    return {
-      confidenceThreshold:
-        typeof obj.confidenceThreshold === 'number'
-          ? obj.confidenceThreshold
-          : DEFAULT_GUARDRAILS.confidenceThreshold,
-      undoWindowSeconds:
-        typeof obj.undoWindowSeconds === 'number'
-          ? obj.undoWindowSeconds
-          : DEFAULT_GUARDRAILS.undoWindowSeconds,
-      transferOnLowConfidence:
-        typeof obj.transferOnLowConfidence === 'boolean'
-          ? obj.transferOnLowConfidence
-          : DEFAULT_GUARDRAILS.transferOnLowConfidence,
-    };
-  }
-  return DEFAULT_GUARDRAILS;
 }

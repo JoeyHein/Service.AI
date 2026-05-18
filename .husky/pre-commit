@@ -1,5 +1,10 @@
 #!/usr/bin/env sh
-. "$(dirname -- "$0")/_/husky.sh"
 
-pnpm -r typecheck
-pnpm -r lint
+# `pnpm -r typecheck` / `pnpm -r lint` dispatch to per-package
+# `npm run typecheck` / `npm run lint` scripts. On Windows that
+# spawns cmd.exe without node_modules/.bin on PATH, so `tsc` /
+# `eslint` are not found. `pnpm -r exec <cmd>` sets PATH for the
+# spawned shell on every OS — invoke the tools directly from here
+# instead of going through the per-package npm script layer.
+pnpm -r --workspace-concurrency=4 exec tsc --noEmit
+pnpm -r --workspace-concurrency=4 exec eslint src

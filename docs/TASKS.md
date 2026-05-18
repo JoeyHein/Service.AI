@@ -534,3 +534,464 @@ _Planner expands this phase fully at phase start, informed by evolver lessons fr
 - **TASK-FC-04** — franchisee onboarding wizard (multi-step)
 - **TASK-FC-05** — pricebook template publisher
 - **TASK-FC-06** — agreement authoring UI
+
+---
+
+## phase_corporate_hub_redesign (phase 14)
+
+Replaces the franchise tenancy with a single corporate parent and many
+branches, each run by a local manager paid base + commission. See
+`phases/phase_corporate_hub_redesign_GATE.md`.
+
+### TASK-CHR-01: Migration 0016 — corporate / branches / comp plans / commission ledger
+
+**Phase:** corporate_hub_redesign
+**Depends on:** all phase 2–13 schemas in place
+**Estimated LOC:** 600
+
+Create migration `0016_corporate_hub_redesign.sql`:
+new tables `corporate` (single row; columns include
+`default_margin_pct` (default 60), `min_margin_pct` (default 20),
+`max_margin_pct` (default 200) — bounds used by SQB-07 margin engine),
+`branches`, `branch_managers`, `comp_plans`,
+`user_comp_assignments`, `commission_ledger`, `pricebook_suggestions`.
+Data migration copies `franchisors` → `corporate` (one row), every
+`franchisees` row → `branches`, `franchisee_admin` memberships →
+`branch_managers`, then `ALTER TABLE … RENAME COLUMN franchisee_id TO
+branch_id` on every business table inside the same tx. Drops
+`pricebook_overrides`, `franchise_agreements`, `royalty_rules`,
+`royalty_statements`. Reversible down migration. RLS rewritten to the
+two-policy template (`_corporate_admin`, `_scoped`).
+
+**Acceptance criteria**
+- [ ] CI gate runs `up → down → up` against a populated dev DB with no
+  row-count delta on business tables
+- [ ] Every table previously carrying `franchisee_id` now carries
+  `branch_id` (verified by an introspection assertion)
+- [ ] Every table with `branch_id` has both `_corporate_admin` and
+  `_scoped` policies attached (introspection assertion)
+- [ ] `docs/migrations/0016_pricebook_overrides_snapshot.csv` is written
+  on up
+
+---
+
+### TASK-CHR-02: RequestScope + plugin rewrite
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-01
+**Estimated LOC:** 300
+
+`RequestScope` collapses to `corporate | branch`. `requestScopePlugin`
+resolves the scope against the new role enum: `corporate_admin`,
+`manager`, `csr`, `tech`. `withScope` sets `app.role` and `app.branch_id`
+only; old `app.franchisor_id` / `app.franchisee_id` keys are removed.
+Impersonation routes deleted (corporate is natively cross-branch).
+
+**Acceptance criteria**
+- [ ] All `request.requireScope()` call sites compile against the new
+  union (`pnpm -r typecheck` exits 0)
+- [ ] Live security test asserts `app.branch_id` is set on every
+  authenticated DB tx (sampled assertion)
+- [ ] `serviceai.impersonate` cookie + `/impersonate/*` endpoints
+  removed
+
+---
+
+### TASK-CHR-03: API rename sweep
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-02
+**Estimated LOC:** 400
+
+Body fields, query params, route segments, and ts-rest contracts updated
+from `franchisee` → `branch`. Cross-tenant probe behaviour preserved
+(404, not 403). Live security suite renamed and rewritten for the new
+role matrix.
+
+**Acceptance criteria**
+- [ ] `pnpm -r test` exits 0
+- [ ] No reference to `franchisee` or `franchisor` remains in
+  `apps/api/src` or `packages/contracts/src` (grep gate in CI)
+
+---
+
+### TASK-CHR-04: Comp plan schema + Zod validators
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-01
+**Estimated LOC:** 350
+
+Three rule kinds for v1: `flat_percent_of_invoice_paid`,
+`tiered_percent_of_invoice_paid`, `flat_percent_of_quote_committed`.
+Zod schema validates the `commission_rules` JSONB on read and write.
+Property-based tests cover each rule across boundary cases.
+
+**Acceptance criteria**
+- [ ] 100% of rule kinds have a passing property test
+- [ ] Invalid rule JSON returns `400 INVALID_COMP_PLAN` with
+  field-level Zod errors
+
+---
+
+### TASK-CHR-05: Commission engine
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-04
+**Estimated LOC:** 500
+
+Pure projector `computeCommission(tx, userId, periodLabel)`. Transition
+functions `onInvoicePaid(invoiceId, tx)` and `onQuoteCommitted(quoteId,
+tx)` write `commission_ledger` rows. Idempotent on
+`(user_id, source_kind, source_id)` unique index. Frozen
+`rule_snapshot` JSONB captures the plan at calc time.
+
+**Acceptance criteria**
+- [ ] Property tests cover: empty period, single invoice, ten invoices,
+  refund reverses, manual adjustment, plan change mid-period
+- [ ] Replaying `onInvoicePaid` for the same invoice does not duplicate
+  the ledger row
+- [ ] Integration test against the live demo seed asserts a known
+  invoice → ledger amount
+
+---
+
+### TASK-CHR-06: /corporate web routes
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-02, CHR-04
+**Estimated LOC:** 800
+
+New routes:
+- `/corporate/branches` — list with status, manager, monthly revenue,
+  monthly commission paid out
+- `/corporate/branches/new` — 3-step wizard (legal name + address +
+  timezone → Twilio number → assign manager)
+- `/corporate/branches/:id` — detail with manager history, comp plan
+  assignment, branch status toggle, audit log filter
+- `/corporate/managers` — manager directory + comp plan assignment
+- `/corporate/comp-plans` — list, create, edit
+
+Old `/franchisor/*` routes deleted in the same commit.
+
+**Acceptance criteria**
+- [ ] Non-corporate roles hit `notFound()` on every `/corporate/*` route
+- [ ] Playwright spec walks the new-branch wizard end-to-end
+
+---
+
+### TASK-CHR-07: /branch manager dashboard
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-05
+**Estimated LOC:** 400
+
+`/branch` route renders for `manager` only. Tiles: branch revenue MTD,
+AR open, jobs in flight, projected commission. Pipeline card of
+committed quotes pending invoice. Recent jobs list. Manager cannot see
+sibling-branch data.
+
+**Acceptance criteria**
+- [ ] Manager-A sees their data only — branch-B probe returns 404
+- [ ] Projected commission matches `computeCommission` for the manager
+  + current period
+
+---
+
+### TASK-CHR-08: Royalty engine removal + single Stripe account
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-01
+**Estimated LOC:** -1200 (net deletion)
+
+Drop `franchise_agreements`, `royalty_rules`, `royalty_statements`.
+Delete `/api/v1/royalty/*` routes. Delete Stripe Connect onboarding +
+account linking flows. PaymentIntent creation switches to a single
+corporate Stripe account; `application_fee_amount` removed.
+
+**Acceptance criteria**
+- [ ] Net LOC deletion ≥ 1000
+- [ ] Stripe webhook handler still processes
+  `payment_intent.succeeded` correctly under the new single-account
+  config
+- [ ] No test still imports a royalty type
+
+---
+
+### TASK-CHR-09: Pricebook override removal
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-01
+**Estimated LOC:** 200
+
+Drop `pricebook_overrides` (snapshot written by CHR-01). New
+`pricebook_suggestions` table + a manager UI form "Suggest price
+change" that drops a row for corporate review. Pricebook is now a
+single corporate-owned, single-resolved view.
+
+**Acceptance criteria**
+- [ ] Pricebook read path no longer JOINs against overrides
+- [ ] Manager can submit a suggestion; corporate sees it in
+  `/corporate/pricebook/suggestions`
+
+---
+
+### TASK-CHR-10: AI prompt / tool updates
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-03
+**Estimated LOC:** 250
+
+CSR voice tools, dispatcher tools, tech assistant prompts, and
+collections drafts all updated from `franchiseeId` → `branchId`.
+`branches.brand_voice jsonb` column added; migration copies prior
+`franchisees.brand_voice` over. Recorded voice fixtures regenerated.
+
+**Acceptance criteria**
+- [ ] Voice integration suite (`live-csr-voice.test.ts`) exits 0 against
+  regenerated fixtures
+- [ ] No `franchiseeId` literal in `packages/ai/prompts/**`
+
+---
+
+### TASK-CHR-11: Docs sweep
+
+**Phase:** corporate_hub_redesign
+**Depends on:** all prior CHR tasks
+**Estimated LOC:** 400
+
+`docs/ARCHITECTURE.md` rewritten for the corporate hub model with a
+preserved appendix for the pre-2026-05 franchise model. `CLAUDE.md`
+rewritten (project identity, tenancy rule, guardrail defaults). New
+top entry in `docs/EVOLUTION.md`. `docs/PHASES.md` strikes through
+`phase_royalty_engine` and `phase_franchisor_console` with redirect
+notes pointing to CHR.
+
+---
+
+### TASK-CHR-12: Adversarial audit pass
+
+**Phase:** corporate_hub_redesign
+**Depends on:** CHR-11
+**Estimated LOC:** 100 (remediations)
+
+Run the adversarial-auditor subagent (manual invocation per
+`project_servicetitan_autonomous_loop` memory — no run-build.sh loop).
+Output is `phases/phase_corporate_hub_redesign_AUDIT_1.md`. Any
+BLOCKERS go through one correction cycle; MINORs land in TECH_DEBT.
+
+---
+
+## phase_supplier_quote_bridge (phase 15)
+
+Adds live supplier quoting against BC AI Agent under the Elevated Doors
+BC customer account. See `phases/phase_supplier_quote_bridge_GATE.md`.
+
+### TASK-SQB-01: Migration 0017 — quote tables + margin overrides + RLS + seed
+
+**Phase:** supplier_quote_bridge
+**Depends on:** CHR-01 (`branch_id` exists + `corporate.default_margin_pct` /
+`corporate.min_margin_pct` / `corporate.max_margin_pct` columns), CHR-04
+(comp plans exist)
+**Estimated LOC:** 450
+
+New tables: `suppliers`, `margin_overrides` (corporate-scoped, keyed by BC
+`itemCategoryCode`), `quotes`, `quote_line_items` (with
+`applied_margin_pct`, `applied_margin_source`, `margin_override_pct?`,
+`margin_override_reason?` columns), `quote_status_log`. Two-policy RLS.
+Seed: one `suppliers` row pointing at BC AI Agent staging with the
+Elevated Doors BC customer code; one `margin_overrides` row per door-type
+category seeded from OPENDC's existing splits (`ALUMINIUM`, `ROLLUP`,
+`LIFTMASTER`).
+
+---
+
+### TASK-SQB-02: packages/suppliers — provider interface + mock
+
+**Phase:** supplier_quote_bridge
+**Depends on:** none
+**Estimated LOC:** 400
+
+New workspace package exporting `SupplierProvider` interface,
+`ProviderRegistry`, and a `MockProvider` for tests. Strict TS types for
+`PriceResult` and `CommitResult`.
+
+---
+
+### TASK-SQB-03: BC AI Agent — external_api_keys table + key mgmt
+
+**Phase:** supplier_quote_bridge
+**Depends on:** none (lives in the BC AI Agent repo)
+**Estimated LOC:** 350
+
+In `bc-ai-agent`: Alembic migration adds `external_api_keys` table
+(argon2id hashed, scoped to a single `supplier_account_code` per key).
+Admin-only `/api/external-keys` CRUD. Plaintext shown once at create.
+Rate limit defaults: 600 rpm per key.
+
+---
+
+### TASK-SQB-04: BC AI Agent — POST /api/external/price-items
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-03
+**Estimated LOC:** 450
+
+Wraps existing BC SalesPriceLists resolution. 60 s Redis cache per
+`(customer, sku)`. Returns `unit_price_cents` + `unit_cost_cents`.
+p95 < 600 ms under perf test.
+
+---
+
+### TASK-SQB-05: BC AI Agent — POST /api/external/quotes
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-03, SQB-04
+**Estimated LOC:** 500
+
+Wraps `bc_quote_service` to create a real BC sales quote. Idempotent on
+`external_quote_id`. Returns `supplier_quote_ref` (SQ-XXXXXX). 10×
+concurrent commit test asserts exactly one BC document created.
+
+---
+
+### TASK-SQB-06: BcAiAgentProvider
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-02, SQB-04, SQB-05
+**Estimated LOC:** 350
+
+First real `SupplierProvider` impl in `packages/suppliers`. HTTPS
+client with retry-on-network-error, idempotency-key propagation, p95
+budget enforcement, Sentry tags. Recorded-fixture integration test +
+live-staging smoke test.
+
+---
+
+### TASK-SQB-07: Service.AI quote routes + status machine + margin engine + commission write
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-01, SQB-02, CHR-05
+**Estimated LOC:** 900
+
+ts-rest contracts for `/api/v1/quotes/*`. Five routes per the gate:
+create, price, commit, void, read+list. `quote-status-machine.ts` per
+the pattern in `job-status-machine.ts`.
+
+**Margin engine**: `resolveSellingPrice({ unitCostCents, itemCategory,
+lineOverridePct? }, tx)` applies the resolution order line override →
+`margin_overrides` (category) → `corporate.default_margin_pct`. Formula
+is multiplicative (`price = cost * (1 + pct/100)`). `unit_cost_cents` is
+re-fetched from the supplier provider on every price call — never
+trusted from the client. Bounds enforced against
+`corporate.min_margin_pct` / `corporate.max_margin_pct`; out-of-range →
+422 `MARGIN_OUT_OF_BOUNDS`. Per-line `margin_override_pct` requires
+`margin_override_reason` (server validation) and a manager+
+role; every override writes an `audit_log` row. Quote commit freezes
+`applied_margin_pct` so later edits to `margin_overrides` do not
+retroactively change committed totals.
+
+**Commission write**: on `priced → committed`, write the
+`commission_ledger` row for the `closer_user_id` if their active comp
+plan has a `flat_percent_of_quote_committed` rule (atomic with the
+status transition). On `committed → void`, write the balancing reversal
+row.
+
+**Acceptance criteria**
+- [ ] Property tests for the three-level resolution order, including
+  ties (override = 0 should still win over default)
+- [ ] Property tests for bounds enforcement on both line and category
+  rows
+- [ ] Integration test asserts cost cannot be manipulated by a forged
+  client body (server ignores client-sent cost)
+- [ ] Integration test asserts that editing a category override does
+  NOT change the totals on a previously committed quote
+
+---
+
+### TASK-SQB-08: /quotes/new live web UI + corporate margin settings
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-07
+**Estimated LOC:** 1200
+
+**`/quotes/new`**: pricebook-aware line picker, 300 ms debounced
+re-price, in-flight spinner + cancellation, subtotal/tax/total updates
+in place, manager-only margin pill per line + overall margin, per-line
+override popover (new % + required reason) for manager+
+roles only, manager commission preview, sticky "Send to supplier"
+success → SQ-XXXXXX banner.
+
+**`/corporate/settings/margins`** (corporate_admin only): default margin
+% input + category overrides table (BC `itemCategoryCode` autocomplete +
+margin %, with add / edit / delete). Read-only min/max bounds visible
+to corporate_admin; editable only by platform_admin via a separate
+collapsed section.
+
+**Acceptance criteria**
+- [ ] CSR role at `/quotes/new` does not see margin or commission
+- [ ] Manager role can edit a per-line override; missing reason →
+  inline form error, no API call
+- [ ] Override out of bounds → user-facing toast referencing the
+  configured min/max
+- [ ] Editing a category override and reloading an in-progress draft
+  re-prices live; an already-committed quote does not move
+
+---
+
+### TASK-SQB-09: /tech/jobs/:id/quote/new mobile view
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-08
+**Estimated LOC:** 500
+
+Mobile-first reskin of the same component. Bottom-sheet SKU picker.
+Offline cache for `priceItems` with a "stale" badge; commit is blocked
+offline and queued.
+
+---
+
+### TASK-SQB-10: AI CSR tools quoteConfigurator + commitQuote
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-06, SQB-07
+**Estimated LOC:** 400
+
+New voice tools in `packages/ai/prompts/csr/` + dispatcher tool list.
+Guardrail defaults added to `CLAUDE.md`. `ai_actions` row per commit
+with confidence + supplier ref.
+
+---
+
+### TASK-SQB-11: Observability wiring
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-06
+**Estimated LOC:** 200
+
+Request-ID propagation Service.AI → BC AI Agent → BC. Audit-log row on
+every supplier call. Sentry tags. pino redaction confirmed by a CI grep
+gate against logs.
+
+---
+
+### TASK-SQB-12: Perf + idempotency + commission stress
+
+**Phase:** supplier_quote_bridge
+**Depends on:** SQB-08, SQB-09, SQB-10
+**Estimated LOC:** 350
+
+k6 scenario for 20-CSR live re-price + commit. Idempotency stress (10×
+concurrent commit, network-drop simulation). Commission-ledger reversal
+test on void. Semgrep clean.
+
+---
+
+### TASK-SQB-13: Docs
+
+**Phase:** supplier_quote_bridge
+**Depends on:** all prior SQB tasks
+**Estimated LOC:** 500
+
+`docs/api/supplier-quote-bridge.md` with sequence diagrams,
+`ARCHITECTURE.md` updates, `CLAUDE.md` updates on both repos,
+`docs/LESSONS.md` reserved entry.

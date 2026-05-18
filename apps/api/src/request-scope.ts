@@ -1,21 +1,17 @@
 /**
- * RequestScope Fastify plugin.
+ * RequestScope Fastify plugin (corporate hub model — CHR phase).
  *
  * Decorates every request with `request.scope` — a discriminated-union
- * description of "which slice of the tenant tree is this call allowed to
+ * description of "which slice of the tenant tree this call is allowed to
  * touch". Resolved from:
  *   1. Better Auth session (userId)
  *   2. Memberships of that user (returned by the injected MembershipResolver)
- *   3. Optional X-Impersonate-Franchisee header (or
- *      `serviceai.impersonate=<uuid>` cookie as fallback — same
- *      semantics, used by the web UI's HQ "View as" flow), validated
- *      against the caller's franchisor scope via the injected
- *      FranchiseeLookup
  *
- * When a valid impersonation is detected, the effective scope narrows to a
- * `franchisee` variant so Postgres RLS policies match on the target
- * franchisee. The original actor is preserved on `request.impersonation`
- * for the audit log and for the UI banner in later phases.
+ * The corporate hub model is gone. Corporate sees every branch
+ * natively; there is no impersonation flow. Branch-scoped users
+ * (manager / dispatcher / tech / csr) are pinned to a single branch and
+ * cannot read sibling-branch data even with a forged request body — RLS
+ * enforces the same `branch_id` filter that the route handlers do.
  *
  * Handlers that need a scope call `request.requireScope()`, which throws a
  * structured 401/403 when unauthenticated or when no active membership can
@@ -30,26 +26,35 @@ import fastifyPlugin from 'fastify-plugin';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import type { Auth } from '@service-ai/auth';
 import { getSession } from '@service-ai/auth';
-import type { RequestScope, FranchiseeRole } from '@service-ai/db';
+import type { RequestScope, BranchRole } from '@service-ai/db';
 
 /**
  * Minimal shape of a resolved membership for scope picking. A user with no
  * memberships is treated as authenticated-but-unscoped: they can hit
  * /api/v1/me to see their profile but not any tenant-scoped data.
+ *
+ * `scopeType` retains the literal 'corporate' / 'branch' values so the
+ * resolver can pattern-match without inspecting `role`. Legacy enum values
+ * (`platform_admin`, `franchisor_admin`, `franchisee_owner`,
+ * `location_manager`) are accepted as legacy aliases and promoted to their
+ * corporate-model equivalent — keeps the plugin tolerant of partially-
+ * migrated rows in test fixtures.
  */
 export interface MembershipRow {
-  scopeType: 'platform' | 'franchisor' | 'franchisee' | 'location';
+  scopeType: 'corporate' | 'branch';
   role:
+    | 'corporate_admin'
+    | 'manager'
+    | 'dispatcher'
+    | 'tech'
+    | 'csr'
+    // Legacy enum values (still present in the SQL enum after CHR-01);
+    // resolveScope() promotes them to corporate_admin or manager.
     | 'platform_admin'
     | 'franchisor_admin'
     | 'franchisee_owner'
-    | 'location_manager'
-    | 'dispatcher'
-    | 'tech'
-    | 'csr';
-  franchisorId: string | null;
-  franchiseeId: string | null;
-  locationId: string | null;
+    | 'location_manager';
+  branchId: string | null;
 }
 
 export interface MembershipResolver {
@@ -58,24 +63,10 @@ export interface MembershipResolver {
 }
 
 /**
- * Lookup a franchisee's parent franchisor. Returns null when the franchisee
- * id does not exist. Used during impersonation to verify the target belongs
- * to the acting franchisor.
- */
-export interface FranchiseeLookup {
-  franchisorIdFor(franchiseeId: string): Promise<string | null>;
-  /**
-   * Optional human-readable name for the franchisee. The requestScopePlugin
-   * calls this during impersonation so the HQ banner in the web UI can say
-   * "HQ VIEWING: <Franchisee Name>" instead of a UUID. Impls that don't
-   * render UI — tests, background workers — can omit this.
-   */
-  nameFor?(franchiseeId: string): Promise<string | null>;
-}
-
-/**
  * Writes one row to the audit_log. Injected so tests observe writes without
- * hitting Postgres and production wires a DB-backed implementation.
+ * hitting Postgres and production wires a DB-backed implementation. Most
+ * routes log via this writer; the plugin itself does not write impersonation
+ * audit rows any more because impersonation is gone.
  */
 export interface AuditLogWriter {
   write(entry: AuditLogEntry): Promise<void>;
@@ -83,112 +74,77 @@ export interface AuditLogWriter {
 
 export interface AuditLogEntry {
   actorUserId: string;
-  targetFranchiseeId: string | null;
+  targetBranchId: string | null;
   action: string;
-  scopeType: 'platform' | 'franchisor' | 'franchisee' | 'location' | null;
+  scopeType: 'corporate' | 'branch' | null;
   scopeId: string | null;
   metadata: Record<string, unknown>;
   ipAddress: string | null;
   userAgent: string | null;
 }
 
-/**
- * Metadata about an active impersonation. Attached to `request.impersonation`
- * when X-Impersonate-Franchisee has been validated. Route handlers and
- * audit writers read this to distinguish "franchisor admin acting directly"
- * from "franchisor admin acting as a franchisee".
- */
-export interface ImpersonationContext {
-  actorUserId: string;
-  actorFranchisorId: string;
-  targetFranchiseeId: string;
-  /**
-   * Populated when the FranchiseeLookup impl provides a nameFor method.
-   * /api/v1/me surfaces this to the web UI so the HQ banner can render
-   * a friendly label without a second round-trip.
-   */
-  targetFranchiseeName?: string;
-}
-
 export interface RequestScopeOptions {
   auth: Auth;
   membershipResolver: MembershipResolver;
   /**
-   * Validates impersonation targets. Required when X-Impersonate-Franchisee
-   * is expected to be honoured; if omitted, the header is always rejected
-   * with IMPERSONATION_DISABLED (suitable for test environments that never
-   * exercise impersonation).
+   * Optional audit writer. Retained for symmetry with the franchise-era
+   * plugin shape so consumers can pass an injector without conditional
+   * wiring. The plugin itself no longer writes audit rows — handlers do.
    */
-  franchiseeLookup?: FranchiseeLookup;
-  /** Writes audit_log rows for impersonated requests. Required iff franchiseeLookup is provided. */
   auditWriter?: AuditLogWriter;
 }
 
-export const IMPERSONATION_HEADER = 'x-impersonate-franchisee';
-export const IMPERSONATION_COOKIE = 'serviceai.impersonate';
-
 /**
- * Extract an impersonation target from either the X-Impersonate-Franchisee
- * header or the `serviceai.impersonate` cookie. Header wins when both are
- * present — explicit beats implicit.
+ * Backwards-compat: ImpersonationContext is still exported as a no-op type
+ * so consumers that imported it from this module keep compiling during the
+ * CHR-02 -> CHR-03 transition. The decorator on FastifyRequest is no longer
+ * populated; CHR-03 removes the alias once every consumer has been swept.
+ *
+ * @deprecated impersonation is removed in the corporate model. Removed in CHR-03.
  */
-function readImpersonationTarget(req: FastifyRequest): string | null {
-  const rawHeader = req.headers[IMPERSONATION_HEADER];
-  const headerValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
-  if (headerValue) return headerValue;
-
-  const cookieHeader = req.headers['cookie'];
-  if (!cookieHeader) return null;
-  // Parse cookies without depending on @fastify/cookie — this plugin runs
-  // before route-level plugins and should not require an extra dep for a
-  // single lookup. A simple split is safe because cookie values are
-  // always URL-safe characters (we only set UUIDs here).
-  for (const part of cookieHeader.split(';')) {
-    const [name, ...rest] = part.trim().split('=');
-    if (name === IMPERSONATION_COOKIE && rest.length > 0) {
-      return decodeURIComponent(rest.join('='));
-    }
-  }
-  return null;
+export interface ImpersonationContext {
+  actorUserId: string;
+  targetBranchId: string;
+  targetBranchName?: string;
 }
 
 /**
  * Pick the strongest-privilege membership so downstream handlers always see
- * the most capable scope available. Ordering: platform_admin >
- * franchisor_admin > any franchisee-scoped role.
+ * the most capable scope available. Corporate beats branch.
+ *
+ * Legacy role names are promoted: 'platform_admin' / 'franchisor_admin' ->
+ * 'corporate_admin'; 'franchisee_owner' / 'location_manager' -> 'manager'.
+ * This lets the plugin work against both freshly-migrated DBs (post-CHR-01,
+ * where row values are still legacy) and against future seeds that use the
+ * new enum values directly.
  */
 export function resolveScope(
   userId: string,
   memberships: MembershipRow[],
 ): RequestScope | null {
-  const platform = memberships.find((m) => m.role === 'platform_admin');
-  if (platform) {
-    return { type: 'platform', userId, role: 'platform_admin' };
+  const corporateRoles = new Set(['corporate_admin', 'platform_admin', 'franchisor_admin']);
+  const corporate = memberships.find((m) => corporateRoles.has(m.role));
+  if (corporate) {
+    return { type: 'corporate', userId, role: 'corporate_admin' };
   }
 
-  const franchisor = memberships.find(
-    (m) => m.role === 'franchisor_admin' && m.franchisorId,
+  const branchRoleAliases: Record<string, BranchRole> = {
+    manager: 'manager',
+    franchisee_owner: 'manager',
+    location_manager: 'manager',
+    dispatcher: 'dispatcher',
+    tech: 'tech',
+    csr: 'csr',
+  };
+  const branch = memberships.find(
+    (m) => m.branchId !== null && m.role in branchRoleAliases,
   );
-  if (franchisor && franchisor.franchisorId) {
+  if (branch && branch.branchId) {
     return {
-      type: 'franchisor',
+      type: 'branch',
       userId,
-      role: 'franchisor_admin',
-      franchisorId: franchisor.franchisorId,
-    };
-  }
-
-  const franchisee = memberships.find(
-    (m) => m.franchiseeId !== null && m.franchisorId !== null,
-  );
-  if (franchisee && franchisee.franchisorId && franchisee.franchiseeId) {
-    return {
-      type: 'franchisee',
-      userId,
-      role: franchisee.role as FranchiseeRole,
-      franchisorId: franchisee.franchisorId,
-      franchiseeId: franchisee.franchiseeId,
-      locationId: franchisee.locationId ?? null,
+      role: branchRoleAliases[branch.role]!,
+      branchId: branch.branchId,
     };
   }
 
@@ -204,12 +160,7 @@ function headersFromRequest(req: FastifyRequest): Headers {
   return h;
 }
 
-type RequireScopeCode =
-  | 'UNAUTHENTICATED'
-  | 'NO_ACTIVE_MEMBERSHIP'
-  | 'IMPERSONATION_FORBIDDEN'
-  | 'IMPERSONATION_INVALID_TARGET'
-  | 'IMPERSONATION_DISABLED';
+type RequireScopeCode = 'UNAUTHENTICATED' | 'NO_ACTIVE_MEMBERSHIP';
 
 interface RequireScopeError extends Error {
   statusCode: number;
@@ -223,36 +174,13 @@ function makeError(code: RequireScopeCode, message: string): RequireScopeError {
   return err;
 }
 
-function isValidUuid(s: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-}
-
-/**
- * Narrow a franchisor-admin scope to a specific franchisee target, preserving
- * the original actor's id and franchisor. Uses `franchisee_owner` as the
- * synthetic role so RLS policies match with full permissions at the target
- * franchisee — the actor's real franchisor_admin role is preserved via
- * request.impersonation for audit and UI banners.
- */
-function narrowForImpersonation(
-  base: Extract<RequestScope, { type: 'franchisor' }>,
-  targetFranchiseeId: string,
-): Extract<RequestScope, { type: 'franchisee' }> {
-  return {
-    type: 'franchisee',
-    userId: base.userId,
-    role: 'franchisee_owner',
-    franchisorId: base.franchisorId,
-    franchiseeId: targetFranchiseeId,
-    locationId: null,
-  };
-}
-
 const plugin: FastifyPluginAsync<RequestScopeOptions> = async (app, opts) => {
-  const { auth, membershipResolver, franchiseeLookup, auditWriter } = opts;
+  const { auth, membershipResolver } = opts;
 
   app.decorateRequest<RequestScope | null>('scope', null);
   app.decorateRequest<string | null>('userId', null);
+  // Legacy decorator retained for CHR-02 transition — always null under
+  // the corporate model. CHR-03 removes it.
   app.decorateRequest<ImpersonationContext | null>('impersonation', null);
 
   app.addHook('preHandler', async (req) => {
@@ -261,73 +189,7 @@ const plugin: FastifyPluginAsync<RequestScopeOptions> = async (app, opts) => {
     if (!session) return;
     req.userId = session.userId;
     const memberships = await membershipResolver.memberships(session.userId);
-    const baseScope = resolveScope(session.userId, memberships);
-    req.scope = baseScope;
-
-    const targetId = readImpersonationTarget(req);
-    if (!targetId) return;
-
-    if (!baseScope || baseScope.type !== 'franchisor') {
-      throw makeError(
-        'IMPERSONATION_FORBIDDEN',
-        'Only franchisor admins may set X-Impersonate-Franchisee',
-      );
-    }
-    if (!isValidUuid(targetId)) {
-      throw makeError(
-        'IMPERSONATION_INVALID_TARGET',
-        'X-Impersonate-Franchisee must be a UUID',
-      );
-    }
-    if (!franchiseeLookup) {
-      throw makeError(
-        'IMPERSONATION_DISABLED',
-        'Impersonation is not configured for this environment',
-      );
-    }
-
-    const parentFranchisorId = await franchiseeLookup.franchisorIdFor(targetId);
-    if (parentFranchisorId === null) {
-      throw makeError(
-        'IMPERSONATION_INVALID_TARGET',
-        'Target franchisee does not exist',
-      );
-    }
-    if (parentFranchisorId !== baseScope.franchisorId) {
-      throw makeError(
-        'IMPERSONATION_FORBIDDEN',
-        'Target franchisee does not belong to the acting franchisor',
-      );
-    }
-
-    req.scope = narrowForImpersonation(baseScope, targetId);
-    const targetName = franchiseeLookup.nameFor
-      ? await franchiseeLookup.nameFor(targetId)
-      : null;
-    const ctx: ImpersonationContext = {
-      actorUserId: session.userId,
-      actorFranchisorId: baseScope.franchisorId,
-      targetFranchiseeId: targetId,
-    };
-    if (targetName) ctx.targetFranchiseeName = targetName;
-    req.impersonation = ctx;
-
-    if (auditWriter) {
-      await auditWriter.write({
-        actorUserId: session.userId,
-        targetFranchiseeId: targetId,
-        action: 'impersonate.request',
-        scopeType: 'franchisee',
-        scopeId: targetId,
-        metadata: {
-          method: req.method,
-          url: req.url,
-          actorFranchisorId: baseScope.franchisorId,
-        },
-        ipAddress: req.ip ?? null,
-        userAgent: (req.headers['user-agent'] as string | undefined) ?? null,
-      });
-    }
+    req.scope = resolveScope(session.userId, memberships);
   });
 
   app.decorateRequest(
@@ -351,6 +213,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     scope: RequestScope | null;
     userId: string | null;
+    /** @deprecated removed in CHR-03 — always null under the corporate model. */
     impersonation: ImpersonationContext | null;
     requireScope(): RequestScope;
   }

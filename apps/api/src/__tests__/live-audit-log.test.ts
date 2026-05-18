@@ -1,15 +1,13 @@
 /**
  * Live Postgres tests for TASK-TEN-08 audit log viewer.
  *
- * Resets + seeds + writes a couple audit rows by triggering impersonation
- * requests from a franchisor_admin, then queries /api/v1/audit-log as
- * various roles to assert:
+ * Resets + seeds + writes a couple audit rows directly, then queries
+ * /api/v1/audit-log as various roles to assert:
  *   - 401 for anonymous
- *   - 403 for franchisee-scoped users
- *   - franchisor_admin sees only entries under their franchisor
+ *   - 403 for branch-scoped users
+ *   - corporate_admin sees every entry under corporate
  *   - filters combine (actorEmail + action + date range)
  *   - pagination returns total alongside the page slice
- *   - platform_admin sees every row
  *
  * Auto-skips when DATABASE_URL is unreachable.
  */
@@ -25,7 +23,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -38,11 +35,10 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 let cookies: {
-  platform: string;
-  franchisorAdmin: string;
-  denverOwner: string;
+  corporateAdmin: string;
+  denverManager: string;
   denverDispatcher: string;
 };
 
@@ -82,8 +78,8 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function createFranchisorAdmin(): Promise<string> {
-  const email = 'audit-fradmin@elevateddoors.test';
+async function createCorporateAdmin(): Promise<string> {
+  const email = 'audit-coadmin@elevateddoors.test';
   await app.inject({
     method: 'POST',
     url: '/api/auth/sign-up/email',
@@ -97,12 +93,12 @@ async function createFranchisorAdmin(): Promise<string> {
     .where(eq(users.email, email));
   await pool.query(
     `INSERT INTO memberships (user_id, scope_type, scope_id, role)
-       SELECT $1, 'franchisor'::scope_type, $2, 'franchisor_admin'::role
+       SELECT $1, 'corporate'::scope_type, $2, 'corporate_admin'::role
        WHERE NOT EXISTS (
          SELECT 1 FROM memberships
-          WHERE user_id=$1 AND scope_type='franchisor' AND scope_id=$2 AND deleted_at IS NULL
+          WHERE user_id=$1 AND scope_type='corporate' AND scope_id=$2 AND deleted_at IS NULL
        )`,
-    [userId, ids.franchisorId],
+    [userId, ids.corporateId],
   );
   return await signIn(email);
 }
@@ -115,9 +111,9 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
 
   const db = drizzle(pool, { schema });
@@ -134,7 +130,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -142,25 +137,25 @@ beforeAll(async () => {
   await app.ready();
 
   cookies = {
-    platform: await signIn('joey@opendc.ca'),
-    denverOwner: await signIn('denver.owner@elevateddoors.test'),
+    denverManager: await signIn('denver.owner@elevateddoors.test'),
     denverDispatcher: await signIn('denver.dispatcher@elevateddoors.test'),
-    franchisorAdmin: await createFranchisorAdmin(),
+    corporateAdmin: await createCorporateAdmin(),
   };
 
-  // Write audit rows by performing two impersonated requests.
-  for (const target of [ids.denverId, ids.austinId]) {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/v1/me',
-      headers: {
-        cookie: cookies.franchisorAdmin,
-        'x-impersonate-franchisee': target,
-      },
-    });
-    if (res.statusCode !== 200) {
-      throw new Error(`seed impersonation failed: ${res.statusCode} ${res.body}`);
-    }
+  // Seed deterministic audit rows directly so the filter assertions
+  // have something to match. The corporate admin we just created is the
+  // actor; both rows reference branches that corporate can see.
+  const [{ id: actorUserId }] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.email, 'audit-coadmin@elevateddoors.test'));
+  for (const targetBranchId of [ids.denverId, ids.austinId]) {
+    await pool.query(
+      `INSERT INTO audit_log
+         (actor_user_id, target_branch_id, action, scope_type, scope_id, metadata)
+       VALUES ($1, $2, 'impersonate.request', 'corporate'::scope_type, $3, '{}'::jsonb)`,
+      [actorUserId, targetBranchId, ids.corporateId],
+    );
   }
 }, 60_000);
 
@@ -179,7 +174,7 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('returns 403 for franchisee-scoped users', async () => {
+  it('returns 403 for branch-scoped users', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log',
@@ -188,56 +183,56 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('AUDIT_FORBIDDEN');
 
-    const ownerRes = await app.inject({
+    const managerRes = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log',
-      headers: { cookie: cookies.denverOwner },
+      headers: { cookie: cookies.denverManager },
     });
-    expect(ownerRes.statusCode).toBe(403);
+    expect(managerRes.statusCode).toBe(403);
   });
 
-  it('franchisor admin sees audit rows scoped to their franchisor', async () => {
+  it('corporate admin sees every audit row', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log',
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json().data as {
-      rows: Array<{ action: string; targetFranchiseeId: string | null }>;
+      rows: Array<{ action: string; targetBranchId: string | null }>;
       total: number;
     };
     expect(body.total).toBeGreaterThanOrEqual(2);
     const actions = body.rows.map((r) => r.action);
     expect(actions).toContain('impersonate.request');
-    const targets = body.rows.map((r) => r.targetFranchiseeId).filter(Boolean);
+    const targets = body.rows.map((r) => r.targetBranchId).filter(Boolean);
     expect(targets).toContain(ids.denverId);
     expect(targets).toContain(ids.austinId);
   });
 
-  it('filters combine: action + franchiseeId narrows the result set', async () => {
+  it('filters combine: action + branchId narrows the result set', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: `/api/v1/audit-log?action=impersonate&franchiseeId=${ids.denverId}`,
-      headers: { cookie: cookies.franchisorAdmin },
+      url: `/api/v1/audit-log?action=impersonate&branchId=${ids.denverId}`,
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json().data as {
-      rows: Array<{ action: string; targetFranchiseeId: string | null }>;
+      rows: Array<{ action: string; targetBranchId: string | null }>;
       total: number;
     };
     expect(body.total).toBeGreaterThan(0);
     for (const row of body.rows) {
       expect(row.action).toContain('impersonate');
-      expect(row.targetFranchiseeId).toBe(ids.denverId);
+      expect(row.targetBranchId).toBe(ids.denverId);
     }
   });
 
   it('actorEmail filter matches the acting user (case-insensitive LIKE)', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/api/v1/audit-log?actorEmail=audit-fradmin',
-      headers: { cookie: cookies.franchisorAdmin },
+      url: '/api/v1/audit-log?actorEmail=audit-coadmin',
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json().data as {
@@ -245,7 +240,7 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     };
     expect(body.rows.length).toBeGreaterThan(0);
     for (const row of body.rows) {
-      expect(row.actorEmail).toMatch(/audit-fradmin/i);
+      expect(row.actorEmail).toMatch(/audit-coadmin/i);
     }
   });
 
@@ -253,7 +248,7 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log?limit=1',
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json().data as {
@@ -268,22 +263,11 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     expect(body.offset).toBe(0);
   });
 
-  it('platform admin sees every audit row', async () => {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/v1/audit-log',
-      headers: { cookie: cookies.platform },
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json().data as { total: number };
-    expect(body.total).toBeGreaterThanOrEqual(2);
-  });
-
   it('returned rows are ordered by createdAt DESC (newest first)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log',
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     const rows = (res.json().data as { rows: Array<{ createdAt: string }> }).rows;
     if (rows.length < 2) return;
@@ -299,7 +283,7 @@ describe('GET /api/v1/audit-log (live Postgres)', () => {
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/audit-log?fromDate=${encodeURIComponent(future)}`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     expect((res.json().data as { total: number }).total).toBe(0);

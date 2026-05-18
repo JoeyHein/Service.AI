@@ -2,7 +2,7 @@
  * TASK-DI-08 — phase_ai_dispatcher security suite.
  *
  * Exercises the suggestions API against the threat model:
- * anonymous 401s, role boundary (dispatcher / franchisee_owner
+ * anonymous 401s, role boundary (dispatcher / manager
  * only + admins), cross-tenant approve/reject, stale-suggestion
  * 409, scheduling-invariant enforcement when the runner
  * auto-applies.
@@ -20,7 +20,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { stubAIClient, type AssistantTurn } from '@service-ai/ai';
@@ -33,7 +32,7 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 let cookies: {
   denverDispatcher: string;
   denverOwner: string;
@@ -121,7 +120,6 @@ async function buildApplication(script: AssistantTurn[] = []) {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -138,9 +136,9 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   app = await buildApplication([]);
   cookies = {
@@ -231,7 +229,7 @@ describe('DI-08 / role boundary', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('franchisee_owner CAN list suggestions', async () => {
+  it('manager CAN list suggestions', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/dispatch/suggestions',
@@ -270,20 +268,20 @@ describe('DI-08 / role boundary', () => {
 // ---------------------------------------------------------------------------
 
 describe('DI-08 / cross-tenant', () => {
-  it('denver dispatcher listing only sees own-franchisee suggestions', async () => {
+  it('denver dispatcher listing only sees own-branch suggestions', async () => {
     // Insert a suggestion in austin directly.
     const austinCust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Aus') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Aus') RETURNING id`,
       [ids.austinId],
     );
     const austinJob = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'aus job', 'unassigned') RETURNING id`,
       [ids.austinId, austinCust.rows[0]!.id],
     );
     await pool.query(
       `INSERT INTO ai_suggestions
-         (franchisee_id, kind, subject_job_id, reasoning, confidence, status)
+         (branch_id, kind, subject_job_id, reasoning, confidence, status)
          VALUES ($1, 'assignment', $2, 'aus only', 0.9, 'pending')`,
       [ids.austinId, austinJob.rows[0]!.id],
     );
@@ -292,23 +290,23 @@ describe('DI-08 / cross-tenant', () => {
       url: '/api/v1/dispatch/suggestions',
       headers: { cookie: cookies.denverDispatcher },
     });
-    const rows = res.json().data.rows as Array<{ franchiseeId: string }>;
-    for (const r of rows) expect(r.franchiseeId).toBe(ids.denverId);
+    const rows = res.json().data.rows as Array<{ branchId: string }>;
+    for (const r of rows) expect(r.branchId).toBe(ids.denverId);
   });
 
   it('cross-tenant approve → 404', async () => {
     const austinCust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Aus2') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Aus2') RETURNING id`,
       [ids.austinId],
     );
     const austinJob = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'aus2 job', 'unassigned') RETURNING id`,
       [ids.austinId, austinCust.rows[0]!.id],
     );
     const sugg = await pool.query<{ id: string }>(
       `INSERT INTO ai_suggestions
-         (franchisee_id, kind, subject_job_id, reasoning, confidence, status)
+         (branch_id, kind, subject_job_id, reasoning, confidence, status)
          VALUES ($1, 'assignment', $2, 'aus2', 0.9, 'pending') RETURNING id`,
       [ids.austinId, austinJob.rows[0]!.id],
     );
@@ -323,17 +321,17 @@ describe('DI-08 / cross-tenant', () => {
 
   it('cross-tenant reject → 404', async () => {
     const austinCust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Aus3') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Aus3') RETURNING id`,
       [ids.austinId],
     );
     const austinJob = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'aus3 job', 'unassigned') RETURNING id`,
       [ids.austinId, austinCust.rows[0]!.id],
     );
     const sugg = await pool.query<{ id: string }>(
       `INSERT INTO ai_suggestions
-         (franchisee_id, kind, subject_job_id, reasoning, confidence, status)
+         (branch_id, kind, subject_job_id, reasoning, confidence, status)
          VALUES ($1, 'assignment', $2, 'aus3', 0.9, 'pending') RETURNING id`,
       [ids.austinId, austinJob.rows[0]!.id],
     );
@@ -354,17 +352,17 @@ describe('DI-08 / cross-tenant', () => {
 describe('DI-08 / state machine', () => {
   it('approve on already-applied suggestion → 409', async () => {
     const cust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'S1') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'S1') RETURNING id`,
       [ids.denverId],
     );
     const job = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 's1', 'unassigned') RETURNING id`,
       [ids.denverId, cust.rows[0]!.id],
     );
     const sugg = await pool.query<{ id: string }>(
       `INSERT INTO ai_suggestions
-         (franchisee_id, kind, subject_job_id, reasoning, confidence, status)
+         (branch_id, kind, subject_job_id, reasoning, confidence, status)
          VALUES ($1, 'assignment', $2, 's1', 0.9, 'applied') RETURNING id`,
       [ids.denverId, job.rows[0]!.id],
     );
@@ -380,17 +378,17 @@ describe('DI-08 / state machine', () => {
 
   it('approve with stale job (already scheduled) → 409', async () => {
     const cust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Stale') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Stale') RETURNING id`,
       [ids.denverId],
     );
     const job = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status, assigned_tech_user_id, scheduled_start)
+      `INSERT INTO jobs (branch_id, customer_id, title, status, assigned_tech_user_id, scheduled_start)
          VALUES ($1, $2, 'stale', 'scheduled', $3, NOW()) RETURNING id`,
       [ids.denverId, cust.rows[0]!.id, denverTech1Id],
     );
     const sugg = await pool.query<{ id: string }>(
       `INSERT INTO ai_suggestions
-         (franchisee_id, kind, subject_job_id, proposed_tech_user_id, reasoning, confidence, status)
+         (branch_id, kind, subject_job_id, proposed_tech_user_id, reasoning, confidence, status)
          VALUES ($1, 'assignment', $2, $3, 'stale test', 0.9, 'pending') RETURNING id`,
       [ids.denverId, job.rows[0]!.id, denverTech2Id],
     );
@@ -443,14 +441,14 @@ describe('DI-08 / scheduling invariants', () => {
   it('double-booking proposal is queued, not auto-applied', async () => {
     // Seed: tech1 already has a 9am-11am scheduled job.
     const cust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name, latitude, longitude)
+      `INSERT INTO customers (branch_id, name, latitude, longitude)
          VALUES ($1, 'Existing', 39.74, -104.99) RETURNING id`,
       [ids.denverId],
     );
     const existingStart = new Date(Date.now() + 2 * 3600_000);
     const existingEnd = new Date(existingStart.getTime() + 2 * 3600_000);
     await pool.query(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status,
+      `INSERT INTO jobs (branch_id, customer_id, title, status,
                          assigned_tech_user_id, scheduled_start, scheduled_end)
          VALUES ($1, $2, 'existing', 'scheduled', $3, $4, $5)`,
       [
@@ -463,12 +461,12 @@ describe('DI-08 / scheduling invariants', () => {
     );
     // New unassigned job that overlaps.
     const newCust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name, latitude, longitude)
+      `INSERT INTO customers (branch_id, name, latitude, longitude)
          VALUES ($1, 'Conflict', 39.74, -104.99) RETURNING id`,
       [ids.denverId],
     );
     const newJob = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'conflict', 'unassigned') RETURNING id`,
       [ids.denverId, newCust.rows[0]!.id],
     );
@@ -518,11 +516,11 @@ describe('DI-08 / scheduling invariants', () => {
 
   it('missing-skill proposal (reasoning mentions required skill) is queued', async () => {
     const cust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Skills') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Skills') RETURNING id`,
       [ids.denverId],
     );
     const job = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'needs panorama', 'unassigned') RETURNING id`,
       [ids.denverId, cust.rows[0]!.id],
     );

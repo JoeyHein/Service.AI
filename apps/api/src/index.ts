@@ -38,7 +38,6 @@ import { users, sessions, accounts, verifications } from '@service-ai/db';
 import { buildApp } from './app.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from './production-resolvers.js';
 import {
@@ -137,7 +136,6 @@ const app = buildApp({
   auth,
   drizzle: db,
   membershipResolver: membershipResolver(db),
-  franchiseeLookup: franchiseeLookup(db),
   auditWriter: auditLogWriter(db),
   magicLinkSender: loggingSender,
   acceptUrlBase: process.env['WEB_ORIGIN'] ?? 'http://localhost:3000',

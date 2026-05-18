@@ -12,7 +12,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -91,7 +90,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -147,14 +145,14 @@ describe('CJ-03 / jobs CRUD', () => {
     }
   });
 
-  it('creates a job in the caller\'s franchisee with default status unassigned', async () => {
+  it('creates a job in the caller\'s branch with default status unassigned', async () => {
     const res = await createJob(cookies.denverOwner, denverCustomerId);
     expect(res.statusCode).toBe(201);
     expect(res.json().data.status).toBe('unassigned');
     expect(res.json().data.title).toBe('Install 2-car door');
   });
 
-  it('rejects creating a job bound to a customer in another franchisee', async () => {
+  it('rejects creating a job bound to a customer in another branch', async () => {
     const res = await createJob(cookies.denverOwner, austinCustomerId, 'Hijack attempt');
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('INVALID_TARGET');
@@ -171,7 +169,7 @@ describe('CJ-03 / jobs CRUD', () => {
     expect(read.statusCode).toBe(404);
   });
 
-  it('list filters by status + customer, no cross-franchisee leak', async () => {
+  it('list filters by status + customer, no cross-branch leak', async () => {
     await createJob(cookies.denverOwner, denverCustomerId, 'Filter job A');
     await createJob(cookies.austinOwner, austinCustomerId, 'Austin job');
     const list = await app.inject({

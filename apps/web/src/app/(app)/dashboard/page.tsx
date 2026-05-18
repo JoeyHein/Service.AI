@@ -73,11 +73,12 @@ const PERIODS: Array<{ value: string; label: string }> = [
   { value: 'ytd', label: 'YTD' },
 ];
 
+// CHR-12: post-corporate-hub roles. Corporate admin + manager + dispatcher
+// see the owner-style operational dashboard. Tech/CSR get the scope summary
+// fallback below.
 const DASHBOARD_ROLES = new Set([
-  'platform_admin',
-  'franchisor_admin',
-  'franchisee_owner',
-  'location_manager',
+  'corporate_admin',
+  'manager',
   'dispatcher',
 ]);
 

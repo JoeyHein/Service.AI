@@ -1,95 +1,49 @@
 /**
- * Role-matrix authorization for the invitation flow (TASK-TEN-05).
- *
- * Pure function — no DB, no side effects. Given the inviter's effective
- * RequestScope and the target role + scope context they want to invite
- * into, returns whether the action is permitted.
+ * Role-matrix authorization for the invitation flow under the corporate
+ * hub model.
  *
  * Privilege matrix (rows are inviters, columns are invitable roles):
  *
- *                       pf_admin fr_admin fe_owner loc_mgr disp tech csr
- *   platform_admin          ✓        ✓        ✓        ✓      ✓    ✓    ✓
- *   franchisor_admin        ✗        ✓*       ✓†       ✓†     ✓†   ✓†   ✓†
- *   franchisee_owner        ✗        ✗        ✗        ✓‡     ✓‡   ✓‡   ✓‡
- *   location_manager        ✗        ✗        ✗        ✗      ✓‡   ✓‡   ✓‡
- *   dispatcher/tech/csr     ✗        ✗        ✗        ✗      ✗    ✗    ✗
+ *                       co_admin manager  disp tech csr
+ *   corporate_admin        x        ok      ok   ok   ok    (any branch)
+ *   manager                x        x       ok†  ok†  ok†   (own branch only)
+ *   dispatcher/tech/csr    x        x       x    x    x
  *
- *   * only within their own franchisor
- *   † only at a franchisee whose franchisor matches theirs (caller validates
- *     the targetFranchiseeId's parent franchisor separately — this function
- *     takes the checked franchisorId as input)
- *   ‡ only within their own franchisee
+ *   † manager can only invite users into their own branch.
  *
- * Platform admin never shows up as an invitable role — the platform admin
- * role is assigned out-of-band (e.g., by the seed script or a DB
- * intervention), never via an invite.
+ * Corporate admin is assigned out-of-band; it is not an invitable role.
  */
 import type { RequestScope } from '@service-ai/db';
 
-export type InvitableRole =
-  | 'franchisor_admin'
-  | 'franchisee_owner'
-  | 'location_manager'
-  | 'dispatcher'
-  | 'tech'
-  | 'csr';
+export type InvitableRole = 'manager' | 'dispatcher' | 'tech' | 'csr';
 
-/** Target scope the invite will land at. Matches scope_type without 'platform'. */
-export type InviteScopeType = 'franchisor' | 'franchisee' | 'location';
+export type InviteScopeType = 'branch';
 
 export interface InviteTarget {
   role: InvitableRole;
   scopeType: InviteScopeType;
-  /**
-   * Resolved franchisor of the target scope. Caller resolves this from the
-   * target franchiseeId/locationId before calling canInvite — keeps this
-   * function DB-free and synchronous.
-   */
-  franchisorId: string;
-  /** Present when scopeType is 'franchisee' or 'location'. */
-  franchiseeId?: string;
-  /** Present when scopeType is 'location'. */
+  /** The branch the invite targets. */
+  branchId: string;
+  /** Optional location pin; ignored by canInvite. */
   locationId?: string;
 }
 
-const FRANCHISEE_SCOPED_ROLES: ReadonlySet<InvitableRole> = new Set([
-  'location_manager',
-  'dispatcher',
-  'tech',
-  'csr',
-]);
-
-const LOCATION_MANAGER_INVITABLE: ReadonlySet<InvitableRole> = new Set([
+const MANAGER_INVITABLE: ReadonlySet<InvitableRole> = new Set([
   'dispatcher',
   'tech',
   'csr',
 ]);
 
 export function canInvite(inviter: RequestScope, target: InviteTarget): boolean {
-  // Platform admin: no restrictions (still cannot invite a platform admin,
-  // but the InvitableRole union already excludes that case at the type level).
-  if (inviter.type === 'platform') return true;
+  // Corporate admin: invite any role into any branch.
+  if (inviter.type === 'corporate') return true;
 
-  // Franchisor admin: anywhere within their franchisor. Cannot escalate to
-  // another franchisor, and cannot invite a platform_admin (not in the
-  // InvitableRole union).
-  if (inviter.type === 'franchisor') {
-    if (target.franchisorId !== inviter.franchisorId) return false;
-    return true;
-  }
+  // Branch-scoped inviter: must target their own branch.
+  if (target.branchId !== inviter.branchId) return false;
 
-  // franchisee-scoped inviter: only within their own franchisee.
-  if (target.franchisorId !== inviter.franchisorId) return false;
-  if (target.franchiseeId !== inviter.franchiseeId) return false;
-
-  // franchisee_owner can invite location_manager / dispatcher / tech / csr.
-  if (inviter.role === 'franchisee_owner') {
-    return FRANCHISEE_SCOPED_ROLES.has(target.role);
-  }
-
-  // location_manager can invite dispatcher / tech / csr.
-  if (inviter.role === 'location_manager') {
-    return LOCATION_MANAGER_INVITABLE.has(target.role);
+  // Manager can invite dispatcher / tech / csr into their branch.
+  if (inviter.role === 'manager') {
+    return MANAGER_INVITABLE.has(target.role);
   }
 
   // dispatcher, tech, csr: cannot invite.

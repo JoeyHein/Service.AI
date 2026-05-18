@@ -1,27 +1,23 @@
 /**
- * Idempotent seed for TASK-TEN-09.
+ * Idempotent seed for the corporate hub model.
  *
  * Creates the demo tenant tree for Elevated Doors:
- *   - 1 platform admin  (joey@opendc.ca)
- *   - 1 franchisor       (Elevated Doors)
- *   - 2 franchisees      (Denver, Austin)
- *   - 2 locations        (one per franchisee)
- *   - 12 franchisee users (owner + manager + dispatcher + 2 techs + csr, ×2)
- *   - 13 memberships     (1 platform + 12 franchisee-scoped)
+ *   - 1 corporate admin   (joey@opendc.ca)
+ *   - 1 corporate hub     (Elevated Doors)
+ *   - 2 branches          (Denver, Austin)
+ *   - 2 locations         (one per branch)
+ *   - 12 branch users     (manager + dispatcher + 2 techs + csr, ×2 — manager
+ *                          is the only branch-level admin under the corporate
+ *                          hub model; the legacy "owner" tier was collapsed)
  *
- * All users share a single DEV-ONLY password. The constant is exported so
- * test suites can sign in as seeded users without hard-coding the string
- * in multiple places. Production deployments MUST regenerate passwords
- * before going live — this seed is strictly for dev + CI.
+ * All users share a single DEV-ONLY password.
  *
  * Idempotency: every insert is guarded by a SELECT-before-INSERT lookup
- * on the natural unique key (email for users, slug for franchisors /
- * franchisees, (franchisee_id, name) for locations). Re-running the seed
- * a second time is a no-op and exits 0.
+ * on the natural unique key. Re-running the seed is a no-op.
  *
- * Reset: when invoked with `--reset` the script first truncates every
- * tenant-scoped table plus the Better Auth tables, leaving migrations
- * and health_checks intact.
+ * Reset: when invoked with `--reset` the script truncates every tenant-
+ * scoped table plus Better Auth tables, leaving migrations and
+ * health_checks intact.
  *
  * Runs with the admin DATABASE_URL — RLS is bypassed by superuser.
  */
@@ -36,13 +32,12 @@ import {
   sessions,
   accounts,
   verifications,
-  franchisors,
-  franchisees,
+  corporate,
+  branches,
   locations,
   memberships,
   serviceCatalogTemplates,
   serviceItems,
-  pricebookOverrides,
 } from '@service-ai/db';
 
 const { Pool } = pkg;
@@ -51,7 +46,7 @@ export const DEV_SEED_PASSWORD = 'changeme123!A';
 
 const ELEVATED_DOORS_SLUG = 'elevated-doors';
 
-interface FranchiseeSpec {
+interface BranchSpec {
   slug: string;
   name: string;
   location: string;
@@ -59,7 +54,7 @@ interface FranchiseeSpec {
   timezone: string;
 }
 
-const FRANCHISEES: readonly FranchiseeSpec[] = [
+const BRANCHES: readonly BranchSpec[] = [
   {
     slug: 'denver',
     name: 'Elevated Doors — Denver',
@@ -76,24 +71,19 @@ const FRANCHISEES: readonly FranchiseeSpec[] = [
   },
 ] as const;
 
-type FranchiseeRole =
-  | 'franchisee_owner'
-  | 'location_manager'
-  | 'dispatcher'
-  | 'tech'
-  | 'csr';
+type BranchRole = 'manager' | 'dispatcher' | 'tech' | 'csr';
 
 interface UserSpec {
   email: string;
   name: string;
-  role: FranchiseeRole;
+  role: BranchRole;
 }
 
-function usersFor(fr: FranchiseeSpec): UserSpec[] {
+function usersFor(fr: BranchSpec): UserSpec[] {
   const p = fr.userPrefix;
   return [
-    { email: `${p}.owner@elevateddoors.test`, name: `${fr.slug} Owner`, role: 'franchisee_owner' },
-    { email: `${p}.manager@elevateddoors.test`, name: `${fr.slug} Manager`, role: 'location_manager' },
+    { email: `${p}.owner@elevateddoors.test`, name: `${fr.slug} Manager`, role: 'manager' },
+    { email: `${p}.manager@elevateddoors.test`, name: `${fr.slug} Manager 2`, role: 'manager' },
     { email: `${p}.dispatcher@elevateddoors.test`, name: `${fr.slug} Dispatcher`, role: 'dispatcher' },
     { email: `${p}.tech1@elevateddoors.test`, name: `${fr.slug} Tech 1`, role: 'tech' },
     { email: `${p}.tech2@elevateddoors.test`, name: `${fr.slug} Tech 2`, role: 'tech' },
@@ -101,7 +91,7 @@ function usersFor(fr: FranchiseeSpec): UserSpec[] {
   ];
 }
 
-const PLATFORM_ADMIN = {
+const CORPORATE_ADMIN = {
   email: 'joey@opendc.ca',
   name: 'Joey Heinrichs',
 } as const;
@@ -122,7 +112,6 @@ function buildAuth(db: Drizzle): Auth {
   });
 }
 
-/** Create a user via Better Auth's sign-up endpoint or return the existing one. */
 async function ensureUser(
   db: Drizzle,
   auth: Auth,
@@ -143,59 +132,59 @@ async function ensureUser(
   return after[0].id;
 }
 
-async function ensureFranchisor(
+async function ensureCorporate(
   db: Drizzle,
   spec: { name: string; slug: string },
 ): Promise<string> {
   const existing = await db
-    .select({ id: franchisors.id })
-    .from(franchisors)
-    .where(eq(franchisors.slug, spec.slug));
+    .select({ id: corporate.id })
+    .from(corporate)
+    .where(eq(corporate.slug, spec.slug));
   if (existing[0]) return existing[0].id;
   const inserted = await db
-    .insert(franchisors)
+    .insert(corporate)
     .values({ name: spec.name, slug: spec.slug })
-    .returning({ id: franchisors.id });
+    .returning({ id: corporate.id });
   return inserted[0]!.id;
 }
 
-async function ensureFranchisee(
+async function ensureBranch(
   db: Drizzle,
-  franchisorId: string,
-  spec: FranchiseeSpec,
+  corporateId: string,
+  spec: BranchSpec,
 ): Promise<string> {
   const existing = await db
-    .select({ id: franchisees.id })
-    .from(franchisees)
-    .where(eq(franchisees.slug, spec.slug));
-  const existingForParent = existing.find(() => true); // slug has a per-franchisor unique so this is safe here
-  if (existingForParent) return existingForParent.id;
+    .select({ id: branches.id })
+    .from(branches)
+    .where(eq(branches.slug, spec.slug));
+  if (existing[0]) return existing[0].id;
   const inserted = await db
-    .insert(franchisees)
+    .insert(branches)
     .values({
-      franchisorId,
+      corporateId,
       name: spec.name,
       slug: spec.slug,
       legalEntityName: `${spec.name} LLC`,
+      timezone: spec.timezone,
     })
-    .returning({ id: franchisees.id });
+    .returning({ id: branches.id });
   return inserted[0]!.id;
 }
 
 async function ensureLocation(
   db: Drizzle,
-  franchiseeId: string,
+  branchId: string,
   name: string,
   timezone: string,
 ): Promise<string> {
   const existing = await db
     .select({ id: locations.id })
     .from(locations)
-    .where(eq(locations.franchiseeId, franchiseeId));
+    .where(eq(locations.branchId, branchId));
   if (existing[0]) return existing[0].id;
   const inserted = await db
     .insert(locations)
-    .values({ franchiseeId, name, timezone })
+    .values({ branchId, name, timezone })
     .returning({ id: locations.id });
   return inserted[0]!.id;
 }
@@ -204,17 +193,15 @@ async function ensureMembership(
   db: Drizzle,
   args: {
     userId: string;
-    scopeType: 'platform' | 'franchisor' | 'franchisee' | 'location';
+    scopeType: 'corporate' | 'branch';
     scopeId: string | null;
     role:
-      | 'platform_admin'
-      | 'franchisor_admin'
-      | 'franchisee_owner'
-      | 'location_manager'
+      | 'corporate_admin'
+      | 'manager'
       | 'dispatcher'
       | 'tech'
       | 'csr';
-    franchiseeId: string | null;
+    branchId: string | null;
     locationId: string | null;
   },
 ): Promise<void> {
@@ -228,34 +215,24 @@ async function ensureMembership(
     scopeType: args.scopeType,
     scopeId: args.scopeId,
     role: args.role,
-    franchiseeId: args.franchiseeId,
+    branchId: args.branchId,
     locationId: args.locationId,
   });
 }
 
 export interface SeedResult {
-  platformAdminUserId: string;
-  franchisorId: string;
-  franchisees: { slug: string; id: string; locationId: string; userIds: string[] }[];
+  corporateAdminUserId: string;
+  corporateId: string;
+  branches: { slug: string; id: string; locationId: string; userIds: string[] }[];
   catalog: {
     templateId: string;
     itemCount: number;
-    overrideCount: number;
   };
+  platformAdminUserId: string; // @deprecated alias for corporateAdminUserId; removed in CHR-06
+  franchisorId: string; // @deprecated alias for corporateId; removed in CHR-06
+  franchisees: { slug: string; id: string; locationId: string; userIds: string[] }[]; // @deprecated alias for branches; removed in CHR-06
 }
 
-/**
- * Demo garage-door catalog: ~50 items across five categories. Prices
- * match real-industry ranges so screenshots look plausible.
- *
- * category | count | price sample
- * ---------+-------+-----------------------------------
- * Installs |   6   | single-car install $1,200 → 2-car $1,800
- * Repairs  |  10   | roller swap $150, cable replace $220
- * Springs  |   6   | torsion spring $220, pair $380
- * Openers  |   8   | chain-drive $395, smart belt $695
- * Parts    |  20+  | rollers, hinges, cables, sensors …
- */
 interface SeedItem {
   sku: string;
   name: string;
@@ -269,7 +246,6 @@ interface SeedItem {
 }
 
 const SEED_ITEMS: readonly SeedItem[] = [
-  // Installs
   { sku: 'INST-SC-STEEL', name: 'Single-car steel door install', category: 'Installs', unit: 'each', basePrice: 1200, floorPrice: 1000, ceilingPrice: 1600 },
   { sku: 'INST-2C-STEEL', name: '2-car steel door install', category: 'Installs', unit: 'each', basePrice: 1800, floorPrice: 1500, ceilingPrice: 2400 },
   { sku: 'INST-SC-WOOD', name: 'Single-car wood door install', category: 'Installs', unit: 'each', basePrice: 2200, floorPrice: 1800, ceilingPrice: 3000 },
@@ -277,7 +253,6 @@ const SEED_ITEMS: readonly SeedItem[] = [
   { sku: 'INST-ALUM', name: 'Aluminum/glass panorama install', category: 'Installs', unit: 'each', basePrice: 4800, floorPrice: 3800, ceilingPrice: 6500 },
   { sku: 'INST-REMOVE', name: 'Old door haul-away', category: 'Installs', unit: 'each', basePrice: 150, floorPrice: 100, ceilingPrice: 250 },
 
-  // Repairs
   { sku: 'REP-ROLLER', name: 'Roller replacement (set of 10)', category: 'Repairs', unit: 'set', basePrice: 150, floorPrice: 120, ceilingPrice: 220 },
   { sku: 'REP-CABLE', name: 'Cable replacement (pair)', category: 'Repairs', unit: 'pair', basePrice: 220, floorPrice: 180, ceilingPrice: 300 },
   { sku: 'REP-HINGE', name: 'Hinge replacement', category: 'Repairs', unit: 'each', basePrice: 35, floorPrice: 25, ceilingPrice: 60 },
@@ -287,36 +262,30 @@ const SEED_ITEMS: readonly SeedItem[] = [
   { sku: 'REP-PANEL', name: 'Single panel replacement', category: 'Repairs', unit: 'each', basePrice: 280, floorPrice: 220, ceilingPrice: 400 },
   { sku: 'REP-OFFTRACK', name: 'Door off-track reset', category: 'Repairs', unit: 'each', basePrice: 165, floorPrice: 130, ceilingPrice: 240 },
   { sku: 'REP-LUBRICATE', name: 'Lubrication + tune-up', category: 'Repairs', unit: 'each', basePrice: 120, floorPrice: 95, ceilingPrice: 160 },
-  { sku: 'REP-SENSORALIGN', name: 'Safety sensor alignment', category: 'Repairs', unit: 'each', basePrice: 85, floorPrice: 65, ceilingPrice: 120 },
+  { sku: 'REP-PHOTOEYE', name: 'Photo-eye sensor replacement', category: 'Repairs', unit: 'each', basePrice: 95, floorPrice: 70, ceilingPrice: 140 },
 
-  // Springs
-  { sku: 'SPR-TORSION', name: 'Torsion spring replacement', category: 'Springs', unit: 'each', basePrice: 220, floorPrice: 180, ceilingPrice: 300 },
-  { sku: 'SPR-TORSION-PAIR', name: 'Torsion spring pair', category: 'Springs', unit: 'pair', basePrice: 380, floorPrice: 320, ceilingPrice: 520 },
-  { sku: 'SPR-EXT', name: 'Extension spring (each)', category: 'Springs', unit: 'each', basePrice: 140, floorPrice: 110, ceilingPrice: 200 },
-  { sku: 'SPR-EXT-PAIR', name: 'Extension spring pair', category: 'Springs', unit: 'pair', basePrice: 240, floorPrice: 200, ceilingPrice: 340 },
-  { sku: 'SPR-CONV', name: 'Extension → torsion conversion', category: 'Springs', unit: 'each', basePrice: 495, floorPrice: 400, ceilingPrice: 680 },
-  { sku: 'SPR-HD', name: 'Heavy-duty torsion (2-car wood)', category: 'Springs', unit: 'each', basePrice: 320, floorPrice: 270, ceilingPrice: 440 },
+  { sku: 'SPRING-TORSION', name: 'Torsion spring replacement (single)', category: 'Springs', unit: 'each', basePrice: 220, floorPrice: 180, ceilingPrice: 300 },
+  { sku: 'SPRING-TORSION-PAIR', name: 'Torsion spring replacement (pair)', category: 'Springs', unit: 'pair', basePrice: 380, floorPrice: 320, ceilingPrice: 520 },
+  { sku: 'SPRING-EXT', name: 'Extension spring replacement', category: 'Springs', unit: 'each', basePrice: 180, floorPrice: 140, ceilingPrice: 260 },
+  { sku: 'SPRING-CONVERT', name: 'Extension → torsion conversion', category: 'Springs', unit: 'each', basePrice: 450, floorPrice: 380, ceilingPrice: 620 },
+  { sku: 'SPRING-LIFT-CABLE', name: 'Lift cable + spring set', category: 'Springs', unit: 'set', basePrice: 320, floorPrice: 260, ceilingPrice: 440 },
+  { sku: 'SPRING-HEAVY', name: 'Heavy-duty (oversize) spring', category: 'Springs', unit: 'each', basePrice: 320, floorPrice: 260, ceilingPrice: 460 },
 
-  // Openers
-  { sku: 'OPN-CHAIN', name: 'Chain-drive opener (1/2 hp)', category: 'Openers', unit: 'each', basePrice: 395, floorPrice: 320, ceilingPrice: 540 },
-  { sku: 'OPN-BELT', name: 'Belt-drive opener (3/4 hp)', category: 'Openers', unit: 'each', basePrice: 495, floorPrice: 420, ceilingPrice: 660 },
-  { sku: 'OPN-SMART-BELT', name: 'Smart belt-drive opener (myQ / WiFi)', category: 'Openers', unit: 'each', basePrice: 695, floorPrice: 580, ceilingPrice: 900 },
-  { sku: 'OPN-JACKSHAFT', name: 'Jackshaft opener', category: 'Openers', unit: 'each', basePrice: 895, floorPrice: 740, ceilingPrice: 1200 },
-  { sku: 'OPN-REMOTE', name: 'Remote (3-button)', category: 'Openers', unit: 'each', basePrice: 45, floorPrice: 35, ceilingPrice: 70 },
-  { sku: 'OPN-KEYPAD', name: 'Wireless keypad', category: 'Openers', unit: 'each', basePrice: 65, floorPrice: 50, ceilingPrice: 95 },
-  { sku: 'OPN-BATTERY', name: 'Backup battery install', category: 'Openers', unit: 'each', basePrice: 175, floorPrice: 140, ceilingPrice: 240 },
-  { sku: 'OPN-DIAG', name: 'Opener diagnostic', category: 'Openers', unit: 'each', basePrice: 95, floorPrice: 75, ceilingPrice: 140 },
+  { sku: 'OPENER-CHAIN', name: 'Chain-drive opener', category: 'Openers', unit: 'each', basePrice: 395, floorPrice: 320, ceilingPrice: 550 },
+  { sku: 'OPENER-BELT', name: 'Belt-drive opener', category: 'Openers', unit: 'each', basePrice: 495, floorPrice: 400, ceilingPrice: 680 },
+  { sku: 'OPENER-SMART', name: 'Smart Wi-Fi belt-drive opener', category: 'Openers', unit: 'each', basePrice: 695, floorPrice: 560, ceilingPrice: 950 },
+  { sku: 'OPENER-JACKSHAFT', name: 'Jack-shaft opener (wall-mount)', category: 'Openers', unit: 'each', basePrice: 895, floorPrice: 720, ceilingPrice: 1200 },
+  { sku: 'OPENER-LOGIC-BOARD', name: 'Logic board replacement', category: 'Openers', unit: 'each', basePrice: 220, floorPrice: 170, ceilingPrice: 320 },
+  { sku: 'OPENER-REMOTE', name: 'Remote (single)', category: 'Openers', unit: 'each', basePrice: 35, floorPrice: 28, ceilingPrice: 60 },
+  { sku: 'OPENER-REMOTE-3PK', name: 'Remote 3-pack', category: 'Openers', unit: 'pack', basePrice: 95, floorPrice: 75, ceilingPrice: 145 },
+  { sku: 'OPENER-KEYPAD', name: 'Wireless keypad', category: 'Openers', unit: 'each', basePrice: 65, floorPrice: 50, ceilingPrice: 95 },
 
-  // Parts
-  { sku: 'PART-ROLLER-NYLON', name: 'Nylon roller', category: 'Parts', unit: 'each', basePrice: 9, floorPrice: 6, ceilingPrice: 15 },
-  { sku: 'PART-ROLLER-STEEL', name: 'Steel roller', category: 'Parts', unit: 'each', basePrice: 6, floorPrice: 4, ceilingPrice: 10 },
-  { sku: 'PART-HINGE-SM', name: 'Hinge (1-2)', category: 'Parts', unit: 'each', basePrice: 11, floorPrice: 8, ceilingPrice: 18 },
-  { sku: 'PART-HINGE-LG', name: 'Hinge (3-4)', category: 'Parts', unit: 'each', basePrice: 16, floorPrice: 12, ceilingPrice: 24 },
-  { sku: 'PART-CABLE-8FT', name: '8-ft lift cable (each)', category: 'Parts', unit: 'each', basePrice: 15, floorPrice: 10, ceilingPrice: 24 },
-  { sku: 'PART-CABLE-10FT', name: '10-ft lift cable (each)', category: 'Parts', unit: 'each', basePrice: 18, floorPrice: 13, ceilingPrice: 28 },
-  { sku: 'PART-BRACKET', name: 'Bottom fixture bracket', category: 'Parts', unit: 'each', basePrice: 22, floorPrice: 16, ceilingPrice: 36 },
-  { sku: 'PART-TRACK-6FT', name: '6-ft vertical track section', category: 'Parts', unit: 'each', basePrice: 55, floorPrice: 40, ceilingPrice: 85 },
-  { sku: 'PART-STRUT', name: 'Reinforcement strut', category: 'Parts', unit: 'each', basePrice: 48, floorPrice: 35, ceilingPrice: 75 },
+  { sku: 'PART-ROLLER', name: 'Nylon roller', category: 'Parts', unit: 'each', basePrice: 6, floorPrice: 4, ceilingPrice: 10 },
+  { sku: 'PART-HINGE', name: 'Steel hinge', category: 'Parts', unit: 'each', basePrice: 8, floorPrice: 5, ceilingPrice: 12 },
+  { sku: 'PART-CABLE', name: 'Lift cable', category: 'Parts', unit: 'each', basePrice: 22, floorPrice: 16, ceilingPrice: 38 },
+  { sku: 'PART-DRUM', name: 'Cable drum', category: 'Parts', unit: 'each', basePrice: 18, floorPrice: 14, ceilingPrice: 30 },
+  { sku: 'PART-BRACKET', name: 'Bottom bracket', category: 'Parts', unit: 'each', basePrice: 16, floorPrice: 12, ceilingPrice: 28 },
+  { sku: 'PART-TRACK-12', name: 'Track section 12-ft', category: 'Parts', unit: 'each', basePrice: 35, floorPrice: 28, ceilingPrice: 55 },
   { sku: 'PART-SEAL-BOTTOM', name: 'Bottom seal retainer', category: 'Parts', unit: 'each', basePrice: 28, floorPrice: 20, ceilingPrice: 44 },
   { sku: 'PART-WEATHERSTRIP-ROLL', name: 'Weather-strip roll (20 ft)', category: 'Parts', unit: 'roll', basePrice: 45, floorPrice: 32, ceilingPrice: 70 },
   { sku: 'PART-SENSOR', name: 'Safety sensor pair', category: 'Parts', unit: 'pair', basePrice: 55, floorPrice: 40, ceilingPrice: 85 },
@@ -332,24 +301,17 @@ const SEED_ITEMS: readonly SeedItem[] = [
 
 async function ensureCatalog(
   db: ReturnType<typeof drizzle<typeof schema>>,
-  franchisorId: string,
 ): Promise<{ templateId: string; itemCount: number }> {
   const existing = await db
     .select({ id: serviceCatalogTemplates.id, status: serviceCatalogTemplates.status })
     .from(serviceCatalogTemplates)
-    .where(
-      and(
-        eq(serviceCatalogTemplates.franchisorId, franchisorId),
-        eq(serviceCatalogTemplates.slug, 'starter-2026'),
-      ),
-    );
+    .where(eq(serviceCatalogTemplates.slug, 'starter-2026'));
   const templateId =
     existing[0]?.id ??
     (
       await db
         .insert(serviceCatalogTemplates)
         .values({
-          franchisorId,
           name: 'Starter Catalog 2026',
           slug: 'starter-2026',
           notes: 'Seed catalog for Elevated Doors demo environments.',
@@ -359,8 +321,6 @@ async function ensureCatalog(
         .returning({ id: serviceCatalogTemplates.id })
     )[0]!.id;
 
-  // If the template existed but isn't published yet, publish it now so
-  // the resolved pricebook works in dev without a manual step.
   if (existing[0] && existing[0].status !== 'published') {
     await db
       .update(serviceCatalogTemplates)
@@ -368,7 +328,6 @@ async function ensureCatalog(
       .where(eq(serviceCatalogTemplates.id, templateId));
   }
 
-  // Idempotent bulk upsert of items — check by (template_id, sku).
   let itemCount = 0;
   for (let idx = 0; idx < SEED_ITEMS.length; idx++) {
     const spec = SEED_ITEMS[idx]!;
@@ -384,7 +343,6 @@ async function ensureCatalog(
     if (already.length === 0) {
       await db.insert(serviceItems).values({
         templateId,
-        franchisorId,
         sku: spec.sku,
         name: spec.name,
         description: spec.description ?? null,
@@ -401,116 +359,67 @@ async function ensureCatalog(
   return { templateId, itemCount };
 }
 
-async function ensureDemoOverrides(
-  db: ReturnType<typeof drizzle<typeof schema>>,
-  franchisorId: string,
-  denverFranchiseeId: string,
-): Promise<number> {
-  // Denver gets a premium price on the 2-car steel install (closer to
-  // the ceiling) and a discount on the roller replacement.
-  const demos: Array<{ sku: string; price: number; note: string }> = [
-    { sku: 'INST-2C-STEEL', price: 2100, note: 'Denver premium pricing' },
-    { sku: 'REP-ROLLER', price: 135, note: 'Denver promo' },
-  ];
-  let count = 0;
-  for (const d of demos) {
-    const itemRows = await db
-      .select({ id: serviceItems.id })
-      .from(serviceItems)
-      .where(
-        and(
-          eq(serviceItems.sku, d.sku),
-          eq(serviceItems.franchisorId, franchisorId),
-        ),
-      );
-    const itemId = itemRows[0]?.id;
-    if (!itemId) continue;
-    const already = await db
-      .select({ id: pricebookOverrides.id })
-      .from(pricebookOverrides)
-      .where(
-        and(
-          eq(pricebookOverrides.franchiseeId, denverFranchiseeId),
-          eq(pricebookOverrides.serviceItemId, itemId),
-        ),
-      );
-    if (already.length > 0) {
-      count++;
-      continue;
-    }
-    await db.insert(pricebookOverrides).values({
-      franchiseeId: denverFranchiseeId,
-      franchisorId,
-      serviceItemId: itemId,
-      overridePrice: String(d.price),
-      note: d.note,
-    });
-    count++;
-  }
-  return count;
-}
-
 export async function runSeed(pool: InstanceType<typeof Pool>): Promise<SeedResult> {
   const db = drizzle(pool, { schema });
   const auth = buildAuth(db);
 
-  const platformAdminUserId = await ensureUser(db, auth, PLATFORM_ADMIN.email, PLATFORM_ADMIN.name);
-  await ensureMembership(db, {
-    userId: platformAdminUserId,
-    scopeType: 'platform',
-    scopeId: null,
-    role: 'platform_admin',
-    franchiseeId: null,
-    locationId: null,
-  });
+  const corporateAdminUserId = await ensureUser(
+    db,
+    auth,
+    CORPORATE_ADMIN.email,
+    CORPORATE_ADMIN.name,
+  );
 
-  const franchisorId = await ensureFranchisor(db, {
+  const corporateId = await ensureCorporate(db, {
     name: 'Elevated Doors',
     slug: ELEVATED_DOORS_SLUG,
   });
 
-  const result: SeedResult = {
-    platformAdminUserId,
-    franchisorId,
-    franchisees: [],
-    catalog: { templateId: '', itemCount: 0, overrideCount: 0 },
-  };
+  await ensureMembership(db, {
+    userId: corporateAdminUserId,
+    scopeType: 'corporate',
+    scopeId: corporateId,
+    role: 'corporate_admin',
+    branchId: null,
+    locationId: null,
+  });
 
-  for (const spec of FRANCHISEES) {
-    const franchiseeId = await ensureFranchisee(db, franchisorId, spec);
-    const locationId = await ensureLocation(db, franchiseeId, spec.location, spec.timezone);
+  const branchSummaries: SeedResult['branches'] = [];
+  for (const spec of BRANCHES) {
+    const branchId = await ensureBranch(db, corporateId, spec);
+    const locationId = await ensureLocation(db, branchId, spec.location, spec.timezone);
     const userIds: string[] = [];
     for (const u of usersFor(spec)) {
       const userId = await ensureUser(db, auth, u.email, u.name);
       userIds.push(userId);
       await ensureMembership(db, {
         userId,
-        scopeType: u.role === 'location_manager' ? 'location' : 'franchisee',
-        scopeId: u.role === 'location_manager' ? locationId : franchiseeId,
+        scopeType: 'branch',
+        scopeId: branchId,
         role: u.role,
-        franchiseeId,
-        locationId: u.role === 'location_manager' ? locationId : null,
+        branchId,
+        locationId: null,
       });
     }
-    result.franchisees.push({ slug: spec.slug, id: franchiseeId, locationId, userIds });
+    branchSummaries.push({ slug: spec.slug, id: branchId, locationId, userIds });
   }
 
-  // Catalog (phase_pricebook) — created after franchisees exist so we
-  // can attach demo overrides to Denver.
-  const catalog = await ensureCatalog(db, franchisorId);
-  const denver = result.franchisees.find((f) => f.slug === 'denver');
-  const overrideCount = denver
-    ? await ensureDemoOverrides(db, franchisorId, denver.id)
-    : 0;
-  result.catalog = {
-    templateId: catalog.templateId,
-    itemCount: catalog.itemCount,
-    overrideCount,
+  const catalog = await ensureCatalog(db);
+  const result: SeedResult = {
+    corporateAdminUserId,
+    corporateId,
+    branches: branchSummaries,
+    catalog: {
+      templateId: catalog.templateId,
+      itemCount: catalog.itemCount,
+    },
+    platformAdminUserId: corporateAdminUserId, // @deprecated CHR-06
+    franchisorId: corporateId, // @deprecated CHR-06
+    franchisees: branchSummaries, // @deprecated CHR-06
   };
 
-  // KB seed (phase_ai_tech_assistant). Idempotent on `source`.
   const { runKbSeed } = await import('./kb-docs.js');
-  await runKbSeed(pool, franchisorId);
+  await runKbSeed(pool);
 
   return result;
 }
@@ -534,21 +443,22 @@ export async function runReset(pool: InstanceType<typeof Pool>): Promise<void> {
        call_sessions,
        ai_messages,
        ai_conversations,
-       royalty_statements,
-       royalty_rules,
-       franchise_agreements,
        stripe_events,
        refunds,
        payments,
-       pricebook_overrides,
+       commission_ledger,
+       user_comp_assignments,
+       comp_plans,
+       pricebook_suggestions,
        service_items,
        service_catalog_templates,
        invitations,
        audit_log,
        memberships,
+       branch_managers,
        locations,
-       franchisees,
-       franchisors,
+       branches,
+       corporate,
        sessions,
        accounts,
        verifications,
@@ -580,13 +490,13 @@ async function main(): Promise<void> {
     }
     const result = await runSeed(pool);
     console.log('Seed: applied');
-    console.log('  platform admin:', PLATFORM_ADMIN.email);
-    console.log('  franchisor:', ELEVATED_DOORS_SLUG, result.franchisorId);
-    for (const f of result.franchisees) {
-      console.log(`  franchisee ${f.slug}: ${f.id} (${f.userIds.length} users)`);
+    console.log('  corporate admin:', CORPORATE_ADMIN.email);
+    console.log('  corporate:', ELEVATED_DOORS_SLUG, result.corporateId);
+    for (const b of result.branches) {
+      console.log(`  branch ${b.slug}: ${b.id} (${b.userIds.length} users)`);
     }
     console.log(
-      `  catalog template: ${result.catalog.templateId} (${result.catalog.itemCount} items, ${result.catalog.overrideCount} Denver overrides)`,
+      `  catalog template: ${result.catalog.templateId} (${result.catalog.itemCount} items)`,
     );
     console.log(`\nAll seeded users can sign in with: ${DEV_SEED_PASSWORD}`);
     console.log('(DEV ONLY — never use this in production)');
@@ -595,10 +505,6 @@ async function main(): Promise<void> {
   }
 }
 
-// Detect CLI execution. Both argv[1] and the module path need the same
-// file:// canonicalisation because Node uses posix-style URLs everywhere
-// but Windows argv[1] is a drive-letter path. fileURLToPath normalises
-// import.meta.url back to an OS path we can compare with argv[1].
 import { fileURLToPath } from 'node:url';
 import { resolve as resolvePath } from 'node:path';
 

@@ -64,14 +64,13 @@ const TransitionSchema = z.object({
 });
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
-function inScopeByFranchisee(scope: RequestScope, franchiseeId: string): boolean {
-  if (scope.type === 'platform') return true;
-  if (scope.type === 'franchisor') return false; // resolved separately via franchisees table
-  return scope.franchiseeId === franchiseeId;
+function inScopeByFranchisee(scope: RequestScope, branchId: string): boolean {
+  if (scope.type === 'corporate') return true;
+  return scope.branchId === branchId;
 }
 
 export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
@@ -98,7 +97,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
     const custRows = await db
       .select({
         id: customers.id,
-        franchiseeId: customers.franchiseeId,
+        branchId: customers.branchId,
         deletedAt: customers.deletedAt,
       })
       .from(customers)
@@ -110,35 +109,21 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
         error: { code: 'INVALID_TARGET', message: 'customerId does not exist' },
       });
     }
-    if (scope.type === 'franchisee' && cust.franchiseeId !== scope.franchiseeId) {
+    if (scope.type === 'branch' && cust.branchId !== scope.branchId) {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'INVALID_TARGET',
-          message: 'customerId is outside your franchisee scope',
+          message: 'customerId is outside your branch scope',
         },
       });
     }
-    if (scope.type === 'franchisor') {
-      const feRows = await db
-        .select({ franchisorId: schema.franchisees.franchisorId })
-        .from(schema.franchisees)
-        .where(eq(schema.franchisees.id, cust.franchiseeId));
-      if (feRows[0]?.franchisorId !== scope.franchisorId) {
-        return reply.code(400).send({
-          ok: false,
-          error: {
-            code: 'INVALID_TARGET',
-            message: 'customerId is outside your franchisor',
-          },
-        });
-      }
-    }
+    // CHR-02: corporate sees every branch's customers natively.
 
     const inserted = await db
       .insert(jobs)
       .values({
-        franchiseeId: cust.franchiseeId,
+        branchId: cust.branchId,
         locationId: parsed.data.locationId ?? null,
         customerId: parsed.data.customerId,
         status: 'unassigned',
@@ -184,7 +169,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
     const { rows, total } = await withScope(db, scope, async (tx) => {
       const conditions: unknown[] = [isNull(jobs.deletedAt)];
       const scopeFe = scopedFranchiseeId(scope);
-      if (scopeFe) conditions.push(eq(jobs.franchiseeId, scopeFe));
+      if (scopeFe) conditions.push(eq(jobs.branchId, scopeFe));
       if (status && status.success) conditions.push(eq(jobs.status, status.data));
       if (customerId) conditions.push(eq(jobs.customerId, customerId));
       if (assignedTechUserId)
@@ -235,14 +220,8 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
       const r = rows[0];
       if (!r) return null;
       const scopeFe = scopedFranchiseeId(scope);
-      if (scopeFe && r.franchiseeId !== scopeFe) return null;
-      if (scope.type === 'franchisor') {
-        const feRows = await tx
-          .select({ franchisorId: schema.franchisees.franchisorId })
-          .from(schema.franchisees)
-          .where(eq(schema.franchisees.id, r.franchiseeId));
-        if (feRows[0]?.franchisorId !== scope.franchisorId) return null;
-      }
+      if (scopeFe && r.branchId !== scopeFe) return null;
+      // CHR-02: corporate sees every branch's jobs natively.
       return r;
     });
     if (!row) {
@@ -285,16 +264,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
         .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
       const row = rows[0];
       if (!row) return null;
-      if (!inScopeByFranchisee(scope, row.franchiseeId) && scope.type !== 'franchisor') {
-        return null;
-      }
-      if (scope.type === 'franchisor') {
-        const feRows = await tx
-          .select({ franchisorId: schema.franchisees.franchisorId })
-          .from(schema.franchisees)
-          .where(eq(schema.franchisees.id, row.franchiseeId));
-        if (feRows[0]?.franchisorId !== scope.franchisorId) return null;
-      }
+      if (!inScopeByFranchisee(scope, row.branchId)) return null;
       const values: Record<string, unknown> = { updatedAt: new Date() };
       const d = parsed.data;
       if (d.title !== undefined) values.title = d.title;
@@ -354,17 +324,8 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
         const row = rows[0];
         if (!row) return { kind: 'not_found' as const };
-        if (!inScopeByFranchisee(scope, row.franchiseeId) && scope.type !== 'franchisor') {
+        if (!inScopeByFranchisee(scope, row.branchId)) {
           return { kind: 'not_found' as const };
-        }
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, row.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId) {
-            return { kind: 'not_found' as const };
-          }
         }
         const from = row.status as JobStatus;
         const to = parsed.data.toStatus;
@@ -387,7 +348,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
           .returning();
         await tx.insert(jobStatusLog).values({
           jobId: req.params.id,
-          franchiseeId: row.franchiseeId,
+          branchId: row.branchId,
           fromStatus: from,
           toStatus: to,
           actorUserId: req.userId,

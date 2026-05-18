@@ -8,7 +8,7 @@ interface PublicInvoice {
   total: string;
   currency: string;
   customerName: string;
-  franchiseeName: string;
+  branchName: string;
   paymentIntentId: string | null;
   paidAt: string | null;
 }
@@ -39,7 +39,7 @@ export default async function InvoicePayPage({
     <main className="min-h-screen bg-slate-50 py-12 px-4">
       <div className="mx-auto max-w-lg rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-xl font-semibold text-slate-900">
-          {invoice.franchiseeName}
+          {invoice.branchName}
         </h1>
         <p className="mt-1 text-sm text-slate-500">Invoice for {invoice.customerName}</p>
 

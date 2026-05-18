@@ -10,7 +10,8 @@
  *   - /api/v1/me returns 200 + user id + scope=null when authenticated but
  *     without any active membership.
  *   - /api/auth/* is mounted when auth is provided and absent otherwise.
- *   - resolveScope picks platform_admin > franchisor_admin > franchisee.
+ *   - resolveScope picks corporate_admin > branch-scoped roles, promoting
+ *     legacy enum values where present.
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -98,11 +99,9 @@ describe('TASK-TEN-01 / /api/v1/me', () => {
       auth: mockAuth({ session: { userId: 'user_123', sessionId: 'sess_abc' } }),
       membershipResolver: mockResolver([
         {
-          scopeType: 'franchisee',
+          scopeType: 'branch',
           role: 'dispatcher',
-          franchisorId: '11111111-1111-1111-1111-111111111111',
-          franchiseeId: '22222222-2222-2222-2222-222222222222',
-          locationId: null,
+          branchId: '22222222-2222-2222-2222-222222222222',
         },
       ]),
     });
@@ -111,9 +110,9 @@ describe('TASK-TEN-01 / /api/v1/me', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/me' });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.data.scope.type).toBe('franchisee');
+    expect(body.data.scope.type).toBe('branch');
     expect(body.data.scope.role).toBe('dispatcher');
-    expect(body.data.scope.franchiseeId).toBe(
+    expect(body.data.scope.branchId).toBe(
       '22222222-2222-2222-2222-222222222222',
     );
   });
@@ -161,48 +160,42 @@ describe('TASK-TEN-01 / /api/auth/* passthrough', () => {
 });
 
 describe('TASK-TEN-03 / resolveScope privilege ordering', () => {
-  const FRANCHISOR = '11111111-1111-1111-1111-111111111111';
-  const FRANCHISEE = '22222222-2222-2222-2222-222222222222';
+  const BRANCH_ID = '22222222-2222-2222-2222-222222222222';
 
-  it('picks platform_admin over any other membership', () => {
+  // CHR-02: privilege ordering now collapses platform/franchisor → corporate
+  // and franchisee/location → branch. Legacy role names are accepted on input
+  // and promoted to their corporate-model equivalent.
+  it('promotes legacy platform_admin to corporate_admin', () => {
     const scope = resolveScope('u', [
       {
-        scopeType: 'franchisee',
+        scopeType: 'branch',
         role: 'tech',
-        franchisorId: FRANCHISOR,
-        franchiseeId: FRANCHISEE,
-        locationId: null,
+        branchId: BRANCH_ID,
       },
       {
-        scopeType: 'platform',
+        scopeType: 'corporate',
         role: 'platform_admin',
-        franchisorId: null,
-        franchiseeId: null,
-        locationId: null,
+        branchId: null,
       },
     ]);
-    expect(scope).toEqual({ type: 'platform', userId: 'u', role: 'platform_admin' });
+    expect(scope).toEqual({ type: 'corporate', userId: 'u', role: 'corporate_admin' });
   });
 
-  it('picks franchisor_admin over franchisee-scoped roles', () => {
+  it('picks corporate over branch-scoped roles', () => {
     const scope = resolveScope('u', [
       {
-        scopeType: 'franchisee',
+        scopeType: 'branch',
         role: 'tech',
-        franchisorId: FRANCHISOR,
-        franchiseeId: FRANCHISEE,
-        locationId: null,
+        branchId: BRANCH_ID,
       },
       {
-        scopeType: 'franchisor',
-        role: 'franchisor_admin',
-        franchisorId: FRANCHISOR,
-        franchiseeId: null,
-        locationId: null,
+        scopeType: 'corporate',
+        role: 'corporate_admin',
+        branchId: null,
       },
     ]);
-    expect(scope?.type).toBe('franchisor');
-    expect(scope).toMatchObject({ role: 'franchisor_admin', franchisorId: FRANCHISOR });
+    expect(scope?.type).toBe('corporate');
+    expect(scope).toMatchObject({ role: 'corporate_admin' });
   });
 
   it('returns null when memberships is empty', () => {
@@ -212,11 +205,9 @@ describe('TASK-TEN-03 / resolveScope privilege ordering', () => {
   it('returns null when only scopeless memberships exist', () => {
     const scope = resolveScope('u', [
       {
-        scopeType: 'franchisee',
+        scopeType: 'branch',
         role: 'tech',
-        franchisorId: null,
-        franchiseeId: null,
-        locationId: null,
+        branchId: null,
       },
     ]);
     expect(scope).toBeNull();

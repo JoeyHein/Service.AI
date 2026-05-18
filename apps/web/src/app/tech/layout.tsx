@@ -15,7 +15,7 @@ import { TechShell } from './TechShell';
  */
 export default async function TechLayout({ children }: { children: ReactNode }) {
   const session = await requireSession('/tech');
-  if (session.scope?.type !== 'franchisee' || session.scope.role !== 'tech') {
+  if (session.scope?.type !== 'branch' || session.scope.role !== 'tech') {
     notFound();
   }
   return <TechShell session={session}>{children}</TechShell>;

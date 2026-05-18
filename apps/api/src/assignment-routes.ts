@@ -39,8 +39,8 @@ const AssignSchema = z.object({
 });
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 export function registerAssignmentRoutes(
@@ -79,16 +79,9 @@ export function registerAssignmentRoutes(
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
         const feScope = scopedFranchiseeId(scope);
-        if (feScope && job.franchiseeId !== feScope)
+        if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, job.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' as const };
-        }
+        // CHR-02: no franchisor tier — corporate sees every branch natively.
 
         // Validate the tech belongs to this job's franchisee and has the
         // 'tech' role. Check against the memberships table rather than
@@ -103,7 +96,7 @@ export function registerAssignmentRoutes(
           .where(
             and(
               eq(memberships.userId, parsed.data.assignedTechUserId),
-              eq(memberships.franchiseeId, job.franchiseeId),
+              eq(memberships.branchId, job.branchId),
               isNull(memberships.deletedAt),
             ),
           );
@@ -135,7 +128,7 @@ export function registerAssignmentRoutes(
         if (becomingScheduled) {
           await tx.insert(jobStatusLog).values({
             jobId: req.params.id,
-            franchiseeId: job.franchiseeId,
+            branchId: job.branchId,
             fromStatus: 'unassigned',
             toStatus: 'scheduled',
             actorUserId: req.userId,
@@ -161,7 +154,7 @@ export function registerAssignmentRoutes(
           ok: false,
           error: {
             code: 'INVALID_TARGET',
-            message: 'assignedTechUserId is not a tech in this franchisee',
+            message: 'assignedTechUserId is not a tech in this branch',
           },
         });
       }
@@ -169,8 +162,7 @@ export function registerAssignmentRoutes(
       const row = outcome.row;
       bus.publish({
         type: 'job.assigned',
-        franchiseeId: row.franchiseeId,
-        franchisorId: '', // filled by caller context; SSE re-joins if needed
+        branchId: row.branchId,
         jobId: row.id,
         assignedTechUserId: row.assignedTechUserId,
         actorUserId: req.userId,
@@ -179,8 +171,7 @@ export function registerAssignmentRoutes(
       if (outcome.becameScheduled) {
         bus.publish({
           type: 'job.transitioned',
-          franchiseeId: row.franchiseeId,
-          franchisorId: '',
+          branchId: row.branchId,
           jobId: row.id,
           fromStatus: 'unassigned',
           toStatus: 'scheduled',
@@ -216,16 +207,9 @@ export function registerAssignmentRoutes(
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
         const feScope = scopedFranchiseeId(scope);
-        if (feScope && job.franchiseeId !== feScope)
+        if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, job.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' as const };
-        }
+        // CHR-02: no franchisor tier — corporate sees every branch natively.
         const now = new Date();
         const values: Record<string, unknown> = {
           assignedTechUserId: null,
@@ -244,7 +228,7 @@ export function registerAssignmentRoutes(
         if (revertToUnassigned) {
           await tx.insert(jobStatusLog).values({
             jobId: req.params.id,
-            franchiseeId: job.franchiseeId,
+            branchId: job.branchId,
             fromStatus: 'scheduled',
             toStatus: 'unassigned',
             actorUserId: req.userId,
@@ -268,8 +252,7 @@ export function registerAssignmentRoutes(
       const row = outcome.row;
       bus.publish({
         type: 'job.unassigned',
-        franchiseeId: row.franchiseeId,
-        franchisorId: '',
+        branchId: row.branchId,
         jobId: row.id,
         actorUserId: req.userId,
         at: new Date().toISOString(),
@@ -277,8 +260,7 @@ export function registerAssignmentRoutes(
       if (outcome.reverted) {
         bus.publish({
           type: 'job.transitioned',
-          franchiseeId: row.franchiseeId,
-          franchisorId: '',
+          branchId: row.branchId,
           jobId: row.id,
           fromStatus: 'scheduled',
           toStatus: 'unassigned',

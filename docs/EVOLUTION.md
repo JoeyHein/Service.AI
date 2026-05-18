@@ -2,6 +2,48 @@
 
 The evolver runs after every gate passes. Its job is to make the next phase better than this one by learning from what just happened.
 
+---
+
+## CHR — Corporate hub redesign (2026-05)
+
+The most material architectural change in the project's history. Replaced the franchise tenancy model (platform → franchisor → franchisee → location) with a **corporate hub-and-spoke** model (single corporate parent → many branches → users) across 11 shipped CHR tasks.
+
+### What changed
+
+- **Tenancy collapsed** from a 4-level tree to a 2-variant `RequestScope` discriminated union (`corporate | branch`). `app.role` + `app.branch_id` + `app.user_id` are the only GUCs; `app.franchisor_id` / `app.franchisee_id` are gone.
+- **Roles** shrunk from 7 (`platform_admin`, `franchisor_admin`, `franchisee_owner`, `location_manager`, `dispatcher`, `tech`, `csr`) to 5 (`corporate_admin`, `manager`, `dispatcher`, `tech`, `csr`).
+- **RLS template** simplified from three policies (`_platform_admin` / `_franchisor_admin` / `_scoped`) to two (`_corporate_admin` / `_scoped`).
+- **Compensation model** introduced: W2 local managers on base + commission via `comp_plans`, `user_comp_assignments`, and `commission_ledger`. Commission engine lives at `apps/api/src/commission-engine.ts`; Stripe webhook fires `onInvoicePaid` / `reverseInvoicePaid` / `onQuoteCommitted`.
+- **Stripe** simplified: single corporate account, no Stripe Connect onboarding, no `application_fee_amount`, no per-branch payouts.
+- **Royalty engine deleted**: `franchise_agreements`, `royalty_rules`, `royalty_statements` tables dropped; `/api/v1/royalty/*` routes removed.
+- **Pricebook overrides replaced** with `pricebook_suggestions` (manager proposes → corporate approves).
+- **Impersonation removed entirely**: no `X-Impersonate-Franchisee` header, no `serviceai.impersonate` cookie, no HQ banner — corporate sees every branch natively.
+- **New web routes**: `/corporate/*` (branches CRUD wizard, managers, comp-plans, pricebook-suggestions) and `/branch` (manager dashboard with projected commission). All `/franchisor/*` routes deleted.
+
+### Why
+
+GTM model changed from franchising to corporate-operated branches. Elevated Doors is now a corporate-operated brand, not a franchisee. The franchise scaffolding — independent legal entities, royalty agreements, Stripe Connect, per-franchisee Twilio provisioning gated on contract signing — was overhead the product would never need.
+
+### Scope
+
+- 11 CHR tasks shipped (CHR-01 through CHR-11; CHR-12 adversarial audit follows).
+- Migration `0016_corporate_hub_redesign.sql` is the load-bearing piece — every table rename, every RLS swap, every data migration step is in one transaction.
+- CHR-08 alone deleted **~3963 LOC net** (royalty engine + Stripe Connect onboarding + `/franchisor/*` routes).
+- ~110 files touched across the monorepo.
+
+### Risk + acceptance
+
+- **Reversibility**: migration 0016 has a `.down.sql` that restores `franchisors`, `franchisees`, `franchise_agreements`, `royalty_rules`, `royalty_statements`, and `pricebook_overrides` tables; the franchisor/franchisee row data is preserved because `branches.id` reuses `franchisees.id` (no UUID rewrite). **Royalty data is lost on rollback by design** — the up migration drops the rows, the down restores only the schema. A `up → down → up` CI gate verifies row counts on every business table.
+- **Static AI guardrails fallback**: the `franchisees.ai_guardrails` JSONB column went away with the table. Per-branch guardrails are deferred; the AI runtime currently uses static defaults. This is the largest known regression and is parked in `docs/TECH_DEBT.md`.
+
+### Cross-references
+
+- Gate: `phases/phase_corporate_hub_redesign_GATE.md` — written before the build began; criteria locked.
+- Tasks: `docs/TASKS.md` under CHR-01..CHR-11.
+- Source of truth: `packages/db/migrations/0016_corporate_hub_redesign.sql`, `packages/db/src/scope.ts`, `apps/api/src/request-scope.ts`, `apps/api/src/commission-engine.ts`, `apps/api/src/corporate-routes.ts`, `apps/api/src/branch-routes.ts`.
+
+---
+
 ## 1. What the evolver IS allowed to change
 
 | File | Allowed changes | Constraints |

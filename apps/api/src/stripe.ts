@@ -1,5 +1,6 @@
 /**
- * Stripe Connect Standard pluggable adapter (phase_invoicing_stripe).
+ * Stripe single-account pluggable adapter (phase_invoicing_stripe,
+ * simplified by CHR-08).
  *
  * The real implementation wraps the `stripe` SDK; the stub returns
  * deterministic canned responses so tests never hit the network and
@@ -12,26 +13,21 @@
  * currency unit** (cents for USD) to match Stripe's SDK exactly.
  * The invoice-finalize handler converts from `numeric(12,2)` once,
  * at the adapter boundary.
+ *
+ * CHR-08 removed Connect onboarding and the Transfers API — every
+ * charge lands on the single corporate Stripe account configured via
+ * STRIPE_SECRET_KEY.
  */
 
 import Stripe from 'stripe';
 import { logger } from './logger.js';
-
-export interface StripeAccountSummary {
-  id: string;
-  chargesEnabled: boolean;
-  payoutsEnabled: boolean;
-  detailsSubmitted: boolean;
-}
 
 export interface StripePaymentIntentSummary {
   id: string;
   clientSecret: string | null;
   status: string;
   amount: number;
-  applicationFeeAmount: number | null;
   currency: string;
-  onBehalfOf: string | null;
 }
 
 export interface StripeRefundSummary {
@@ -57,29 +53,10 @@ export interface StripeWebhookEvent {
   created: number;
 }
 
-export interface CreateConnectAccountInput {
-  franchiseeId: string;
-  legalName: string;
-  email?: string;
-  country?: string;
-}
-
-export interface CreateAccountLinkInput {
-  accountId: string;
-  returnUrl: string;
-  refreshUrl: string;
-}
-
 export interface CreatePaymentIntentInput {
   /** Amount in cents. */
   amount: number;
-  /** Amount in cents. Computed by the caller, never the client. */
-  applicationFeeAmount: number;
   currency: string;
-  /** Connected account id (`acct_*`). */
-  onBehalfOf: string;
-  /** Destination for the transfer; same as onBehalfOf for Standard. */
-  transferDestination: string;
   metadata: Record<string, string>;
 }
 
@@ -91,32 +68,9 @@ export interface CreateRefundInput {
   metadata?: Record<string, string>;
 }
 
-export interface CreateTransferInput {
-  /** Amount in cents; sign encodes direction. Positive = platform pays
-   *  the connected account; negative = platform reclaims. */
-  amount: number;
-  currency: string;
-  /** Connected account id (`acct_*`) on the destination side. */
-  destination: string;
-  description?: string;
-  metadata?: Record<string, string>;
-}
-
-export interface StripeTransferSummary {
-  id: string;
-  amount: number;
-  currency: string;
-  destination: string;
-  status: string;
-}
-
 export interface StripeClient {
-  createConnectAccount(input: CreateConnectAccountInput): Promise<StripeAccountSummary>;
-  createAccountLink(input: CreateAccountLinkInput): Promise<{ url: string; expiresAt: number }>;
-  retrieveAccount(accountId: string): Promise<StripeAccountSummary>;
   createPaymentIntent(input: CreatePaymentIntentInput): Promise<StripePaymentIntentSummary>;
   createRefund(input: CreateRefundInput): Promise<StripeRefundSummary>;
-  createTransfer(input: CreateTransferInput): Promise<StripeTransferSummary>;
   /**
    * Verify the signature on a raw webhook body, then parse it.
    * Invalid signature → throws `Error` with `code === 'BAD_SIGNATURE'`.
@@ -144,47 +98,14 @@ function nextId(prefix: string): string {
  * want dispatched.
  */
 export const stubStripeClient: StripeClient = {
-  async createConnectAccount({ franchiseeId }) {
-    return {
-      id: `acct_stub_${franchiseeId.slice(0, 8)}`,
-      chargesEnabled: false,
-      payoutsEnabled: false,
-      detailsSubmitted: false,
-    };
-  },
-  async createAccountLink({ accountId }) {
-    return {
-      url: `https://connect.stripe.test/setup/${accountId}`,
-      expiresAt: Math.floor(Date.now() / 1000) + 300,
-    };
-  },
-  async retrieveAccount(accountId) {
-    // Stub treats any account_id that ends with `_ready` as fully
-    // onboarded — useful to flip the readiness flags in a test
-    // without hand-constructing a webhook.
-    const ready = accountId.endsWith('_ready');
-    return {
-      id: accountId,
-      chargesEnabled: ready,
-      payoutsEnabled: ready,
-      detailsSubmitted: ready,
-    };
-  },
-  async createPaymentIntent({
-    amount,
-    applicationFeeAmount,
-    currency,
-    onBehalfOf,
-  }) {
+  async createPaymentIntent({ amount, currency }) {
     const id = nextId('pi');
     return {
       id,
       clientSecret: `${id}_secret_stub`,
       status: 'requires_payment_method',
       amount,
-      applicationFeeAmount,
       currency,
-      onBehalfOf,
     };
   },
   async createRefund({ paymentIntentId, amount }) {
@@ -195,15 +116,6 @@ export const stubStripeClient: StripeClient = {
       chargeId: `ch_stub_${paymentIntentId}`,
       paymentIntentId,
       currency: 'usd',
-    };
-  },
-  async createTransfer({ amount, currency, destination }) {
-    return {
-      id: nextId('tr'),
-      amount,
-      currency,
-      destination,
-      status: 'paid',
     };
   },
   constructWebhookEvent(rawBody) {
@@ -227,43 +139,13 @@ export const stubStripeClient: StripeClient = {
 // Real
 // ---------------------------------------------------------------------------
 
-function toSummary(account: Stripe.Account): StripeAccountSummary {
-  return {
-    id: account.id,
-    chargesEnabled: account.charges_enabled,
-    payoutsEnabled: account.payouts_enabled,
-    detailsSubmitted: account.details_submitted,
-  };
-}
-
 function paymentIntentSummary(pi: Stripe.PaymentIntent): StripePaymentIntentSummary {
   return {
     id: pi.id,
     clientSecret: pi.client_secret,
     status: pi.status,
     amount: pi.amount,
-    applicationFeeAmount: pi.application_fee_amount ?? null,
     currency: pi.currency,
-    onBehalfOf:
-      typeof pi.on_behalf_of === 'string'
-        ? pi.on_behalf_of
-        : (pi.on_behalf_of as Stripe.Account | null | undefined)?.id ?? null,
-  };
-}
-
-function transferSummary(transfer: Stripe.Transfer): StripeTransferSummary {
-  return {
-    id: transfer.id,
-    amount: transfer.amount,
-    currency: transfer.currency,
-    destination:
-      typeof transfer.destination === 'string'
-        ? transfer.destination
-        : transfer.destination?.id ?? '',
-    status:
-      (transfer as Stripe.Transfer & { reversed?: boolean }).reversed
-        ? 'reversed'
-        : 'paid',
   };
 }
 
@@ -287,57 +169,14 @@ export function realStripeClient(
 ): StripeClient {
   const stripe = new Stripe(secretKey);
   return {
-    async createConnectAccount({ franchiseeId, legalName, email, country }) {
-      const account = await stripe.accounts.create({
-        type: 'standard',
-        country,
-        email,
-        business_profile: { name: legalName },
-        metadata: { franchiseeId },
-      });
-      return toSummary(account);
-    },
-    async createAccountLink({ accountId, returnUrl, refreshUrl }) {
-      const link = await stripe.accountLinks.create({
-        account: accountId,
-        type: 'account_onboarding',
-        return_url: returnUrl,
-        refresh_url: refreshUrl,
-      });
-      return { url: link.url, expiresAt: link.expires_at };
-    },
-    async retrieveAccount(accountId) {
-      const account = await stripe.accounts.retrieve(accountId);
-      return toSummary(account);
-    },
-    async createPaymentIntent({
-      amount,
-      applicationFeeAmount,
-      currency,
-      onBehalfOf,
-      transferDestination,
-      metadata,
-    }) {
+    async createPaymentIntent({ amount, currency, metadata }) {
       const pi = await stripe.paymentIntents.create({
         amount,
         currency,
-        application_fee_amount: applicationFeeAmount,
-        on_behalf_of: onBehalfOf,
-        transfer_data: { destination: transferDestination },
         metadata,
         automatic_payment_methods: { enabled: true },
       });
       return paymentIntentSummary(pi);
-    },
-    async createTransfer({ amount, currency, destination, description, metadata }) {
-      const transfer = await stripe.transfers.create({
-        amount,
-        currency,
-        destination,
-        description,
-        metadata,
-      });
-      return transferSummary(transfer);
     },
     async createRefund({ paymentIntentId, amount, reason, metadata }) {
       const refund = await stripe.refunds.create({

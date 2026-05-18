@@ -10,7 +10,7 @@
  *
  * Scheduling invariants (checked per-proposal before auto-apply):
  *   - Tech must not be double-booked in the proposed window
- *     across the franchisee's jobs.
+ *     across the branch's jobs.
  *   - When reasoning text contains a "requires:" clause like
  *     "requires: springs", the tech must carry that skill in
  *     tech_skills. (v1 heuristic — richer skill-matching lives
@@ -28,8 +28,8 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   aiConversations,
   aiSuggestions,
+  branches,
   customers,
-  franchisees,
   jobs,
   memberships,
   techSkills,
@@ -61,9 +61,9 @@ export interface DispatcherRunnerDeps {
 
 export interface DispatcherRunInput {
   scope: RequestScope;
-  franchiseeId: string;
+  branchId: string;
   /** Override threshold for this specific run. Defaults to the
-   *  franchisee's ai_guardrails.dispatcherAutoApplyThreshold or
+   *  branch's ai_guardrails.dispatcherAutoApplyThreshold or
    *  0.8. */
   thresholdOverride?: number;
 }
@@ -91,7 +91,7 @@ function extractSkillFromReasoning(reasoning: string): string | null {
 async function invariantsPass(
   tx: ScopedTx,
   proposal: ProposedAssignment,
-  franchiseeId: string,
+  branchId: string,
   distanceMatrix: DistanceMatrixClient,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const start = new Date(proposal.scheduledStart);
@@ -106,7 +106,7 @@ async function invariantsPass(
     .from(jobs)
     .where(
       and(
-        eq(jobs.franchiseeId, franchiseeId),
+        eq(jobs.branchId, branchId),
         eq(jobs.assignedTechUserId, proposal.techUserId),
         isNull(jobs.deletedAt),
         lt(jobs.scheduledStart, end),
@@ -126,7 +126,7 @@ async function invariantsPass(
       .where(
         and(
           eq(techSkills.userId, proposal.techUserId),
-          eq(techSkills.franchiseeId, franchiseeId),
+          eq(techSkills.branchId, branchId),
           eq(techSkills.skill, requiredSkill),
         ),
       );
@@ -157,7 +157,7 @@ async function invariantsPass(
     .leftJoin(customers, eq(customers.id, jobs.customerId))
     .where(
       and(
-        eq(jobs.franchiseeId, franchiseeId),
+        eq(jobs.branchId, branchId),
         eq(jobs.assignedTechUserId, proposal.techUserId),
         isNull(jobs.deletedAt),
         gte(jobs.scheduledStart, dayStart),
@@ -234,35 +234,32 @@ export async function runDispatcher(
   const distanceMatrix = deps.distanceMatrix ?? stubDistanceMatrixClient;
   const captured: ProposedAssignment[] = [];
 
-  // 1. Create the conversation row + resolve the franchisee's
-  // guardrails.
-  const { franchisee, conversationId } = await withScope(
+  // 1. Create the conversation row + resolve the branch.
+  const { branch, conversationId } = await withScope(
     deps.db,
     input.scope,
     async (tx) => {
       const feRows = await tx
         .select()
-        .from(franchisees)
-        .where(eq(franchisees.id, input.franchiseeId));
+        .from(branches)
+        .where(eq(branches.id, input.branchId));
       if (!feRows[0]) {
-        throw new Error(`Franchisee ${input.franchiseeId} not found`);
+        throw new Error(`Branch ${input.branchId} not found`);
       }
       const conv = await tx
         .insert(aiConversations)
         .values({
-          franchiseeId: input.franchiseeId,
+          branchId: input.branchId,
           capability: 'dispatcher',
         })
         .returning();
-      return { franchisee: feRows[0], conversationId: conv[0]!.id };
+      return { branch: feRows[0], conversationId: conv[0]!.id };
     },
   );
 
-  const guardrails = (franchisee.aiGuardrails ?? {}) as {
-    dispatcherAutoApplyThreshold?: number;
-  };
-  const threshold =
-    input.thresholdOverride ?? guardrails.dispatcherAutoApplyThreshold ?? 0.8;
+  // Per-branch aiGuardrails were removed in the corporate hub redesign;
+  // the 0.8 default applies unless the caller passes an override.
+  const threshold = input.thresholdOverride ?? 0.8;
 
   // 2. Run the agent loop.
   const toolDeps = {
@@ -279,13 +276,13 @@ export async function runDispatcher(
     ai: deps.ai,
     systemPrompt: dispatcherSystemPrompt({
       brandName: 'Service.AI',
-      franchiseeName: franchisee.name,
+      branchName: branch.name,
     }),
     initialUserMessage:
       'Start: list unassigned jobs, then propose assignments.',
     tools,
     ctx: {
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       userId: input.scope.userId,
       guardrails: {
         confidenceThreshold: threshold,
@@ -307,7 +304,7 @@ export async function runDispatcher(
       const inv = await invariantsPass(
         tx,
         proposal,
-        input.franchiseeId,
+        input.branchId,
         distanceMatrix,
       );
       const shouldAutoApply =
@@ -316,7 +313,7 @@ export async function runDispatcher(
       const row = await tx
         .insert(aiSuggestions)
         .values({
-          franchiseeId: input.franchiseeId,
+          branchId: input.branchId,
           conversationId,
           kind: 'assignment',
           subjectJobId: proposal.jobId,

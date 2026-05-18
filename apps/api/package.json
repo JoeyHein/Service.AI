@@ -32,6 +32,7 @@
     "@service-ai/auth": "workspace:^",
     "@service-ai/contracts": "workspace:^",
     "@service-ai/db": "workspace:^",
+    "@service-ai/suppliers": "workspace:^",
     "@ts-rest/core": "^3",
     "@ts-rest/fastify": "^3",
     "date-fns": "^4.1.0",

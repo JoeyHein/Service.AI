@@ -12,7 +12,7 @@
  * Exposed fields are deliberately narrow: enough to render the
  * pay page and kick off Stripe Elements, nothing more. Customer
  * name is included (since the customer already knows it); the
- * franchisee legal name is included so the receipt shows who
+ * branch legal name is included so the receipt shows who
  * they're paying.
  */
 
@@ -20,8 +20,8 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
+  branches,
   customers,
-  franchisees,
   invoices,
   invoiceLineItems,
   withScope,
@@ -35,9 +35,9 @@ type Drizzle = NodePgDatabase<typeof schema>;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN_RE = /^[A-Za-z0-9_-]{32,}$/;
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+function scopedBranchId(scope: RequestScope): string | null {
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 export function registerPublicInvoiceRoutes(
@@ -72,11 +72,11 @@ export function registerPublicInvoiceRoutes(
       }
       const feRows = await db
         .select({
-          name: franchisees.name,
-          legalEntityName: franchisees.legalEntityName,
+          name: branches.name,
+          legalEntityName: branches.legalEntityName,
         })
-        .from(franchisees)
-        .where(eq(franchisees.id, inv.franchiseeId));
+        .from(branches)
+        .where(eq(branches.id, inv.branchId));
       const custRows = await db
         .select({ name: customers.name })
         .from(customers)
@@ -91,7 +91,7 @@ export function registerPublicInvoiceRoutes(
           total: inv.total,
           currency: 'usd',
           customerName: custRows[0]?.name ?? 'Customer',
-          franchiseeName:
+          branchName:
             feRows[0]?.legalEntityName ?? feRows[0]?.name ?? 'Service provider',
           paymentIntentId: inv.stripePaymentIntentId,
           paidAt: inv.paidAt,
@@ -124,19 +124,14 @@ export function registerPublicInvoiceRoutes(
           .where(and(eq(invoices.id, req.params.id), isNull(invoices.deletedAt)));
         const inv = rows[0];
         if (!inv) return null;
-        const feScope = scopedFranchiseeId(scope);
-        if (feScope && inv.franchiseeId !== feScope) return null;
+        const feScope = scopedBranchId(scope);
+        if (feScope && inv.branchId !== feScope) return null;
         const feRows = await tx
           .select()
-          .from(franchisees)
-          .where(eq(franchisees.id, inv.franchiseeId));
-        const franchisee = feRows[0];
-        if (!franchisee) return null;
-        if (
-          scope.type === 'franchisor' &&
-          franchisee.franchisorId !== scope.franchisorId
-        )
-          return null;
+          .from(branches)
+          .where(eq(branches.id, inv.branchId));
+        const branch = feRows[0];
+        if (!branch) return null;
         const custRows = await tx
           .select()
           .from(customers)
@@ -148,7 +143,7 @@ export function registerPublicInvoiceRoutes(
           .from(invoiceLineItems)
           .where(eq(invoiceLineItems.invoiceId, inv.id))
           .orderBy(invoiceLineItems.sortOrder);
-        return { inv, franchisee, customer, lineRows };
+        return { inv, branch, customer, lineRows };
       });
 
       if (!loaded) {
@@ -174,8 +169,8 @@ export function registerPublicInvoiceRoutes(
         lineTotal: l.lineTotal,
       }));
       const pdf = await renderReceiptPdf({
-        franchiseeName:
-          loaded.franchisee.legalEntityName ?? loaded.franchisee.name,
+        branchName:
+          loaded.branch.legalEntityName ?? loaded.branch.name,
         customerName: loaded.customer.name,
         customerEmail: loaded.customer.email,
         invoiceNumber: loaded.inv.id.slice(0, 8).toUpperCase(),

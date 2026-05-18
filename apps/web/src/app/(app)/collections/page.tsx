@@ -21,20 +21,18 @@ interface Metrics {
   totalRevenueCents: number;
 }
 
-const COLLECTIONS_ROLES = new Set([
-  'franchisee_owner',
-  'location_manager',
-  'dispatcher',
-]);
+// CHR-12: post-corporate-hub roles. Manager + dispatcher can review
+// collections drafts. CSR / tech / corporate_admin don't see this page.
+const COLLECTIONS_ROLES = new Set(['manager', 'dispatcher']);
 
 export default async function CollectionsPage() {
   const session = await getSession();
   if (!session) notFound();
   const scope = session.scope;
-  if (!scope || scope.type === 'platform' || scope.type === 'franchisor') {
+  if (!scope || scope.type === 'corporate') {
     notFound();
   }
-  if (scope.type === 'franchisee' && !COLLECTIONS_ROLES.has(scope.role)) {
+  if (scope.type === 'branch' && !COLLECTIONS_ROLES.has(scope.role)) {
     notFound();
   }
 

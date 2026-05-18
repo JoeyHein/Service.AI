@@ -56,8 +56,7 @@ export function registerPushRoutes(app: FastifyInstance, db: Drizzle): void {
     }
     const scope = req.scope;
     const userId = req.userId;
-    const franchiseeId =
-      scope.type === 'franchisee' ? scope.franchiseeId : null;
+    const branchId = scope.type === 'branch' ? scope.branchId : null;
 
     const row = await withScope(db, scope, async (tx) => {
       // Upsert-like: a duplicate endpoint for the same user is a
@@ -81,7 +80,7 @@ export function registerPushRoutes(app: FastifyInstance, db: Drizzle): void {
             p256dh: parsed.data.keys.p256dh,
             auth: parsed.data.keys.auth,
             userAgent: parsed.data.userAgent ?? current.userAgent,
-            franchiseeId,
+            branchId,
           })
           .where(eq(pushSubscriptions.id, current.id))
           .returning();
@@ -97,7 +96,7 @@ export function registerPushRoutes(app: FastifyInstance, db: Drizzle): void {
         .insert(pushSubscriptions)
         .values({
           userId,
-          franchiseeId,
+          branchId,
           endpoint: parsed.data.endpoint,
           p256dh: parsed.data.keys.p256dh,
           auth: parsed.data.keys.auth,

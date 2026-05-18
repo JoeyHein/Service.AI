@@ -3,15 +3,15 @@
  *
  *   GET /api/v1/dashboard/owner?period=7d|30d|90d|ytd
  *
- * Admin + dispatch roles only (platform_admin, franchisor_admin,
- * franchisee_owner, location_manager, dispatcher). Tech + CSR → 403.
+ * Admin + dispatch roles only (corporate_admin, corporate_admin,
+ * manager, manager, dispatcher). Tech + CSR → 403.
  *
  * Scope rules:
- * - franchisee-scoped callers get their own franchisee's tiles.
- * - franchisor_admin / platform_admin impersonating a franchisee
- *   get that franchisee's view (via X-Impersonate-Franchisee).
- * - franchisor_admin / platform_admin without impersonation get
- *   a rollup across every visible franchisee.
+ * - branch-scoped callers get their own branch's tiles.
+ * - corporate_admin / corporate_admin impersonating a branch
+ *   get that branch's view (via X-Impersonate-Branch).
+ * - corporate_admin / corporate_admin without impersonation get
+ *   a rollup across every visible branch.
  *
  * Returned shape:
  *   {
@@ -35,10 +35,10 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import {
   aiConversations,
+  branches,
   callSessions,
   collectionsDrafts,
   customers,
-  franchisees,
   invoiceLineItems,
   invoices,
   jobs,
@@ -161,24 +161,17 @@ export async function computeOwnerDashboard(
 ): Promise<OwnerDashboard> {
   const { start, end } = resolvePeriod(input.period, input.now ?? new Date());
 
-  // Resolve the set of franchisees visible to this caller.
-  const franchiseeIds = await withScope(db, input.scope, async (tx) => {
-    if (input.scope.type === 'franchisee') {
-      return [input.scope.franchiseeId];
+  // Resolve the set of franchisees visible to this caller. CHR-02:
+  // corporate sees every branch; branch sees only its own.
+  const branchIds = await withScope(db, input.scope, async (tx) => {
+    if (input.scope.type === 'branch') {
+      return [input.scope.branchId];
     }
-    if (input.scope.type === 'franchisor') {
-      const rows = await tx
-        .select({ id: franchisees.id })
-        .from(franchisees)
-        .where(eq(franchisees.franchisorId, input.scope.franchisorId));
-      return rows.map((r) => r.id);
-    }
-    // platform
-    const rows = await tx.select({ id: franchisees.id }).from(franchisees);
+    const rows = await tx.select({ id: branches.id }).from(branches);
     return rows.map((r) => r.id);
   });
 
-  if (franchiseeIds.length === 0) {
+  if (branchIds.length === 0) {
     return emptyDashboard(start, end, input.period);
   }
 
@@ -189,7 +182,7 @@ export async function computeOwnerDashboard(
       .from(payments)
       .where(
         and(
-          inArray(payments.franchiseeId, franchiseeIds),
+          inArray(payments.branchId, branchIds),
           gte(payments.createdAt, start),
           lt(payments.createdAt, end),
           eq(payments.status, 'succeeded'),
@@ -207,7 +200,7 @@ export async function computeOwnerDashboard(
       .from(invoices)
       .where(
         and(
-          inArray(invoices.franchiseeId, franchiseeIds),
+          inArray(invoices.branchId, branchIds),
           inArray(invoices.status, ['finalized', 'sent']),
           isNull(invoices.deletedAt),
         ),
@@ -242,7 +235,7 @@ export async function computeOwnerDashboard(
       .from(jobs)
       .where(
         and(
-          inArray(jobs.franchiseeId, franchiseeIds),
+          inArray(jobs.branchId, branchIds),
           eq(jobs.status, 'completed'),
           gte(jobs.actualEnd, start),
           lt(jobs.actualEnd, end),
@@ -258,7 +251,7 @@ export async function computeOwnerDashboard(
       .from(jobs)
       .where(
         and(
-          inArray(jobs.franchiseeId, franchiseeIds),
+          inArray(jobs.branchId, branchIds),
           inArray(jobs.status, ['scheduled', 'en_route', 'arrived', 'in_progress']),
           gt(jobs.scheduledStart, input.now ?? new Date()),
           isNull(jobs.deletedAt),
@@ -272,7 +265,7 @@ export async function computeOwnerDashboard(
       .from(aiConversations)
       .where(
         and(
-          inArray(aiConversations.franchiseeId, franchiseeIds),
+          inArray(aiConversations.branchId, branchIds),
           eq(aiConversations.capability, 'csr.voice'),
           gte(aiConversations.startedAt, start),
           lt(aiConversations.startedAt, end),
@@ -291,7 +284,7 @@ export async function computeOwnerDashboard(
       .from(callSessions)
       .where(
         and(
-          inArray(callSessions.franchiseeId, franchiseeIds),
+          inArray(callSessions.branchId, branchIds),
           gte(callSessions.startedAt, start),
           lt(callSessions.startedAt, end),
         ),
@@ -311,7 +304,7 @@ export async function computeOwnerDashboard(
       .from(collectionsDrafts)
       .where(
         and(
-          inArray(collectionsDrafts.franchiseeId, franchiseeIds),
+          inArray(collectionsDrafts.branchId, branchIds),
           eq(collectionsDrafts.status, 'pending'),
         ),
       );
@@ -326,7 +319,7 @@ export async function computeOwnerDashboard(
       .from(notificationsLog)
       .where(
         and(
-          inArray(notificationsLog.franchiseeId, franchiseeIds),
+          inArray(notificationsLog.branchId, branchIds),
           eq(notificationsLog.direction, 'outbound'),
           gte(notificationsLog.sentAt, start),
           lt(notificationsLog.sentAt, end),
@@ -349,7 +342,7 @@ export async function computeOwnerDashboard(
       .from(invoices)
       .where(
         and(
-          inArray(invoices.franchiseeId, franchiseeIds),
+          inArray(invoices.branchId, branchIds),
           isNull(invoices.deletedAt),
         ),
       )
@@ -384,7 +377,7 @@ export async function computeOwnerDashboard(
       .leftJoin(serviceItems, eq(serviceItems.id, invoiceLineItems.serviceItemId))
       .where(
         and(
-          inArray(invoiceLineItems.franchiseeId, franchiseeIds),
+          inArray(invoiceLineItems.branchId, branchIds),
           eq(jobs.status, 'completed'),
           gte(jobs.actualEnd, start),
           lt(jobs.actualEnd, end),
@@ -411,7 +404,7 @@ export async function computeOwnerDashboard(
       )
       .where(
         and(
-          inArray(jobs.franchiseeId, franchiseeIds),
+          inArray(jobs.branchId, branchIds),
           eq(jobs.status, 'completed'),
           gte(jobs.actualEnd, start),
           lt(jobs.actualEnd, end),
@@ -444,7 +437,7 @@ export async function computeOwnerDashboard(
       .leftJoin(users, eq(users.id, jobs.assignedTechUserId))
       .where(
         and(
-          inArray(jobs.franchiseeId, franchiseeIds),
+          inArray(jobs.branchId, branchIds),
           eq(jobs.status, 'completed'),
           gte(jobs.actualEnd, start),
           lt(jobs.actualEnd, end),
@@ -475,7 +468,7 @@ export async function computeOwnerDashboard(
       .leftJoin(invoices, eq(invoices.jobId, jobs.id))
       .where(
         and(
-          inArray(customers.franchiseeId, franchiseeIds),
+          inArray(customers.branchId, branchIds),
           isNull(customers.deletedAt),
         ),
       )
@@ -504,7 +497,7 @@ export async function computeOwnerDashboard(
       .innerJoin(customers, eq(customers.id, jobs.customerId))
       .where(
         and(
-          inArray(jobs.franchiseeId, franchiseeIds),
+          inArray(jobs.branchId, branchIds),
           isNull(jobs.deletedAt),
         ),
       )
@@ -594,10 +587,8 @@ const QuerySchema = z.object({
 });
 
 const DASHBOARD_ROLES = new Set([
-  'platform_admin',
-  'franchisor_admin',
-  'franchisee_owner',
-  'location_manager',
+  'corporate_admin',
+  'manager',
   'dispatcher',
 ]);
 

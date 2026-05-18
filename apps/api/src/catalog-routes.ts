@@ -9,14 +9,14 @@
  *                                                   archives the
  *                                                   previous published
  *                                                   template for the
- *                                                   franchisor
+ *                                                   corporate
  *   POST   /api/v1/catalog/templates/:id/archive     archive any status
  *   POST   /api/v1/catalog/templates/:id/items       create item (draft)
  *   GET    /api/v1/catalog/templates/:id/items       list items
  *   PATCH  /api/v1/catalog/templates/:id/items/:iid  update item
  *   DELETE /api/v1/catalog/templates/:id/items/:iid  delete item
  *
- * Writes require franchisor_admin OR platform_admin. Franchisee-scoped
+ * Writes require corporate_admin OR corporate_admin. Branch-scoped
  * callers get 403 CATALOG_READONLY — deliberately NOT 404 because they
  * CAN read published items via /api/v1/pricebook, so the template
  * surface is just a write-path you don't have.
@@ -41,11 +41,6 @@ const CreateTemplateSchema = z.object({
   name: z.string().min(1).max(200),
   slug: z.string().min(1).max(80).regex(/^[a-z0-9-]+$/),
   notes: z.string().max(2000).nullable().optional(),
-  /**
-   * Required for platform_admin (they must pick a franchisor).
-   * Ignored for franchisor_admin — derived from their scope.
-   */
-  franchisorId: z.string().uuid().nullable().optional(),
 });
 
 const UpdateTemplateSchema = z.object({
@@ -70,10 +65,9 @@ const UpdateItemSchema = CreateItemSchema.partial();
 
 function requireAdmin(
   scope: RequestScope,
-): { ok: true; franchisorIdForWrites: string | null } | { ok: false; code: string } {
-  if (scope.type === 'platform') return { ok: true, franchisorIdForWrites: null };
-  if (scope.type === 'franchisor')
-    return { ok: true, franchisorIdForWrites: scope.franchisorId };
+): { ok: true } | { ok: false; code: string } {
+  // Only corporate admins can edit the catalog. Branch users get readonly.
+  if (scope.type === 'corporate') return { ok: true };
   return { ok: false, code: 'CATALOG_READONLY' };
 }
 
@@ -94,7 +88,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
         ok: false,
         error: {
           code: 'CATALOG_READONLY',
-          message: 'Only franchisor or platform admins may edit the catalog',
+          message: 'Only corporate admins may edit the catalog',
         },
       });
     }
@@ -105,20 +99,9 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
         error: { code: 'VALIDATION_ERROR', message: parsed.error.message },
       });
     }
-    const franchisorId = adm.franchisorIdForWrites ?? parsed.data.franchisorId;
-    if (!franchisorId) {
-      return reply.code(400).send({
-        ok: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'platform admin must specify franchisorId',
-        },
-      });
-    }
     const inserted = await db
       .insert(serviceCatalogTemplates)
       .values({
-        franchisorId,
         name: parsed.data.name,
         slug: parsed.data.slug,
         notes: parsed.data.notes ?? null,
@@ -141,29 +124,10 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
         .from(serviceCatalogTemplates)
         .where(isNull(serviceCatalogTemplates.deletedAt))
         .orderBy(desc(serviceCatalogTemplates.createdAt));
-      if (scope.type === 'platform') return base;
-      if (scope.type === 'franchisor') {
-        return tx
-          .select()
-          .from(serviceCatalogTemplates)
-          .where(
-            and(
-              isNull(serviceCatalogTemplates.deletedAt),
-              eq(serviceCatalogTemplates.franchisorId, scope.franchisorId),
-            ),
-          )
-          .orderBy(desc(serviceCatalogTemplates.createdAt));
-      }
-      return tx
-        .select()
-        .from(serviceCatalogTemplates)
-        .where(
-          and(
-            isNull(serviceCatalogTemplates.deletedAt),
-            eq(serviceCatalogTemplates.franchisorId, scope.franchisorId),
-          ),
-        )
-        .orderBy(desc(serviceCatalogTemplates.createdAt));
+      // CHR-02: corporate sees every franchisor's catalog templates; branch
+      // users see them too (templates flow through to pricebook resolution).
+      // TODO(CHR-06): replace per-franchisor scoping with a corporate catalog table.
+      return base;
     });
     return reply.code(200).send({ ok: true, data: rows });
   });
@@ -196,9 +160,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           );
         const r = rows[0];
         if (!r) return null;
-        if (scope.type !== 'platform' && r.franchisorId !== scope.franchisorId) {
-          return null;
-        }
+        // CHR-02: corporate sees every template; branch sees them as readonly.
         return r;
       });
       if (!row) {
@@ -248,8 +210,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const r = rows[0];
         if (!r || r.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && r.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         if (r.status !== 'draft') return { kind: 'not_editable' as const };
         const values: Record<string, unknown> = { updatedAt: new Date() };
         if (parsed.data.name !== undefined) values.name = parsed.data.name;
@@ -311,22 +272,16 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const r = rows[0];
         if (!r || r.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && r.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         if (r.status === 'archived') return { kind: 'archived' as const };
         const now = new Date();
-        // Archive any currently-published templates on the same franchisor
-        // first, so the invariant "at most one published per franchisor"
+        // Archive any currently-published template first, so the invariant
+        // "at most one published catalog template across the corporate hub"
         // holds atomically.
         await tx
           .update(serviceCatalogTemplates)
           .set({ status: 'archived', archivedAt: now, updatedAt: now })
-          .where(
-            and(
-              eq(serviceCatalogTemplates.franchisorId, r.franchisorId),
-              eq(serviceCatalogTemplates.status, 'published'),
-            ),
-          );
+          .where(eq(serviceCatalogTemplates.status, 'published'));
         const next = await tx
           .update(serviceCatalogTemplates)
           .set({ status: 'published', publishedAt: now, updatedAt: now })
@@ -383,8 +338,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const r = rows[0];
         if (!r || r.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && r.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         const now = new Date();
         const next = await tx
           .update(serviceCatalogTemplates)
@@ -456,14 +410,12 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const t = rows[0];
         if (!t || t.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && t.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         if (t.status !== 'draft') return { kind: 'not_editable' as const };
         const inserted = await tx
           .insert(serviceItems)
           .values({
             templateId: t.id,
-            franchisorId: t.franchisorId,
             sku: parsed.data.sku,
             name: parsed.data.name,
             description: parsed.data.description ?? null,
@@ -525,9 +477,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const t = tRows[0];
         if (!t || t.deletedAt !== null) return null;
-        if (scope.type !== 'platform' && t.franchisorId !== scope.franchisorId) {
-          return null;
-        }
+        // CHR-02: corporate sees every template's items; branch reads them readonly.
         return tx
           .select()
           .from(serviceItems)
@@ -586,8 +536,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const t = tRows[0];
         if (!t || t.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && t.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         if (t.status !== 'draft') return { kind: 'not_editable' as const };
         const iRows = await tx
           .select()
@@ -670,8 +619,7 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(serviceCatalogTemplates.id, req.params.id));
         const t = tRows[0];
         if (!t || t.deletedAt !== null) return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor' && t.franchisorId !== scope.franchisorId)
-          return { kind: 'not_found' as const };
+        // CHR-02: corporate sees every franchisor's template — no per-franchisor filter.
         if (t.status !== 'draft') return { kind: 'not_editable' as const };
         const iRows = await tx
           .select({ id: serviceItems.id })

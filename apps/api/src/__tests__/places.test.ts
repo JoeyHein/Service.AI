@@ -72,11 +72,9 @@ describe('CJ-04 / places routes', () => {
       membershipResolver: {
         memberships: async () => [
           {
-            scopeType: 'franchisee',
+            scopeType: 'branch',
             role: 'dispatcher',
-            franchisorId: '11111111-1111-1111-1111-111111111111',
-            franchiseeId: '22222222-2222-2222-2222-222222222222',
-            locationId: null,
+            branchId: '22222222-2222-2222-2222-222222222222',
           },
         ],
       },
@@ -106,11 +104,9 @@ describe('CJ-04 / places routes', () => {
       membershipResolver: {
         memberships: async () => [
           {
-            scopeType: 'franchisee',
+            scopeType: 'branch',
             role: 'dispatcher',
-            franchisorId: '11111111-1111-1111-1111-111111111111',
-            franchiseeId: '22222222-2222-2222-2222-222222222222',
-            locationId: null,
+            branchId: '22222222-2222-2222-2222-222222222222',
           },
         ],
       },
@@ -133,11 +129,9 @@ describe('CJ-04 / places routes', () => {
       membershipResolver: {
         memberships: async () => [
           {
-            scopeType: 'franchisee',
+            scopeType: 'branch',
             role: 'dispatcher',
-            franchisorId: '11111111-1111-1111-1111-111111111111',
-            franchiseeId: '22222222-2222-2222-2222-222222222222',
-            locationId: null,
+            branchId: '22222222-2222-2222-2222-222222222222',
           },
         ],
       },

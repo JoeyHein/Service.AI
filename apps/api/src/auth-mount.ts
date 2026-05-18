@@ -78,17 +78,14 @@ export function mountAuth(app: FastifyInstance, auth: Auth): void {
       data: {
         user: { id: req.userId },
         scope: req.scope,
-        // Populated by requestScopePlugin when the caller is currently
-        // impersonating a franchisee. The web HQ banner reads this so it
-        // can render "HQ VIEWING: <franchisee name>" without a separate
-        // lookup round-trip. null when not impersonating.
-        impersonating: req.impersonation
-          ? {
-              targetFranchiseeId: req.impersonation.targetFranchiseeId,
-              targetFranchiseeName:
-                req.impersonation.targetFranchiseeName ?? null,
-            }
-          : null,
+        // Impersonation removed in CHR-02 (corporate hub model). Field kept
+        // for response-shape compatibility — CHR-06 web surface no longer
+        // reads it, but the legacy MeResponse type in apps/web still
+        // declares the field. Dropping it requires a coordinated cut over
+        // the web type + every server-side getSession() consumer.
+        // TODO(CHR-06 follow-up): drop the `impersonating` field once the
+        // web MeResponse declaration is updated.
+        impersonating: null,
       },
     });
   });

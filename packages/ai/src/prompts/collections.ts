@@ -24,7 +24,7 @@ export interface CollectionsPromptContext {
   amountDue: string;
   daysPastDue: number;
   paymentUrl: string;
-  /** Optional franchisor brand voice notes. */
+  /** Optional brand voice notes (sourced from `branches.brand_voice` or `corporate.brand_voice`). */
   brandVoice?: string;
 }
 

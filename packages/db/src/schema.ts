@@ -4,12 +4,13 @@
  * Organised in three layers:
  *   1. Infra (health_checks) — foundation phase
  *   2. Auth (users, sessions, accounts, verifications) — Better Auth tables
- *   3. Tenancy (franchisors, franchisees, locations, memberships, audit_log)
+ *   3. Tenancy (corporate, branches, locations, memberships, audit_log)
  *
- * Tenant-scoped tables carry franchisee_id (and location_id where applicable)
+ * Tenant-scoped tables carry branch_id (and location_id where applicable)
  * plus created_at / updated_at. RLS is ENABLED on every tenant-scoped table by
- * the corresponding migration; policies themselves are introduced in TASK-TEN-03
- * once RequestScope/GUC wiring is in place.
+ * migration 0016; the policy template is two roles per table
+ * (`_corporate_admin` + `_scoped`) keyed off `app.role` and `app.branch_id`
+ * GUCs set by `withScope`.
  */
 import {
   pgTable,
@@ -126,75 +127,91 @@ export const verifications = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Tenancy
+// Tenancy (corporate hub-and-spoke — migration 0016)
+//
+// The franchisor/franchisee model was replaced by a single corporate hub
+// plus N branches. The pgEnum values below match the post-CHR-01 DB state:
+// `platform_admin` and `location_manager` are legacy values that remain in
+// the SQL enum (Postgres cannot drop enum values) and may appear in
+// not-yet-re-seeded rows. The application never WRITES them; the
+// MembershipResolver promotes any legacy row it reads to its corporate-hub
+// equivalent (see apps/api/src/request-scope.ts#resolveScope).
 // ---------------------------------------------------------------------------
 
 export const scopeType = pgEnum('scope_type', [
   'platform',
-  'franchisor',
-  'franchisee',
+  'corporate',
+  'branch',
   'location',
 ]);
 
 export const role = pgEnum('role', [
   'platform_admin',
-  'franchisor_admin',
-  'franchisee_owner',
+  'corporate_admin',
+  'manager',
   'location_manager',
   'dispatcher',
   'tech',
   'csr',
 ]);
 
-export const franchisors = pgTable('franchisors', {
+// New corporate hub-and-spoke tables (migration 0016).
+//
+// `corporate` is a singleton: exactly one row identifies the platform
+// operator (Elevated Doors HQ in production). Branches are children;
+// every tenant-scoped business table carries branch_id directly.
+
+export const corporate = pgTable('corporate', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
-  brandConfig: jsonb('brand_config').notNull().default(sql`'{}'::jsonb`),
+  legalEntityName: text('legal_entity_name'),
+  timezone: text('timezone').notNull().default('America/Edmonton'),
+  currencyCode: varchar('currency_code', { length: 3 }).notNull().default('CAD'),
+  brandAssets: jsonb('brand_assets').notNull().default(sql`'{}'::jsonb`),
+  brandVoice: jsonb('brand_voice').notNull().default(sql`'{}'::jsonb`),
+  defaultMarginPct: numeric('default_margin_pct', { precision: 6, scale: 2 })
+    .notNull()
+    .default('60.00'),
+  minMarginPct: numeric('min_margin_pct', { precision: 6, scale: 2 })
+    .notNull()
+    .default('20.00'),
+  maxMarginPct: numeric('max_margin_pct', { precision: 6, scale: 2 })
+    .notNull()
+    .default('200.00'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-export const franchisees = pgTable(
-  'franchisees',
+export const branches = pgTable(
+  'branches',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchisorId: uuid('franchisor_id')
+    corporateId: uuid('corporate_id')
       .notNull()
-      .references(() => franchisors.id, { onDelete: 'restrict' }),
+      .references(() => corporate.id, { onDelete: 'restrict' }),
     name: text('name').notNull(),
     slug: text('slug').notNull(),
     legalEntityName: text('legal_entity_name'),
-    // Stripe Connect fields (phase_invoicing_stripe, migration 0008).
-    // stripeAccountId is the acct_* id; the three boolean columns
-    // mirror the Stripe `Account` object's readiness flags and are
-    // kept in sync by the account.updated webhook.
-    stripeAccountId: text('stripe_account_id'),
-    stripeChargesEnabled: boolean('stripe_charges_enabled').notNull().default(false),
-    stripePayoutsEnabled: boolean('stripe_payouts_enabled').notNull().default(false),
-    stripeDetailsSubmitted: boolean('stripe_details_submitted').notNull().default(false),
-    // AI voice (phase_ai_csr_voice, migration 0010).
+    addressLine1: text('address_line1'),
+    addressLine2: text('address_line2'),
+    city: text('city'),
+    region: text('region'),
+    postalCode: text('postal_code'),
+    countryCode: varchar('country_code', { length: 2 }),
+    timezone: text('timezone').notNull().default('America/Edmonton'),
+    phoneNumber: text('phone_number'),
     twilioPhoneNumber: text('twilio_phone_number'),
-    aiGuardrails: jsonb('ai_guardrails')
-      .notNull()
-      .default(
-        sql`'{"confidenceThreshold": 0.8, "undoWindowSeconds": 900, "transferOnLowConfidence": true}'::jsonb`,
-      ),
+    twilioPhoneSid: text('twilio_phone_sid'),
+    stripeAccountId: text('stripe_account_id'),
+    brandVoice: jsonb('brand_voice').notNull().default(sql`'{}'::jsonb`),
+    status: text('status').notNull().default('active'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchisorIdx: index('franchisees_franchisor_idx').on(t.franchisorId),
-    slugUnique: uniqueIndex('franchisees_franchisor_slug_unique').on(
-      t.franchisorId,
-      t.slug,
-    ),
-    stripeAccountUnique: uniqueIndex('franchisees_stripe_account_unique')
-      .on(t.stripeAccountId)
-      .where(sql`${t.stripeAccountId} IS NOT NULL`),
-    twilioPhoneUnique: uniqueIndex('franchisees_twilio_phone_unique')
-      .on(t.twilioPhoneNumber)
-      .where(sql`${t.twilioPhoneNumber} IS NOT NULL`),
+    corporateIdx: index('branches_corporate_idx').on(t.corporateId),
+    slugUnique: uniqueIndex('branches_slug_unique').on(t.slug),
   }),
 );
 
@@ -202,16 +219,16 @@ export const locations = pgTable(
   'locations',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     name: text('name').notNull(),
     timezone: text('timezone').notNull().default('America/Denver'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('locations_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('locations_branch_idx').on(t.branchId),
   }),
 );
 
@@ -225,7 +242,7 @@ export const memberships = pgTable(
     scopeType: scopeType('scope_type').notNull(),
     scopeId: uuid('scope_id'),
     role: role('role').notNull(),
-    franchiseeId: uuid('franchisee_id').references(() => franchisees.id, {
+    branchId: uuid('branch_id').references(() => branches.id, {
       onDelete: 'cascade',
     }),
     locationId: uuid('location_id').references(() => locations.id, { onDelete: 'set null' }),
@@ -242,7 +259,7 @@ export const memberships = pgTable(
   (t) => ({
     userIdx: index('memberships_user_idx').on(t.userId),
     scopeIdx: index('memberships_scope_idx').on(t.scopeType, t.scopeId),
-    franchiseeIdx: index('memberships_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('memberships_branch_idx').on(t.branchId),
     locationIdx: index('memberships_location_idx').on(t.locationId),
     uniqueActive: uniqueIndex('memberships_unique_active')
       .on(t.userId, t.scopeType, t.scopeId)
@@ -255,7 +272,7 @@ export const auditLog = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
-    targetFranchiseeId: uuid('target_franchisee_id').references(() => franchisees.id, {
+    targetBranchId: uuid('target_branch_id').references(() => branches.id, {
       onDelete: 'set null',
     }),
     action: text('action').notNull(),
@@ -268,7 +285,7 @@ export const auditLog = pgTable(
   },
   (t) => ({
     actorIdx: index('audit_log_actor_idx').on(t.actorUserId),
-    franchiseeIdx: index('audit_log_franchisee_idx').on(t.targetFranchiseeId),
+    branchIdx: index('audit_log_branch_idx').on(t.targetBranchId),
     actionIdx: index('audit_log_action_idx').on(t.action),
     createdIdx: index('audit_log_created_idx').on(t.createdAt),
   }),
@@ -280,10 +297,9 @@ export const auditLog = pgTable(
  * Only the SHA-256 hash of the token is stored. The raw token lives only in
  * the invite link emailed to the recipient; if the DB leaks, pending
  * invites still cannot be redeemed. scopeType + scopeId identify where the
- * membership will land (franchisor / franchisee / location). franchisorId
- * is always set for RLS-scoped visibility, even for franchisee-level
- * invites, so a franchisor_admin can list every outstanding invite across
- * their franchisees.
+ * membership will land (corporate / branch). Under the corporate hub
+ * model the franchisor parent collapses to the single corporate row, so no
+ * top-level scope id is stored on the invite.
  */
 export const invitations = pgTable(
   'invitations',
@@ -293,10 +309,7 @@ export const invitations = pgTable(
     email: text('email').notNull(),
     role: role('role').notNull(),
     scopeType: scopeType('scope_type').notNull(),
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
-    franchiseeId: uuid('franchisee_id').references(() => franchisees.id, {
+    branchId: uuid('branch_id').references(() => branches.id, {
       onDelete: 'cascade',
     }),
     locationId: uuid('location_id').references(() => locations.id, {
@@ -317,8 +330,7 @@ export const invitations = pgTable(
   (t) => ({
     emailIdx: index('invitations_email_idx').on(t.email),
     expiresIdx: index('invitations_expires_idx').on(t.expiresAt),
-    franchisorIdx: index('invitations_franchisor_idx').on(t.franchisorId),
-    franchiseeIdx: index('invitations_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('invitations_branch_idx').on(t.branchId),
     locationIdx: index('invitations_location_idx').on(t.locationId),
     inviterIdx: index('invitations_inviter_idx').on(t.inviterUserId),
   }),
@@ -356,9 +368,9 @@ export const customers = pgTable(
   'customers',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     locationId: uuid('location_id').references(() => locations.id, {
       onDelete: 'set null',
     }),
@@ -383,7 +395,7 @@ export const customers = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('customers_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('customers_branch_idx').on(t.branchId),
     locationIdx: index('customers_location_idx').on(t.locationId),
     emailIdx: index('customers_email_idx').on(t.email),
     phoneIdx: index('customers_phone_idx').on(t.phone),
@@ -395,9 +407,9 @@ export const jobs = pgTable(
   'jobs',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     locationId: uuid('location_id').references(() => locations.id, {
       onDelete: 'set null',
     }),
@@ -422,7 +434,7 @@ export const jobs = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('jobs_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('jobs_branch_idx').on(t.branchId),
     locationIdx: index('jobs_location_idx').on(t.locationId),
     customerIdx: index('jobs_customer_idx').on(t.customerId),
     statusIdx: index('jobs_status_idx').on(t.status),
@@ -443,11 +455,11 @@ export const jobStatusLog = pgTable(
     jobId: uuid('job_id')
       .notNull()
       .references(() => jobs.id, { onDelete: 'cascade' }),
-    // Denormalised franchisee_id so RLS policies match with a single
+    // Denormalised branch_id so RLS policies match with a single
     // column predicate (no join through jobs).
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     fromStatus: jobStatus('from_status'),
     toStatus: jobStatus('to_status').notNull(),
     actorUserId: text('actor_user_id').references(() => users.id, {
@@ -458,7 +470,7 @@ export const jobStatusLog = pgTable(
   },
   (t) => ({
     jobIdx: index('job_status_log_job_idx').on(t.jobId),
-    franchiseeIdx: index('job_status_log_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('job_status_log_branch_idx').on(t.branchId),
     createdIdx: index('job_status_log_created_idx').on(t.createdAt),
   }),
 );
@@ -476,9 +488,9 @@ export const jobPhotos = pgTable(
       .notNull()
       .references(() => jobs.id, { onDelete: 'cascade' }),
     // Denormalised for RLS (same reason as job_status_log).
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     storageKey: text('storage_key').notNull(),
     contentType: text('content_type'),
     sizeBytes: integer('size_bytes'),
@@ -490,7 +502,7 @@ export const jobPhotos = pgTable(
   },
   (t) => ({
     jobIdx: index('job_photos_job_idx').on(t.jobId),
-    franchiseeIdx: index('job_photos_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('job_photos_branch_idx').on(t.branchId),
     storageKeyIdx: uniqueIndex('job_photos_storage_key_unique').on(t.storageKey),
   }),
 );
@@ -506,18 +518,15 @@ export const catalogStatus = pgEnum('catalog_status', [
 ]);
 
 /**
- * Franchisor-authored service catalog. One currently-published template
- * per franchisor is the gate-level invariant — the publish handler
- * atomically archives the previous published template so franchisees
+ * Corporate-authored service catalog. One currently-published template
+ * for the corporate hub is the gate-level invariant — the publish handler
+ * atomically archives the previous published template so branches
  * always see a single authoritative catalog.
  */
 export const serviceCatalogTemplates = pgTable(
   'service_catalog_templates',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     slug: text('slug').notNull(),
     status: catalogStatus('status').notNull().default('draft'),
@@ -529,12 +538,8 @@ export const serviceCatalogTemplates = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchisorIdx: index('service_catalog_templates_franchisor_idx').on(t.franchisorId),
     statusIdx: index('service_catalog_templates_status_idx').on(t.status),
-    slugUnique: uniqueIndex('service_catalog_templates_slug_unique').on(
-      t.franchisorId,
-      t.slug,
-    ),
+    slugUnique: uniqueIndex('service_catalog_templates_slug_unique').on(t.slug),
   }),
 );
 
@@ -545,11 +550,6 @@ export const serviceItems = pgTable(
     templateId: uuid('template_id')
       .notNull()
       .references(() => serviceCatalogTemplates.id, { onDelete: 'cascade' }),
-    // Denormalised for RLS — franchisees resolve their pricebook via a
-    // policy that matches on franchisor_id without joining templates.
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
     sku: text('sku').notNull(),
     name: text('name').notNull(),
     description: text('description'),
@@ -571,48 +571,8 @@ export const serviceItems = pgTable(
   },
   (t) => ({
     templateIdx: index('service_items_template_idx').on(t.templateId),
-    franchisorIdx: index('service_items_franchisor_idx').on(t.franchisorId),
     categoryIdx: index('service_items_category_idx').on(t.category),
     skuUnique: uniqueIndex('service_items_template_sku_unique').on(t.templateId, t.sku),
-  }),
-);
-
-/**
- * Franchisee overrides on specific service items. One active override
- * per (franchisee, item). Overrides are soft-deleted so the history is
- * preserved for audit and for reverting.
- */
-export const pricebookOverrides = pgTable(
-  'pricebook_overrides',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
-      .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
-    // Denormalised for RLS read checks — we always know which franchisor
-    // the override belongs to without joining through service_items.
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
-    serviceItemId: uuid('service_item_id')
-      .notNull()
-      .references(() => serviceItems.id, { onDelete: 'cascade' }),
-    overridePrice: numeric('override_price', { precision: 12, scale: 2 }).notNull(),
-    note: text('note'),
-    createdByUserId: text('created_by_user_id').references(() => users.id, {
-      onDelete: 'set null',
-    }),
-    deletedAt: timestamp('deleted_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => ({
-    franchiseeIdx: index('pricebook_overrides_franchisee_idx').on(t.franchiseeId),
-    franchisorIdx: index('pricebook_overrides_franchisor_idx').on(t.franchisorId),
-    itemIdx: index('pricebook_overrides_item_idx').on(t.serviceItemId),
-    uniqueActive: uniqueIndex('pricebook_overrides_unique_active')
-      .on(t.franchiseeId, t.serviceItemId)
-      .where(sql`${t.deletedAt} IS NULL`),
   }),
 );
 
@@ -632,9 +592,9 @@ export const invoices = pgTable(
   'invoices',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     jobId: uuid('job_id')
       .notNull()
       .references(() => jobs.id, { onDelete: 'restrict' }),
@@ -646,6 +606,10 @@ export const invoices = pgTable(
     taxRate: numeric('tax_rate', { precision: 6, scale: 4 }).notNull().default('0'),
     taxAmount: numeric('tax_amount', { precision: 12, scale: 2 }).notNull().default('0'),
     total: numeric('total', { precision: 12, scale: 2 }).notNull().default('0'),
+    // Legacy: populated by the Stripe Connect / royalty engine pre-CHR-08.
+    // The corporate-hub model never writes this column; it stays zero.
+    // Kept in schema because the DB column still exists (CHR-08 was a
+    // code-only deletion; the migration is deferred).
     applicationFeeAmount: numeric('application_fee_amount', {
       precision: 12,
       scale: 2,
@@ -670,7 +634,7 @@ export const invoices = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('invoices_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('invoices_branch_idx').on(t.branchId),
     jobIdx: index('invoices_job_idx').on(t.jobId),
     customerIdx: index('invoices_customer_idx').on(t.customerId),
     statusIdx: index('invoices_status_idx').on(t.status),
@@ -690,9 +654,9 @@ export const invoiceLineItems = pgTable(
     invoiceId: uuid('invoice_id')
       .notNull()
       .references(() => invoices.id, { onDelete: 'cascade' }),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     serviceItemId: uuid('service_item_id').references(() => serviceItems.id, {
       onDelete: 'set null',
     }),
@@ -706,7 +670,7 @@ export const invoiceLineItems = pgTable(
   },
   (t) => ({
     invoiceIdx: index('invoice_line_items_invoice_idx').on(t.invoiceId),
-    franchiseeIdx: index('invoice_line_items_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('invoice_line_items_branch_idx').on(t.branchId),
   }),
 );
 
@@ -724,15 +688,19 @@ export const payments = pgTable(
   'payments',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     invoiceId: uuid('invoice_id')
       .notNull()
       .references(() => invoices.id, { onDelete: 'restrict' }),
     stripePaymentIntentId: text('stripe_payment_intent_id').notNull(),
     stripeChargeId: text('stripe_charge_id').notNull(),
     amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    // Legacy: populated by the Stripe Connect / royalty engine pre-CHR-08.
+    // The single-account corporate-hub webhook never writes this column;
+    // it stays zero. Column kept because the underlying DB column still
+    // exists (CHR-08 was code-only; the migration is deferred).
     applicationFeeAmount: numeric('application_fee_amount', {
       precision: 12,
       scale: 2,
@@ -744,7 +712,7 @@ export const payments = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('payments_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('payments_branch_idx').on(t.branchId),
     invoiceIdx: index('payments_invoice_idx').on(t.invoiceId),
     chargeUnique: uniqueIndex('payments_charge_unique').on(t.stripeChargeId),
   }),
@@ -754,9 +722,9 @@ export const refunds = pgTable(
   'refunds',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'restrict' }),
     invoiceId: uuid('invoice_id')
       .notNull()
       .references(() => invoices.id, { onDelete: 'restrict' }),
@@ -770,7 +738,7 @@ export const refunds = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('refunds_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('refunds_branch_idx').on(t.branchId),
     invoiceIdx: index('refunds_invoice_idx').on(t.invoiceId),
     refundUnique: uniqueIndex('refunds_stripe_refund_unique').on(t.stripeRefundId),
   }),
@@ -781,7 +749,7 @@ export const refunds = pgTable(
  * before processing; a duplicate insert (unique violation) short-
  * circuits the handler to a 200 without re-running the side
  * effects. Deliberately NOT tenant-scoped — the webhook callback
- * runs before any franchisee has been resolved from the event.
+ * runs before any branch has been resolved from the event.
  */
 export const stripeEvents = pgTable(
   'stripe_events',
@@ -825,9 +793,9 @@ export const collectionsDrafts = pgTable(
   'collections_drafts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     invoiceId: uuid('invoice_id')
       .notNull()
       .references(() => invoices.id, { onDelete: 'cascade' }),
@@ -849,7 +817,7 @@ export const collectionsDrafts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('collections_drafts_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('collections_drafts_branch_idx').on(t.branchId),
     invoiceIdx: index('collections_drafts_invoice_idx').on(t.invoiceId),
     statusIdx: index('collections_drafts_status_idx').on(t.status),
     pendingUnique: uniqueIndex('collections_drafts_pending_unique')
@@ -862,9 +830,9 @@ export const paymentRetries = pgTable(
   'payment_retries',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     invoiceId: uuid('invoice_id')
       .notNull()
       .references(() => invoices.id, { onDelete: 'cascade' }),
@@ -880,7 +848,7 @@ export const paymentRetries = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('payment_retries_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('payment_retries_branch_idx').on(t.branchId),
     invoiceIdx: index('payment_retries_invoice_idx').on(t.invoiceId),
     statusIdx: index('payment_retries_status_idx').on(t.status),
   }),
@@ -898,19 +866,15 @@ export const aiFeedbackSubjectKind = pgEnum('ai_feedback_subject_kind', [
 ]);
 
 /**
- * kb_docs is franchisor-scoped but franchisor_id may be NULL for
- * platform-global articles. Embeddings are jsonb arrays — phase
- * 11 computes cosine similarity in JS at the ≤200-doc scale; a
- * pgvector migration is deferred until the corpus grows past the
- * in-memory threshold.
+ * kb_docs is corporate-scoped (the franchisor_id column was dropped in
+ * migration 0016). Embeddings are jsonb arrays — phase 11 computes
+ * cosine similarity in JS at the ≤200-doc scale; a pgvector migration
+ * is deferred until the corpus grows past the in-memory threshold.
  */
 export const kbDocs = pgTable(
   'kb_docs',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchisorId: uuid('franchisor_id').references(() => franchisors.id, {
-      onDelete: 'cascade',
-    }),
     title: text('title').notNull(),
     body: text('body').notNull(),
     source: text('source').notNull(),
@@ -920,7 +884,6 @@ export const kbDocs = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchisorIdx: index('kb_docs_franchisor_idx').on(t.franchisorId),
     sourceUnique: uniqueIndex('kb_docs_source_unique').on(t.source),
   }),
 );
@@ -929,9 +892,9 @@ export const aiFeedback = pgTable(
   'ai_feedback',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     conversationId: uuid('conversation_id'),
     kind: aiFeedbackKind('kind').notNull(),
     subjectKind: aiFeedbackSubjectKind('subject_kind').notNull(),
@@ -942,7 +905,7 @@ export const aiFeedback = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('ai_feedback_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('ai_feedback_branch_idx').on(t.branchId),
     kindIdx: index('ai_feedback_kind_idx').on(t.kind),
     subjectIdx: index('ai_feedback_subject_kind_idx').on(t.subjectKind),
   }),
@@ -965,9 +928,9 @@ export const aiSuggestions = pgTable(
   'ai_suggestions',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     conversationId: uuid('conversation_id'),
     kind: aiSuggestionKind('kind').notNull(),
     subjectJobId: uuid('subject_job_id')
@@ -994,7 +957,7 @@ export const aiSuggestions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('ai_suggestions_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('ai_suggestions_branch_idx').on(t.branchId),
     jobIdx: index('ai_suggestions_job_idx').on(t.subjectJobId),
     statusIdx: index('ai_suggestions_status_idx').on(t.status),
   }),
@@ -1004,9 +967,9 @@ export const aiMetrics = pgTable(
   'ai_metrics',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     date: timestamp('date', { withTimezone: true }).notNull(),
     suggestionsTotal: integer('suggestions_total').notNull().default(0),
     autoApplied: integer('auto_applied').notNull().default(0),
@@ -1021,7 +984,7 @@ export const aiMetrics = pgTable(
   },
   (t) => ({
     uniqDay: uniqueIndex('ai_metrics_franchisee_date_unique').on(
-      t.franchiseeId,
+      t.branchId,
       t.date,
     ),
   }),
@@ -1033,15 +996,15 @@ export const techSkills = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     skill: text('skill').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    pk: uniqueIndex('tech_skills_pk').on(t.userId, t.franchiseeId, t.skill),
-    franchiseeIdx: index('tech_skills_franchisee_idx').on(t.franchiseeId),
+    pk: uniqueIndex('tech_skills_pk').on(t.userId, t.branchId, t.skill),
+    branchIdx: index('tech_skills_branch_idx').on(t.branchId),
   }),
 );
 
@@ -1082,9 +1045,9 @@ export const aiConversations = pgTable(
   'ai_conversations',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     capability: aiCapability('capability').notNull(),
     subjectCustomerId: uuid('subject_customer_id').references(
       () => customers.id,
@@ -1099,7 +1062,7 @@ export const aiConversations = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('ai_conversations_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('ai_conversations_branch_idx').on(t.branchId),
     capabilityIdx: index('ai_conversations_capability_idx').on(t.capability),
   }),
 );
@@ -1111,9 +1074,9 @@ export const aiMessages = pgTable(
     conversationId: uuid('conversation_id')
       .notNull()
       .references(() => aiConversations.id, { onDelete: 'cascade' }),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     role: aiMessageRole('role').notNull(),
     content: jsonb('content').notNull(),
     toolName: text('tool_name'),
@@ -1127,7 +1090,7 @@ export const aiMessages = pgTable(
   },
   (t) => ({
     conversationIdx: index('ai_messages_conversation_idx').on(t.conversationId),
-    franchiseeIdx: index('ai_messages_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('ai_messages_branch_idx').on(t.branchId),
   }),
 );
 
@@ -1135,9 +1098,9 @@ export const callSessions = pgTable(
   'call_sessions',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     conversationId: uuid('conversation_id').references(() => aiConversations.id, {
       onDelete: 'set null',
     }),
@@ -1155,143 +1118,9 @@ export const callSessions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('call_sessions_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('call_sessions_branch_idx').on(t.branchId),
     twilioUnique: uniqueIndex('call_sessions_twilio_sid_unique').on(t.twilioCallSid),
     statusIdx: index('call_sessions_status_idx').on(t.status),
-  }),
-);
-
-// ---------------------------------------------------------------------------
-// Royalty engine (phase_royalty_engine)
-// ---------------------------------------------------------------------------
-
-export const agreementStatus = pgEnum('agreement_status', [
-  'draft',
-  'active',
-  'ended',
-]);
-
-export const royaltyRuleType = pgEnum('royalty_rule_type', [
-  'percentage',
-  'flat_per_job',
-  'tiered',
-  'minimum_floor',
-]);
-
-export const royaltyStatementStatus = pgEnum('royalty_statement_status', [
-  'open',
-  'reconciled',
-  'disputed',
-]);
-
-/**
- * A franchise agreement is the authoritative source of the
- * platform fee for every invoice under a franchisee. At most one
- * `status = 'active'` row per franchisee is enforced by a partial
- * unique index.
- */
-export const franchiseAgreements = pgTable(
-  'franchise_agreements',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
-      .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
-    // Denormalised for fast franchisor-scoped reads + cleaner RLS.
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
-    status: agreementStatus('status').notNull().default('draft'),
-    name: text('name').notNull(),
-    notes: text('notes'),
-    startsOn: timestamp('starts_on', { withTimezone: true }),
-    endsOn: timestamp('ends_on', { withTimezone: true }),
-    currency: text('currency').notNull().default('usd'),
-    createdByUserId: text('created_by_user_id').references(() => users.id, {
-      onDelete: 'set null',
-    }),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => ({
-    franchiseeIdx: index('franchise_agreements_franchisee_idx').on(t.franchiseeId),
-    franchisorIdx: index('franchise_agreements_franchisor_idx').on(t.franchisorId),
-    oneActivePerFranchisee: uniqueIndex('franchise_agreements_one_active')
-      .on(t.franchiseeId)
-      .where(sql`${t.status} = 'active'`),
-  }),
-);
-
-export const royaltyRules = pgTable(
-  'royalty_rules',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    agreementId: uuid('agreement_id')
-      .notNull()
-      .references(() => franchiseAgreements.id, { onDelete: 'cascade' }),
-    franchiseeId: uuid('franchisee_id')
-      .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
-    ruleType: royaltyRuleType('rule_type').notNull(),
-    // JSONB blob whose shape depends on ruleType; validated by Zod
-    // at the API boundary. Stored as-is so evolving rule shapes
-    // don't require migrations.
-    params: jsonb('params').notNull(),
-    sortOrder: integer('sort_order').notNull().default(0),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => ({
-    agreementIdx: index('royalty_rules_agreement_idx').on(t.agreementId),
-    franchiseeIdx: index('royalty_rules_franchisee_idx').on(t.franchiseeId),
-  }),
-);
-
-export const royaltyStatements = pgTable(
-  'royalty_statements',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
-      .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
-    franchisorId: uuid('franchisor_id')
-      .notNull()
-      .references(() => franchisors.id, { onDelete: 'cascade' }),
-    periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
-    periodEnd: timestamp('period_end', { withTimezone: true }).notNull(),
-    grossRevenue: numeric('gross_revenue', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    refundTotal: numeric('refund_total', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    netRevenue: numeric('net_revenue', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    royaltyOwed: numeric('royalty_owed', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    royaltyCollected: numeric('royalty_collected', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    variance: numeric('variance', { precision: 14, scale: 2 })
-      .notNull()
-      .default('0'),
-    transferId: text('transfer_id'),
-    status: royaltyStatementStatus('status').notNull().default('open'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => ({
-    franchiseeIdx: index('royalty_statements_franchisee_idx').on(t.franchiseeId),
-    franchisorIdx: index('royalty_statements_franchisor_idx').on(t.franchisorId),
-    periodUnique: uniqueIndex('royalty_statements_period_unique').on(
-      t.franchiseeId,
-      t.periodStart,
-      t.periodEnd,
-    ),
-    transferIdUnique: uniqueIndex('royalty_statements_transfer_unique')
-      .on(t.transferId)
-      .where(sql`${t.transferId} IS NOT NULL`),
   }),
 );
 
@@ -1306,10 +1135,10 @@ export const pushSubscriptions = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    // Denormalised so franchisor-scoped push sends can target a
-    // franchisee without joining memberships.
-    franchiseeId: uuid('franchisee_id').references(() => franchisees.id, {
-      onDelete: 'set null',
+    // Denormalised so corporate-scoped push sends can target a
+    // branch without joining memberships.
+    branchId: uuid('branch_id').references(() => branches.id, {
+      onDelete: 'cascade',
     }),
     endpoint: text('endpoint').notNull(),
     p256dh: text('p256dh').notNull(),
@@ -1350,9 +1179,9 @@ export const notificationsLog = pgTable(
   'notifications_log',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    franchiseeId: uuid('franchisee_id')
+    branchId: uuid('branch_id')
       .notNull()
-      .references(() => franchisees.id, { onDelete: 'cascade' }),
+      .references(() => branches.id, { onDelete: 'cascade' }),
     channel: notificationChannel('channel').notNull(),
     direction: notificationDirection('direction').notNull().default('outbound'),
     toAddress: text('to_address').notNull(),
@@ -1377,11 +1206,315 @@ export const notificationsLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    franchiseeIdx: index('notifications_log_franchisee_idx').on(t.franchiseeId),
+    branchIdx: index('notifications_log_branch_idx').on(t.branchId),
     channelIdx: index('notifications_log_channel_idx').on(
-      t.franchiseeId,
+      t.branchId,
       t.channel,
     ),
-    sentIdx: index('notifications_log_sent_idx').on(t.franchiseeId, t.sentAt),
+    sentIdx: index('notifications_log_sent_idx').on(t.branchId, t.sentAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Corporate hub-and-spoke supplementary tables (migration 0016).
+//
+// branch_managers, comp_plans, user_comp_assignments, commission_ledger,
+// and pricebook_suggestions support the W2 commission model that replaced
+// the franchise royalty engine.
+// ---------------------------------------------------------------------------
+
+export const branchManagers = pgTable(
+  'branch_managers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index('branch_managers_branch_idx').on(t.branchId),
+    userIdx: index('branch_managers_user_idx').on(t.userId),
+  }),
+);
+
+export const compPlans = pgTable(
+  'comp_plans',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull(),
+    kind: text('kind').notNull(),
+    baseSalaryCents: integer('base_salary_cents').notNull().default(0),
+    payPeriod: text('pay_period').notNull().default('monthly'),
+    commissionRules: jsonb('commission_rules').notNull(),
+    effectiveFrom: timestamp('effective_from', { mode: 'date' }).notNull(),
+    effectiveTo: timestamp('effective_to', { mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    effectiveIdx: index('comp_plans_effective_idx').on(t.effectiveFrom, t.effectiveTo),
+  }),
+);
+
+export const userCompAssignments = pgTable(
+  'user_comp_assignments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    compPlanId: uuid('comp_plan_id')
+      .notNull()
+      .references(() => compPlans.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    effectiveFrom: timestamp('effective_from', { mode: 'date' }).notNull(),
+    effectiveTo: timestamp('effective_to', { mode: 'date' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('user_comp_user_idx').on(t.userId),
+    planIdx: index('user_comp_plan_idx').on(t.compPlanId),
+    branchIdx: index('user_comp_branch_idx').on(t.branchId),
+  }),
+);
+
+export const commissionLedger = pgTable(
+  'commission_ledger',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    sourceKind: text('source_kind').notNull(),
+    sourceId: text('source_id').notNull(),
+    amountCents: integer('amount_cents').notNull(),
+    ruleSnapshot: jsonb('rule_snapshot').notNull(),
+    periodLabel: text('period_label').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('commission_ledger_user_idx').on(t.userId),
+    branchIdx: index('commission_ledger_branch_idx').on(t.branchId),
+    periodIdx: index('commission_ledger_period_idx').on(t.periodLabel),
+    sourceUnique: uniqueIndex('commission_ledger_source_unique').on(
+      t.userId,
+      t.sourceKind,
+      t.sourceId,
+    ),
+  }),
+);
+
+export const pricebookSuggestions = pgTable(
+  'pricebook_suggestions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    serviceItemId: uuid('service_item_id')
+      .notNull()
+      .references(() => serviceItems.id, { onDelete: 'cascade' }),
+    suggestedPriceCents: integer('suggested_price_cents').notNull(),
+    reason: text('reason'),
+    suggestedByUserId: text('suggested_by_user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    status: text('status').notNull().default('pending'),
+    resolvedByUserId: text('resolved_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolutionNote: text('resolution_note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index('pricebook_suggestions_branch_idx').on(t.branchId),
+    statusIdx: index('pricebook_suggestions_status_idx').on(t.status),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Supplier quote bridge (phase_supplier_quote_bridge / migration 0017).
+//
+// Provider abstraction + quote tables. `suppliers` is corporate-scoped
+// (v1 has one row: BC AI Agent for the Elevated Doors BC customer).
+// `margin_overrides` keys per BC `itemCategoryCode`; the SQB-07 margin
+// engine resolves line override → category override →
+// corporate.default_margin_pct.
+// ---------------------------------------------------------------------------
+
+export const supplierProviderKind = pgEnum('supplier_provider_kind', ['bc_ai_agent']);
+
+export const suppliers = pgTable(
+  'suppliers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull(),
+    providerKind: supplierProviderKind('provider_kind').notNull(),
+    endpointUrl: text('endpoint_url').notNull(),
+    apiKeySecretRef: text('api_key_secret_ref').notNull(),
+    supplierAccountCode: text('supplier_account_code').notNull(),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    providerIdx: index('suppliers_provider_idx').on(t.providerKind),
+  }),
+);
+
+export const marginOverrides = pgTable(
+  'margin_overrides',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    itemCategory: text('item_category').notNull(),
+    marginPct: numeric('margin_pct', { precision: 6, scale: 2 }).notNull(),
+    notes: text('notes'),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    itemCategoryUnique: uniqueIndex('margin_overrides_item_category_unique').on(
+      t.itemCategory,
+    ),
+  }),
+);
+
+export const quoteStatus = pgEnum('quote_status', [
+  'draft',
+  'priced',
+  'committed',
+  'accepted',
+  'void',
+]);
+
+export const marginSource = pgEnum('margin_source', [
+  'line_override',
+  'category_override',
+  'corporate_default',
+]);
+
+export const quotes = pgTable(
+  'quotes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    customerId: uuid('customer_id')
+      .notNull()
+      .references(() => customers.id, { onDelete: 'restrict' }),
+    jobId: uuid('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+    supplierId: uuid('supplier_id')
+      .notNull()
+      .references(() => suppliers.id, { onDelete: 'restrict' }),
+    status: quoteStatus('status').notNull().default('draft'),
+    subtotalCents: integer('subtotal_cents').notNull().default(0),
+    taxCents: integer('tax_cents').notNull().default(0),
+    totalCents: integer('total_cents').notNull().default(0),
+    currencyCode: varchar('currency_code', { length: 3 }).notNull().default('CAD'),
+    /** SQ-XXXXXX assigned by BC at commit. NULL until status >= committed. */
+    supplierQuoteRef: text('supplier_quote_ref'),
+    supplierQuoteId: text('supplier_quote_id'),
+    validUntil: timestamp('valid_until', { withTimezone: true }),
+    createdByUserId: text('created_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    /** Whichever user clicked "Send to supplier" — drives commission credit. */
+    closerUserId: text('closer_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    notes: text('notes'),
+    committedAt: timestamp('committed_at', { withTimezone: true }),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    voidedAt: timestamp('voided_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index('quotes_branch_idx').on(t.branchId),
+    customerIdx: index('quotes_customer_idx').on(t.customerId),
+    jobIdx: index('quotes_job_idx').on(t.jobId),
+    statusIdx: index('quotes_status_idx').on(t.status),
+    supplierIdx: index('quotes_supplier_idx').on(t.supplierId),
+    supplierQuoteRefUnique: uniqueIndex('quotes_supplier_quote_ref_unique')
+      .on(t.supplierQuoteRef)
+      .where(sql`${t.supplierQuoteRef} IS NOT NULL`),
+  }),
+);
+
+export const quoteLineItems = pgTable(
+  'quote_line_items',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    quoteId: uuid('quote_id')
+      .notNull()
+      .references(() => quotes.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    supplierSku: text('supplier_sku').notNull(),
+    description: text('description').notNull(),
+    itemCategory: text('item_category'),
+    quantity: numeric('quantity', { precision: 12, scale: 3 }).notNull(),
+    unitPriceCents: integer('unit_price_cents').notNull(),
+    lineTotalCents: integer('line_total_cents').notNull(),
+    supplierUnitCostCents: integer('supplier_unit_cost_cents'),
+    appliedMarginPct: numeric('applied_margin_pct', { precision: 6, scale: 2 }).notNull(),
+    appliedMarginSource: marginSource('applied_margin_source').notNull(),
+    /** Manager+ per-line discretion; null when default/category resolution wins. */
+    marginOverridePct: numeric('margin_override_pct', { precision: 6, scale: 2 }),
+    marginOverrideReason: text('margin_override_reason'),
+    metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    quoteIdx: index('quote_line_items_quote_idx').on(t.quoteId),
+    branchIdx: index('quote_line_items_branch_idx').on(t.branchId),
+    positionUnique: uniqueIndex('quote_line_items_position_unique').on(
+      t.quoteId,
+      t.position,
+    ),
+  }),
+);
+
+export const quoteStatusLog = pgTable(
+  'quote_status_log',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    quoteId: uuid('quote_id')
+      .notNull()
+      .references(() => quotes.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    fromStatus: quoteStatus('from_status'),
+    toStatus: quoteStatus('to_status').notNull(),
+    actorUserId: text('actor_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    reason: text('reason'),
+    metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    quoteIdx: index('quote_status_log_quote_idx').on(t.quoteId),
+    branchIdx: index('quote_status_log_branch_idx').on(t.branchId),
   }),
 );

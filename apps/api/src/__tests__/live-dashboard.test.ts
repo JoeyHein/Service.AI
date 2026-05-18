@@ -2,7 +2,7 @@
  * Live tests for the owner dashboard (phase 14 pass 1).
  *
  * 401 anonymous, 403 tech/CSR, happy path for owner/dispatcher,
- * platform admin rolls up across franchisees, cross-franchisee
+ * platform admin rolls up across branches, cross-branch
  * isolation (denver.owner sees only denver numbers).
  */
 
@@ -32,7 +32,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -87,13 +86,13 @@ async function signIn(email: string): Promise<string> {
 
 async function seedDashboardData(
   db: ReturnType<typeof drizzle>,
-  franchiseeId: string,
+  branchId: string,
   techUserId: string,
   opts: { revenuePerJob: number; jobsCount: number },
 ): Promise<void> {
   const customerRows = await db
     .insert(customers)
-    .values({ franchiseeId, name: `Dashboard Customer ${franchiseeId.slice(0, 6)}` })
+    .values({ branchId, name: `Dashboard Customer ${branchId.slice(0, 6)}` })
     .returning({ id: customers.id });
   const customerId = customerRows[0]!.id;
 
@@ -104,7 +103,7 @@ async function seedDashboardData(
     const jobRows = await db
       .insert(jobs)
       .values({
-        franchiseeId,
+        branchId,
         customerId,
         status: 'completed',
         title: `Live test job ${i}`,
@@ -119,7 +118,7 @@ async function seedDashboardData(
     const invRows = await db
       .insert(invoices)
       .values({
-        franchiseeId,
+        branchId,
         jobId,
         customerId,
         status: 'paid',
@@ -133,7 +132,7 @@ async function seedDashboardData(
       })
       .returning({ id: invoices.id });
     await db.insert(payments).values({
-      franchiseeId,
+      branchId,
       invoiceId: invRows[0]!.id,
       stripePaymentIntentId: `pi_live_${jobId.slice(0, 8)}`,
       stripeChargeId: `ch_live_${jobId.slice(0, 8)}`,
@@ -152,8 +151,8 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
 
   const db = drizzle(pool, { schema });
@@ -170,7 +169,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -199,13 +197,13 @@ beforeAll(async () => {
   // bucket d8to14, quotes pipeline draft+sent, and notif tiles.
   const denverCustomerRows = await db
     .insert(customers)
-    .values({ franchiseeId: ids.denverId, name: 'Aging Customer' })
+    .values({ branchId: ids.denverId, name: 'Aging Customer' })
     .returning({ id: customers.id });
   const overdueCustomerId = denverCustomerRows[0]!.id;
   const overdueJobRows = await db
     .insert(jobs)
     .values({
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       customerId: overdueCustomerId,
       status: 'completed',
       title: 'Overdue invoice job',
@@ -213,7 +211,7 @@ beforeAll(async () => {
     })
     .returning({ id: jobs.id });
   await db.insert(invoices).values({
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
     jobId: overdueJobRows[0]!.id,
     customerId: overdueCustomerId,
     status: 'sent',
@@ -228,14 +226,14 @@ beforeAll(async () => {
   const draftJobRows = await db
     .insert(jobs)
     .values({
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       customerId: overdueCustomerId,
       status: 'unassigned',
       title: 'Quote — draft',
     })
     .returning({ id: jobs.id });
   await db.insert(invoices).values({
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
     jobId: draftJobRows[0]!.id,
     customerId: overdueCustomerId,
     status: 'draft',
@@ -277,12 +275,12 @@ beforeAll(async () => {
     const [oneInv] = await db
       .select({ id: invoices.id, total: invoices.total })
       .from(invoices)
-      .where(eq(invoices.franchiseeId, ids.denverId))
+      .where(eq(invoices.branchId, ids.denverId))
       .limit(1);
     if (oneInv) {
       await db.insert(invoiceLineItems).values({
         invoiceId: oneInv.id,
-        franchiseeId: ids.denverId,
+        branchId: ids.denverId,
         serviceItemId: anyItem.id,
         sku: anyItem.sku,
         name: anyItem.name,
@@ -299,7 +297,7 @@ beforeAll(async () => {
     const startedAt = new Date(Date.now() - (k + 1) * 3600_000);
     const endedAt = new Date(startedAt.getTime() + 60_000);
     await db.insert(callSessions).values({
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       twilioCallSid: `CA_test_${k}_${Date.now()}`,
       fromE164: `+13035551${100 + k}`,
       toE164: '+13035550100',
@@ -312,7 +310,7 @@ beforeAll(async () => {
 
   await db.insert(notificationsLog).values([
     {
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       channel: 'email',
       direction: 'outbound',
       toAddress: 'a@test',
@@ -321,7 +319,7 @@ beforeAll(async () => {
       sentAt: new Date(),
     },
     {
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       channel: 'email',
       direction: 'outbound',
       toAddress: 'b@test',
@@ -330,7 +328,7 @@ beforeAll(async () => {
       sentAt: new Date(),
     },
     {
-      franchiseeId: ids.denverId,
+      branchId: ids.denverId,
       channel: 'sms',
       direction: 'outbound',
       toAddress: '+1303',
@@ -448,7 +446,7 @@ describe('Owner dashboard — scope isolation', () => {
     expect(d.tiles.jobsCompleted).toBe(2);
   });
 
-  it('platform admin rolls up across all franchisees (6 jobs, $4000)', async () => {
+  it('platform admin rolls up across all branches (6 jobs, $4000)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/dashboard/owner?period=30d',

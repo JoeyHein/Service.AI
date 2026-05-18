@@ -12,7 +12,9 @@ import { setupFastify as setupSentryFastify } from './sentry.js';
 import { logger } from './logger.js';
 import { mountAuth } from './auth-mount.js';
 import { registerInviteRoutes } from './invites.js';
-import { registerFranchiseeRoutes } from './franchisees-routes.js';
+import { registerCorporateRoutes } from './corporate-routes.js';
+import { registerMarginRoutes } from './margin-routes.js';
+import { registerBranchRoutes } from './branch-routes.js';
 import { registerAuditLogRoutes } from './audit-log-routes.js';
 import { registerCustomerRoutes } from './customers-routes.js';
 import { registerJobRoutes } from './jobs-routes.js';
@@ -21,12 +23,10 @@ import { registerJobPhotoRoutes } from './job-photos-routes.js';
 import { stubObjectStore, type ObjectStore } from './object-store.js';
 import { registerCatalogRoutes } from './catalog-routes.js';
 import { registerPricebookRoutes } from './pricebook-routes.js';
+import { registerPricebookSuggestionsRoutes } from './pricebook-suggestions-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerPublicInvoiceRoutes } from './public-invoice-routes.js';
-import { registerConnectRoutes } from './connect-routes.js';
-import { registerAgreementRoutes } from './agreement-routes.js';
-import { registerStatementRoutes } from './statement-routes.js';
 import {
   registerPhoneRoutes,
   stubPhoneProvisioner,
@@ -38,7 +38,11 @@ import { registerTechAssistantRoutes } from './tech-assistant-routes.js';
 import { resolveVisionClient, type VisionClient } from './vision.js';
 import { registerCollectionsRoutes } from './collections-routes.js';
 import { registerOwnerDashboardRoutes } from './owner-dashboard.js';
-import { registerFranchisorConsoleRoutes } from './franchisor-routes.js';
+import {
+  registerQuoteRoutes,
+  defaultProviderRegistry,
+} from './quote-routes.js';
+import { ProviderRegistry } from '@service-ai/suppliers';
 import {
   resolveDistanceMatrixClient,
   type DistanceMatrixClient,
@@ -62,7 +66,6 @@ import { inProcessEventBus, type EventBus } from './event-bus.js';
 import {
   requestScopePlugin,
   type MembershipResolver,
-  type FranchiseeLookup,
   type AuditLogWriter,
 } from './request-scope.js';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -122,13 +125,8 @@ export interface AppOptions {
    */
   membershipResolver?: MembershipResolver;
   /**
-   * Validates the target of an X-Impersonate-Franchisee header. Omit to
-   * disable impersonation (any header becomes IMPERSONATION_DISABLED 403).
-   */
-  franchiseeLookup?: FranchiseeLookup;
-  /**
-   * Writes impersonation audit rows. Required when franchiseeLookup is
-   * provided; the plugin invokes it once per valid impersonated request.
+   * Optional audit writer used by route handlers. The plugin no longer
+   * writes impersonation rows under the corporate model.
    */
   auditWriter?: AuditLogWriter;
   /**
@@ -204,6 +202,12 @@ export interface AppOptions {
    * lands with the first pilot photo.
    */
   vision?: VisionClient;
+  /**
+   * SupplierProvider registry (phase_supplier_quote_bridge). Defaults to
+   * a fresh registry with `bcAiAgentFactory` registered. Tests pass a
+   * pre-seeded registry (mock factory) so they don't hit real BC.
+   */
+  providerRegistry?: ProviderRegistry;
 }
 
 /**
@@ -310,7 +314,6 @@ export function buildApp(opts: AppOptions = {}) {
     app.register(requestScopePlugin, {
       auth: opts.auth,
       membershipResolver: resolver,
-      franchiseeLookup: opts.franchiseeLookup,
       auditWriter: opts.auditWriter,
     });
     mountAuth(app, opts.auth);
@@ -328,7 +331,9 @@ export function buildApp(opts: AppOptions = {}) {
   // Mount franchisee list + audit log when a Drizzle handle is wired.
   // Needs the scope plugin already registered — buildApp orders that above.
   if (opts.drizzle) {
-    registerFranchiseeRoutes(app, opts.drizzle);
+    registerCorporateRoutes(app, { drizzle: opts.drizzle });
+    registerMarginRoutes(app, { drizzle: opts.drizzle });
+    registerBranchRoutes(app, { drizzle: opts.drizzle });
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
@@ -339,6 +344,7 @@ export function buildApp(opts: AppOptions = {}) {
     );
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
+    registerPricebookSuggestionsRoutes(app, opts.drizzle);
     registerInvoiceRoutes(app, opts.drizzle);
     const stripe = opts.stripe ?? resolveStripeClient();
     const publicBaseUrl = opts.publicBaseUrl ?? 'http://localhost:3000';
@@ -350,7 +356,6 @@ export function buildApp(opts: AppOptions = {}) {
     });
     const emailSender = wrapped.email;
     const smsSender = wrapped.sms;
-    registerConnectRoutes(app, opts.drizzle, { stripe, publicBaseUrl });
     registerInvoicePaymentRoutes(app, opts.drizzle, {
       stripe,
       emailSender,
@@ -358,8 +363,6 @@ export function buildApp(opts: AppOptions = {}) {
       publicBaseUrl,
     });
     registerStripeWebhook(app, opts.drizzle, stripe);
-    registerAgreementRoutes(app, opts.drizzle);
-    registerStatementRoutes(app, opts.drizzle, { stripe });
     registerPhoneRoutes(
       app,
       opts.drizzle,
@@ -381,8 +384,12 @@ export function buildApp(opts: AppOptions = {}) {
       stripe,
       publicBaseUrl,
     });
-    registerFranchisorConsoleRoutes(app, opts.drizzle);
     registerOwnerDashboardRoutes(app, opts.drizzle);
+    const providerRegistry = opts.providerRegistry ?? defaultProviderRegistry();
+    registerQuoteRoutes(app, {
+      drizzle: opts.drizzle,
+      providerRegistry,
+    });
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER
     // the EventBus is resolved.

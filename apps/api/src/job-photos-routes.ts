@@ -47,31 +47,25 @@ const FinaliseSchema = z.object({
 });
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 async function loadJobInScope(
   db: Drizzle,
   scope: RequestScope,
   jobId: string,
-): Promise<{ id: string; franchiseeId: string } | null> {
+): Promise<{ id: string; branchId: string } | null> {
   const rows = await db
-    .select({ id: jobs.id, franchiseeId: jobs.franchiseeId, deletedAt: jobs.deletedAt })
+    .select({ id: jobs.id, branchId: jobs.branchId, deletedAt: jobs.deletedAt })
     .from(jobs)
     .where(eq(jobs.id, jobId));
   const row = rows[0];
   if (!row || row.deletedAt !== null) return null;
   const fe = scopedFranchiseeId(scope);
-  if (fe && row.franchiseeId !== fe) return null;
-  if (scope.type === 'franchisor') {
-    const feRows = await db
-      .select({ franchisorId: schema.franchisees.franchisorId })
-      .from(schema.franchisees)
-      .where(eq(schema.franchisees.id, row.franchiseeId));
-    if (feRows[0]?.franchisorId !== scope.franchisorId) return null;
-  }
-  return { id: row.id, franchiseeId: row.franchiseeId };
+  if (fe && row.branchId !== fe) return null;
+  // CHR-02: corporate sees every branch's jobs natively.
+  return { id: row.id, branchId: row.branchId };
 }
 
 export function registerJobPhotoRoutes(
@@ -163,7 +157,7 @@ export function registerJobPhotoRoutes(
         .insert(jobPhotos)
         .values({
           jobId: req.params.id,
-          franchiseeId: job.franchiseeId,
+          branchId: job.branchId,
           storageKey: parsed.data.storageKey,
           contentType: parsed.data.contentType,
           sizeBytes: parsed.data.sizeBytes,

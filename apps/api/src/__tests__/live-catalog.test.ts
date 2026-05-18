@@ -13,7 +13,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -26,11 +25,10 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let ids: { franchisorId: string };
+let ids: { corporateId: string };
 let cookies: {
-  platform: string;
-  franchisorAdmin: string;
-  denverOwner: string;
+  corporateAdmin: string;
+  denverManager: string;
   denverDispatcher: string;
 };
 
@@ -66,8 +64,8 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function createFranchisorAdmin(franchisorId: string): Promise<string> {
-  const email = 'catalog-fradmin@elevateddoors.test';
+async function createCorporateAdmin(corporateId: string): Promise<string> {
+  const email = 'catalog-coadmin@elevateddoors.test';
   await app.inject({
     method: 'POST',
     url: '/api/auth/sign-up/email',
@@ -81,12 +79,12 @@ async function createFranchisorAdmin(franchisorId: string): Promise<string> {
     .where(eq(users.email, email));
   await pool.query(
     `INSERT INTO memberships (user_id, scope_type, scope_id, role)
-       SELECT $1, 'franchisor'::scope_type, $2, 'franchisor_admin'::role
+       SELECT $1, 'corporate'::scope_type, $2, 'corporate_admin'::role
        WHERE NOT EXISTS (
          SELECT 1 FROM memberships
-          WHERE user_id=$1 AND scope_type='franchisor' AND scope_id=$2 AND deleted_at IS NULL
+          WHERE user_id=$1 AND scope_type='corporate' AND scope_id=$2 AND deleted_at IS NULL
        )`,
-    [userId, franchisorId],
+    [userId, corporateId],
   );
   return await signIn(email);
 }
@@ -97,7 +95,7 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
   const seed = await runSeed(pool);
-  ids = { franchisorId: seed.franchisorId };
+  ids = { corporateId: seed.corporateId };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
     db,
@@ -112,16 +110,14 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
   });
   await app.ready();
   cookies = {
-    platform: await signIn('joey@opendc.ca'),
-    franchisorAdmin: await createFranchisorAdmin(ids.franchisorId),
-    denverOwner: await signIn('denver.owner@elevateddoors.test'),
+    corporateAdmin: await createCorporateAdmin(ids.corporateId),
+    denverManager: await signIn('denver.owner@elevateddoors.test'),
     denverDispatcher: await signIn('denver.dispatcher@elevateddoors.test'),
   };
 }, 60_000);
@@ -141,11 +137,11 @@ describe('PB-02 / templates CRUD', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('franchisor_admin creates → lists → updates → publishes → archives', async () => {
+  it('corporate_admin creates → lists → updates → publishes → archives', async () => {
     const create = await app.inject({
       method: 'POST',
       url: '/api/v1/catalog/templates',
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Summer 2026', slug: 'summer-2026' }),
     });
     expect(create.statusCode).toBe(201);
@@ -155,7 +151,7 @@ describe('PB-02 / templates CRUD', () => {
     const update = await app.inject({
       method: 'PATCH',
       url: `/api/v1/catalog/templates/${t.id}`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'Summer 2026 (v2)' }),
     });
     expect(update.statusCode).toBe(200);
@@ -164,7 +160,7 @@ describe('PB-02 / templates CRUD', () => {
     const publish = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${t.id}/publish`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(publish.statusCode).toBe(200);
     expect(publish.json().data.status).toBe('published');
@@ -173,7 +169,7 @@ describe('PB-02 / templates CRUD', () => {
     const lockedUpdate = await app.inject({
       method: 'PATCH',
       url: `/api/v1/catalog/templates/${t.id}`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'locked' }),
     });
     expect(lockedUpdate.statusCode).toBe(409);
@@ -182,7 +178,7 @@ describe('PB-02 / templates CRUD', () => {
     const archive = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${t.id}/archive`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(archive.statusCode).toBe(200);
     expect(archive.json().data.status).toBe('archived');
@@ -193,7 +189,7 @@ describe('PB-02 / templates CRUD', () => {
       const res = await app.inject({
         method: 'POST',
         url: '/api/v1/catalog/templates',
-        headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+        headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
         payload: JSON.stringify({ name: slug, slug }),
       });
       return res.json().data.id as string;
@@ -202,48 +198,32 @@ describe('PB-02 / templates CRUD', () => {
     await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${t1}/publish`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     const t2 = await mk('atomic-two');
     await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${t2}/publish`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
 
-    // Only one published template should remain for this franchisor.
+    // Only one published template should remain (catalog is corporate-wide).
     const { rows } = await pool.query(
       `SELECT count(*)::int AS c FROM service_catalog_templates
-        WHERE franchisor_id = $1 AND status = 'published'`,
-      [ids.franchisorId],
+        WHERE status = 'published'`,
     );
     expect((rows[0] as { c: number }).c).toBe(1);
   });
 
-  it('franchisee-scoped users get 403 CATALOG_READONLY on writes', async () => {
+  it('branch-scoped users get 403 CATALOG_READONLY on writes', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/catalog/templates',
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: 'nope', slug: 'nope' }),
     });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.code).toBe('CATALOG_READONLY');
-  });
-
-  it('platform admin can create a template by passing franchisorId', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/catalog/templates',
-      headers: { cookie: cookies.platform, 'content-type': 'application/json' },
-      payload: JSON.stringify({
-        name: 'Platform-created',
-        slug: 'platform-created',
-        franchisorId: ids.franchisorId,
-      }),
-    });
-    expect(res.statusCode).toBe(201);
-    expect(res.json().data.franchisorId).toBe(ids.franchisorId);
   });
 });
 
@@ -253,7 +233,7 @@ describe('PB-02 / items CRUD', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/catalog/templates',
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ name: `D-${Date.now()}`, slug: `d-${Date.now()}` }),
     });
     draftId = res.json().data.id as string;
@@ -263,7 +243,7 @@ describe('PB-02 / items CRUD', () => {
     const create = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/items`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({
         sku: 'INST-2CAR',
         name: '2-car garage door install',
@@ -280,7 +260,7 @@ describe('PB-02 / items CRUD', () => {
     const list = await app.inject({
       method: 'GET',
       url: `/api/v1/catalog/templates/${draftId}/items`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(list.statusCode).toBe(200);
     const ids = (list.json().data as Array<{ id: string }>).map((r) => r.id);
@@ -289,7 +269,7 @@ describe('PB-02 / items CRUD', () => {
     const patch = await app.inject({
       method: 'PATCH',
       url: `/api/v1/catalog/templates/${draftId}/items/${id}`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ basePrice: 1900 }),
     });
     expect(patch.statusCode).toBe(200);
@@ -298,7 +278,7 @@ describe('PB-02 / items CRUD', () => {
     const del = await app.inject({
       method: 'DELETE',
       url: `/api/v1/catalog/templates/${draftId}/items/${id}`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(del.statusCode).toBe(200);
   });
@@ -307,7 +287,7 @@ describe('PB-02 / items CRUD', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/items`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({
         sku: 'BAD',
         name: 'bad',
@@ -325,12 +305,12 @@ describe('PB-02 / items CRUD', () => {
     await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/publish`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/items`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({
         sku: 'LOCKED',
         name: 'locked',
@@ -343,7 +323,7 @@ describe('PB-02 / items CRUD', () => {
     expect(res.json().error.code).toBe('TEMPLATE_NOT_EDITABLE');
   });
 
-  it('franchisee-scoped users cannot write items either', async () => {
+  it('branch-scoped users cannot write items either', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/items`,
@@ -360,12 +340,12 @@ describe('PB-02 / items CRUD', () => {
     expect(res.json().error.code).toBe('CATALOG_READONLY');
   });
 
-  it('franchisee-scoped users CAN list items (read-only policy fires)', async () => {
+  it('branch-scoped users CAN list items (read-only policy fires)', async () => {
     // Add an item as admin, then list as a dispatcher.
     await app.inject({
       method: 'POST',
       url: `/api/v1/catalog/templates/${draftId}/items`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({
         sku: 'READ-1',
         name: 'readable',

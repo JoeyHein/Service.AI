@@ -101,7 +101,7 @@ export class CallOrchestrator {
     const convRows = await this.opts.db
       .insert(aiConversations)
       .values({
-        franchiseeId: this.opts.tenant.franchiseeId,
+        branchId: this.opts.tenant.branchId,
         capability: 'csr.voice',
       })
       .returning();
@@ -109,7 +109,7 @@ export class CallOrchestrator {
     const csRows = await this.opts.db
       .insert(callSessions)
       .values({
-        franchiseeId: this.opts.tenant.franchiseeId,
+        branchId: this.opts.tenant.branchId,
         conversationId: this.conversationId,
         twilioCallSid: this.opts.callSid,
         fromE164: this.opts.fromE164,
@@ -145,13 +145,13 @@ export class CallOrchestrator {
       tenant: this.opts.tenant,
     });
     const ctx: ToolContext = {
-      franchiseeId: this.opts.tenant.franchiseeId,
+      branchId: this.opts.tenant.branchId,
       userId: null,
       guardrails: this.opts.tenant.guardrails,
       invocation: { confidence: 1 },
     };
     const systemPrompt = csrSystemPrompt({
-      brandName: this.opts.tenant.franchiseeName,
+      brandName: this.opts.tenant.branchName,
     });
 
     // Aggregate the full call into a single agent session. The
@@ -188,7 +188,7 @@ export class CallOrchestrator {
       if (entry.role === 'assistant' && entry.turn) {
         await this.opts.db.insert(aiMessages).values({
           conversationId: this.conversationId,
-          franchiseeId: this.opts.tenant.franchiseeId,
+          branchId: this.opts.tenant.branchId,
           role: 'assistant',
           content:
             entry.turn.kind === 'text'
@@ -208,7 +208,7 @@ export class CallOrchestrator {
       } else if (entry.role === 'tool' && entry.tool) {
         await this.opts.db.insert(aiMessages).values({
           conversationId: this.conversationId,
-          franchiseeId: this.opts.tenant.franchiseeId,
+          branchId: this.opts.tenant.branchId,
           role: 'tool',
           content: { ok: entry.tool.result.ok },
           toolName: entry.tool.name,

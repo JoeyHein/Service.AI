@@ -28,7 +28,7 @@ import {
   invitations,
   memberships,
   users,
-  franchisees,
+  branches,
   withScope,
   generateInviteToken,
   hashInviteToken,
@@ -48,18 +48,14 @@ export interface InviteRoutesOptions {
   acceptUrlBase: string;
 }
 
+// TODO(CHR-06): rename body field branchId/scopeType for the new corporate
+// route shape (/corporate/branches/:id/invites). Until then this endpoint
+// accepts the existing body keys.
 const CreateInviteSchema = z.object({
   email: z.string().email(),
-  role: z.enum([
-    'franchisor_admin',
-    'franchisee_owner',
-    'location_manager',
-    'dispatcher',
-    'tech',
-    'csr',
-  ]),
-  scopeType: z.enum(['franchisor', 'franchisee', 'location']),
-  franchiseeId: z.string().uuid().optional(),
+  role: z.enum(['manager', 'dispatcher', 'tech', 'csr']),
+  scopeType: z.enum(['branch']),
+  branchId: z.string().uuid(),
   locationId: z.string().uuid().optional(),
 });
 
@@ -70,60 +66,24 @@ function errorEnvelope(code: string, message: string, statusCode: number) {
 }
 
 /**
- * Build the InviteTarget the role matrix checks. Resolves the target's
- * franchisor via DB lookup when a franchiseeId is supplied so cross-tenant
- * attempts are rejected by canInvite rather than silently accepted.
+ * Build the InviteTarget the role matrix checks. Verifies that the target
+ * branch exists so cross-tenant attempts are rejected by canInvite rather
+ * than silently accepted.
  */
 async function resolveTarget(
   db: Drizzle,
   body: CreateInviteBody,
-  inviter: RequestScope,
+  _inviter: RequestScope,
 ): Promise<{ target: InviteTarget } | { error: ReturnType<typeof errorEnvelope> }> {
-  if (body.scopeType === 'franchisor') {
-    const franchisorId =
-      inviter.type === 'franchisor'
-        ? inviter.franchisorId
-        : inviter.type === 'platform'
-          ? body.franchiseeId // allow caller to specify; validated below
-          : inviter.type === 'franchisee'
-            ? inviter.franchisorId
-            : undefined;
-    if (!franchisorId) {
-      return {
-        error: errorEnvelope(
-          'INVALID_TARGET',
-          'franchisor-scoped invite requires caller with a franchisor',
-          400,
-        ),
-      };
-    }
-    const target: InviteTarget = {
-      role: body.role,
-      scopeType: 'franchisor',
-      franchisorId,
-    };
-    return { target };
-  }
-
-  if (!body.franchiseeId) {
-    return {
-      error: errorEnvelope(
-        'INVALID_TARGET',
-        'franchiseeId is required for franchisee/location-scoped invites',
-        400,
-      ),
-    };
-  }
   const rows = await db
-    .select({ franchisorId: franchisees.franchisorId })
-    .from(franchisees)
-    .where(eq(franchisees.id, body.franchiseeId));
-  const parent = rows[0];
-  if (!parent) {
+    .select({ id: branches.id })
+    .from(branches)
+    .where(eq(branches.id, body.branchId));
+  if (!rows[0]) {
     return {
       error: errorEnvelope(
         'INVALID_TARGET',
-        'Target franchisee does not exist',
+        'Target branch does not exist',
         400,
       ),
     };
@@ -131,8 +91,7 @@ async function resolveTarget(
   const target: InviteTarget = {
     role: body.role,
     scopeType: body.scopeType,
-    franchisorId: parent.franchisorId,
-    franchiseeId: body.franchiseeId,
+    branchId: body.branchId,
   };
   if (body.locationId) target.locationId = body.locationId;
   return { target };
@@ -205,8 +164,7 @@ export function registerInviteRoutes(
         email: parsed.data.email.toLowerCase(),
         role: target.role,
         scopeType: target.scopeType,
-        franchisorId: target.franchisorId,
-        franchiseeId: target.franchiseeId ?? null,
+        branchId: target.branchId ?? null,
         locationId: target.locationId ?? null,
         inviterUserId: req.userId,
         expiresAt,
@@ -250,18 +208,16 @@ export function registerInviteRoutes(
         gt(invitations.expiresAt, new Date()),
       );
       const scopeFilter =
-        scope.type === 'platform'
+        scope.type === 'corporate'
           ? undefined
-          : scope.type === 'franchisor'
-            ? eq(invitations.franchisorId, scope.franchisorId)
-            : eq(invitations.franchiseeId, scope.franchiseeId);
+          : eq(invitations.branchId, scope.branchId);
       return tx
         .select({
           id: invitations.id,
           email: invitations.email,
           role: invitations.role,
           scopeType: invitations.scopeType,
-          franchiseeId: invitations.franchiseeId,
+          branchId: invitations.branchId,
           expiresAt: invitations.expiresAt,
           createdAt: invitations.createdAt,
         })
@@ -296,8 +252,7 @@ export function registerInviteRoutes(
         .select({
           id: invitations.id,
           revokedAt: invitations.revokedAt,
-          franchisorId: invitations.franchisorId,
-          franchiseeId: invitations.franchiseeId,
+          branchId: invitations.branchId,
         })
         .from(invitations)
         .where(eq(invitations.id, id));
@@ -305,12 +260,12 @@ export function registerInviteRoutes(
       if (!row) return { found: false as const };
       // Defence-in-depth app-layer scope check — RLS filters rows in
       // production (non-superuser DB role), but the dev / admin-pool
-      // connection bypasses RLS and would otherwise let a denver_owner
-      // revoke an austin invite. We reject by pretending it doesn't exist.
+      // connection bypasses RLS and would otherwise let a branch user
+      // revoke another branch's invite. We reject by pretending it
+      // doesn't exist.
       const inScope =
-        scope.type === 'platform' ||
-        (scope.type === 'franchisor' && row.franchisorId === scope.franchisorId) ||
-        (scope.type === 'franchisee' && row.franchiseeId === scope.franchiseeId);
+        scope.type === 'corporate' ||
+        (scope.type === 'branch' && row.branchId === scope.branchId);
       if (!inScope) return { found: false as const };
       if (row.revokedAt !== null) return { found: true as const, alreadyRevoked: true };
       await tx
@@ -455,11 +410,7 @@ export function registerInviteRoutes(
       }
 
       const scopeId =
-        row.scopeType === 'franchisor'
-          ? row.franchisorId
-          : row.scopeType === 'location'
-            ? row.locationId
-            : row.franchiseeId;
+        row.scopeType === 'location' ? row.locationId : row.branchId;
 
       const membership = await db.transaction(async (tx) => {
         const inserted = await tx
@@ -469,7 +420,7 @@ export function registerInviteRoutes(
             scopeType: row.scopeType,
             scopeId: scopeId ?? null,
             role: row.role,
-            franchiseeId: row.franchiseeId,
+            branchId: row.branchId,
             locationId: row.locationId,
           })
           .returning({ id: memberships.id });
@@ -490,10 +441,9 @@ export function registerInviteRoutes(
           membershipId: membership.id,
           role: row.role,
           scopeType: row.scopeType,
-          franchiseeId: row.franchiseeId,
+          branchId: row.branchId,
         },
       });
     },
   );
 }
-

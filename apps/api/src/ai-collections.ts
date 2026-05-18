@@ -23,9 +23,9 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   aiConversations,
   aiMessages,
+  branches,
   collectionsDrafts,
   customers,
-  franchisees,
   invoices,
   paymentRetries,
   payments,
@@ -52,7 +52,7 @@ export interface CollectionsDeps {
 
 export interface CollectionsDraftInput {
   scope: RequestScope;
-  franchiseeId: string;
+  branchId: string;
   invoiceId: string;
   tone: CollectionsTone;
   /** Base URL used to compose the payment page URL. */
@@ -127,8 +127,8 @@ export async function collectionsDraft(
 ): Promise<CollectionsDraftResult | null> {
   const feRows = await deps.db
     .select()
-    .from(franchisees)
-    .where(eq(franchisees.id, input.franchiseeId));
+    .from(branches)
+    .where(eq(branches.id, input.branchId));
   const fe = feRows[0];
   if (!fe) return null;
   const invRows = await deps.db
@@ -136,7 +136,7 @@ export async function collectionsDraft(
     .from(invoices)
     .where(eq(invoices.id, input.invoiceId));
   const invoice = invRows[0];
-  if (!invoice || invoice.franchiseeId !== input.franchiseeId) return null;
+  if (!invoice || invoice.branchId !== input.branchId) return null;
   const custRows = await deps.db
     .select()
     .from(customers)
@@ -172,7 +172,7 @@ export async function collectionsDraft(
   const conv = await deps.db
     .insert(aiConversations)
     .values({
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       capability: 'collections',
       subjectCustomerId: customer.id,
       subjectJobId: invoice.jobId,
@@ -186,6 +186,16 @@ export async function collectionsDraft(
   const paymentUrl = invoice.paymentLinkToken
     ? `${input.publicBaseUrl}/invoices/${invoice.paymentLinkToken}/pay`
     : `${input.publicBaseUrl}/invoices`;
+  // Pull a brand-voice string out of branches.brand_voice JSONB if set.
+  // Schema is open-ended ({ notes?: string, ... }); v1 just honors a
+  // top-level `notes` field. Branches inherit their corporate parent's
+  // voice when their own is empty — that fallback lands in a later UI
+  // pass; for now the branch-level value is the source of truth.
+  let brandVoice: string | undefined;
+  const bv = fe.brandVoice as Record<string, unknown> | null;
+  if (bv && typeof bv === 'object' && typeof bv['notes'] === 'string') {
+    brandVoice = bv['notes'] as string;
+  }
   const ctx = {
     tone: input.tone,
     brandName: fe.name,
@@ -194,6 +204,7 @@ export async function collectionsDraft(
     amountDue: invoice.total,
     daysPastDue: daysPast,
     paymentUrl,
+    brandVoice,
   };
 
   const turn = await deps.ai.turn({
@@ -211,7 +222,7 @@ export async function collectionsDraft(
 
   await deps.db.insert(aiMessages).values({
     conversationId,
-    franchiseeId: input.franchiseeId,
+    branchId: input.branchId,
     role: 'assistant',
     content: copy,
     confidence: '1',
@@ -223,7 +234,7 @@ export async function collectionsDraft(
   const inserted = await deps.db
     .insert(collectionsDrafts)
     .values({
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       invoiceId: invoice.id,
       conversationId,
       tone: input.tone,
@@ -301,7 +312,7 @@ export interface AgedInvoiceTuple {
 export async function selectAgedInvoices(
   tx: ScopedTx | Drizzle,
   input: {
-    franchiseeId: string;
+    branchId: string;
     now?: Date;
     cadence?: AgingCadence;
   },
@@ -325,7 +336,7 @@ export async function selectAgedInvoices(
     .from(invoices)
     .where(
       and(
-        eq(invoices.franchiseeId, input.franchiseeId),
+        eq(invoices.branchId, input.branchId),
         or(eq(invoices.status, 'sent'), eq(invoices.status, 'finalized')),
         isNull(invoices.deletedAt),
       ),
@@ -376,7 +387,7 @@ export async function selectAgedInvoices(
 
 export interface SweepInput {
   scope: RequestScope;
-  franchiseeId: string;
+  branchId: string;
   publicBaseUrl: string;
   /** Override "now" for testability. */
   now?: Date;
@@ -394,14 +405,17 @@ export async function runCollectionsSweep(
 ): Promise<SweepResult> {
   const feRows = await deps.db
     .select()
-    .from(franchisees)
-    .where(eq(franchisees.id, input.franchiseeId));
+    .from(branches)
+    .where(eq(branches.id, input.branchId));
   const fe = feRows[0];
   if (!fe) return { inspected: 0, drafted: 0, draftIds: [] };
-  const cadence = cadenceFor(fe.aiGuardrails);
+  // Per-branch aiGuardrails were removed in the corporate hub redesign;
+  // every branch shares the default cadence until configurable per-branch
+  // guardrails are reintroduced.
+  const cadence = cadenceFor(null);
 
   const tuples = await selectAgedInvoices(deps.db, {
-    franchiseeId: input.franchiseeId,
+    branchId: input.branchId,
     now: input.now,
     cadence,
   });
@@ -409,7 +423,7 @@ export async function runCollectionsSweep(
   for (const t of tuples) {
     const r = await collectionsDraft(deps, {
       scope: input.scope,
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       invoiceId: t.invoiceId,
       tone: t.tone,
       publicBaseUrl: input.publicBaseUrl,
@@ -433,7 +447,7 @@ const RETRY_DELAY_MS: Record<string, number> = {
 const DEFAULT_RETRY_DELAY_MS = 2 * 24 * 60 * 60 * 1000; // 2 days
 
 export interface ScheduleRetryInput {
-  franchiseeId: string;
+  branchId: string;
   invoiceId: string;
   paymentId?: string | null;
   failureCode: string;
@@ -469,7 +483,7 @@ export async function schedulePaymentRetry(
   const inserted = await db
     .insert(paymentRetries)
     .values({
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       invoiceId: input.invoiceId,
       paymentId: input.paymentId ?? null,
       failureCode: input.failureCode,
@@ -499,7 +513,7 @@ export interface CollectionsMetrics {
  */
 export async function computeCollectionsMetrics(
   tx: ScopedTx | Drizzle,
-  input: { franchiseeId: string; now?: Date },
+  input: { branchId: string; now?: Date },
 ): Promise<CollectionsMetrics> {
   const now = input.now ?? new Date();
   const periodStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -513,7 +527,7 @@ export async function computeCollectionsMetrics(
     .from(invoices)
     .where(
       and(
-        eq(invoices.franchiseeId, input.franchiseeId),
+        eq(invoices.branchId, input.branchId),
         gte(invoices.finalizedAt, periodStart),
         isNull(invoices.deletedAt),
       ),
@@ -538,7 +552,7 @@ export async function computeCollectionsMetrics(
     .from(paymentRetries)
     .where(
       and(
-        eq(paymentRetries.franchiseeId, input.franchiseeId),
+        eq(paymentRetries.branchId, input.branchId),
         gte(paymentRetries.createdAt, periodStart),
       ),
     );
@@ -552,7 +566,7 @@ export async function computeCollectionsMetrics(
         createdAt: payments.createdAt,
       })
       .from(payments)
-      .where(eq(payments.franchiseeId, input.franchiseeId));
+      .where(eq(payments.branchId, input.branchId));
     for (const p of paymentRows) {
       if (!retriedInvoiceIds.has(p.invoiceId)) continue;
       // Recovered = payment landed AFTER the most recent retry.

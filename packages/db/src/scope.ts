@@ -2,12 +2,13 @@
  * Request scope types and GUC-setting helper.
  *
  * `RequestScope` is the canonical description of "who is calling, and what
- * slice of the tenant tree they can act on". It is resolved by the API's
- * RequestScope Fastify plugin from session + memberships + optional
- * impersonation, then threaded through every scoped query via `withScope`.
+ * slice of the tenant tree they can act on" under the corporate hub model
+ * (CHR phase). It is resolved by the API's RequestScope Fastify plugin from
+ * session + memberships, then threaded through every scoped query via
+ * `withScope`.
  *
- * `withScope(scope, fn)` opens a transaction, sets three local GUCs that the
- * RLS policies (migration 0003) read, runs `fn(tx)` inside that transaction,
+ * `withScope(scope, fn)` opens a transaction, sets two local GUCs that the
+ * RLS policies (migration 0016) read, runs `fn(tx)` inside that transaction,
  * and commits or rolls back. The `is_local = true` flag on set_config means
  * the GUCs auto-clear at transaction end — one request cannot leak scope to
  * the next.
@@ -21,70 +22,55 @@ type AppSchema = typeof schema;
 /** The Drizzle transaction handle passed to `withScope`'s callback. */
 export type ScopedTx = NodePgTransaction<AppSchema, ExtractTablesWithRelations<AppSchema>>;
 
-/** Roles that can only see a single franchisee slice of the data. */
-export type FranchiseeRole =
-  | 'franchisee_owner'
-  | 'location_manager'
-  | 'dispatcher'
-  | 'tech'
-  | 'csr';
+/** Roles that can only see a single branch slice of the data. */
+export type BranchRole = 'manager' | 'dispatcher' | 'tech' | 'csr';
+
+/** Every role recognised by the corporate hub model. */
+export type Role = 'corporate_admin' | BranchRole;
 
 /**
  * Discriminated by `type` so that handlers can pattern-match on the scope
  * shape rather than guarding on undefined fields. Every variant carries the
  * authenticated `userId` for audit-log authorship.
+ *
+ * The `corporate` variant has no branch restriction — corporate_admin sees
+ * every branch. The `branch` variant pins the caller to a single branch
+ * and is enforced by RLS at the DB layer via `app.branch_id`.
  */
 export type RequestScope =
-  | { type: 'platform'; userId: string; role: 'platform_admin' }
+  | { type: 'corporate'; userId: string; role: 'corporate_admin' }
   | {
-      type: 'franchisor';
+      type: 'branch';
       userId: string;
-      role: 'franchisor_admin';
-      franchisorId: string;
-    }
-  | {
-      type: 'franchisee';
-      userId: string;
-      role: FranchiseeRole;
-      franchisorId: string;
-      franchiseeId: string;
-      locationId?: string | null;
+      role: BranchRole;
+      branchId: string;
     };
 
 export interface ScopeGucs {
   role: string;
-  franchisorId: string;
-  franchiseeId: string;
+  branchId: string;
   userId: string;
 }
 
 /**
- * Flatten a RequestScope into the three string values that the RLS policies
- * read via `current_setting('app.*', true)`. Unset values become empty
- * strings; the policy migration uses `nullif(..., '')::uuid` so empty strings
- * coerce back to NULL and fail the match safely.
+ * Flatten a RequestScope into the string values that the RLS policies read
+ * via `current_setting('app.*', true)`. The corporate variant sets branchId
+ * to an empty string; the policy migration uses `nullif(..., '')::uuid` so
+ * empty strings coerce back to NULL and fail the scoped match safely (only
+ * the `_corporate_admin` policy will permit the read).
  */
 export function scopeToGucs(scope: RequestScope): ScopeGucs {
   switch (scope.type) {
-    case 'platform':
+    case 'corporate':
       return {
-        role: 'platform_admin',
-        franchisorId: '',
-        franchiseeId: '',
+        role: 'corporate_admin',
+        branchId: '',
         userId: scope.userId,
       };
-    case 'franchisor':
-      return {
-        role: 'franchisor_admin',
-        franchisorId: scope.franchisorId,
-        franchiseeId: '',
-        userId: scope.userId,
-      };
-    case 'franchisee':
+    case 'branch':
       return {
         role: scope.role,
-        franchisorId: scope.franchisorId,
-        franchiseeId: scope.franchiseeId,
+        branchId: scope.branchId,
         userId: scope.userId,
       };
   }
@@ -106,12 +92,17 @@ export async function withScope<T>(
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.role', ${gucs.role}, true)`);
     await tx.execute(
-      sql`select set_config('app.franchisor_id', ${gucs.franchisorId}, true)`,
-    );
-    await tx.execute(
-      sql`select set_config('app.franchisee_id', ${gucs.franchiseeId}, true)`,
+      sql`select set_config('app.branch_id', ${gucs.branchId}, true)`,
     );
     await tx.execute(sql`select set_config('app.user_id', ${gucs.userId}, true)`);
     return fn(tx);
   });
 }
+
+/**
+ * Backwards-compat alias retained for the CHR-02 transition. Existing call
+ * sites under apps/api still import `FranchiseeRole` from this package;
+ * CHR-03 removes the alias once every consumer has been swept.
+ * @deprecated use BranchRole. Removed in CHR-03.
+ */
+export type FranchiseeRole = BranchRole;

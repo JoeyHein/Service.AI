@@ -147,7 +147,7 @@ export function buildVoiceApp(opts: VoiceAppOpts = {}): FastifyInstance {
       .code(200)
       .header('content-type', 'text/xml')
       .send(
-        `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${streamUrl}"><Parameter name="franchiseeId" value="${tenant.franchiseeId}"/><Parameter name="toE164" value="${to}"/><Parameter name="fromE164" value="${from}"/></Stream></Connect></Response>`,
+        `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${streamUrl}"><Parameter name="branchId" value="${tenant.branchId}"/><Parameter name="toE164" value="${to}"/><Parameter name="fromE164" value="${from}"/></Stream></Connect></Response>`,
       );
   });
 

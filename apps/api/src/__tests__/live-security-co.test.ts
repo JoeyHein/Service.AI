@@ -13,7 +13,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { stubAIClient } from '@service-ai/ai';
@@ -27,7 +26,7 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 let cookies: {
   denverDispatcher: string;
   denverOwner: string;
@@ -71,37 +70,37 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function seedDraft(franchiseeId: string, tokenPrefix: string): Promise<{ draftId: string; retryId: string }> {
+async function seedDraft(branchId: string, tokenPrefix: string): Promise<{ draftId: string; retryId: string }> {
   const cust = await pool.query<{ id: string }>(
-    `INSERT INTO customers (franchisee_id, name) VALUES ($1, $2) RETURNING id`,
-    [franchiseeId, `sec-${tokenPrefix}`],
+    `INSERT INTO customers (branch_id, name) VALUES ($1, $2) RETURNING id`,
+    [branchId, `sec-${tokenPrefix}`],
   );
   const job = await pool.query<{ id: string }>(
-    `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+    `INSERT INTO jobs (branch_id, customer_id, title, status)
        VALUES ($1, $2, 'sec job', 'completed') RETURNING id`,
-    [franchiseeId, cust.rows[0]!.id],
+    [branchId, cust.rows[0]!.id],
   );
   const inv = await pool.query<{ id: string }>(
     `INSERT INTO invoices
-         (franchisee_id, job_id, customer_id, status, subtotal, tax_rate,
-          tax_amount, total, application_fee_amount, finalized_at,
+         (branch_id, job_id, customer_id, status, subtotal, tax_rate,
+          tax_amount, total, finalized_at,
           stripe_payment_intent_id, payment_link_token)
-       VALUES ($1, $2, $3, 'sent', 100.00, 0, 0, 100.00, 5.00,
+       VALUES ($1, $2, $3, 'sent', 100.00, 0, 0, 100.00,
                NOW() - INTERVAL '8 days', $4, $5)
        RETURNING id`,
-    [franchiseeId, job.rows[0]!.id, cust.rows[0]!.id, `pi_sec_${tokenPrefix}`, `${tokenPrefix}-tok-00000000000000000000000000000`],
+    [branchId, job.rows[0]!.id, cust.rows[0]!.id, `pi_sec_${tokenPrefix}`, `${tokenPrefix}-tok-00000000000000000000000000000`],
   );
   const draft = await pool.query<{ id: string }>(
     `INSERT INTO collections_drafts
-         (franchisee_id, invoice_id, tone, sms_body, email_subject, email_body)
+         (branch_id, invoice_id, tone, sms_body, email_subject, email_body)
        VALUES ($1, $2, 'friendly', 'hi', 's', 'b') RETURNING id`,
-    [franchiseeId, inv.rows[0]!.id],
+    [branchId, inv.rows[0]!.id],
   );
   const retry = await pool.query<{ id: string }>(
     `INSERT INTO payment_retries
-         (franchisee_id, invoice_id, failure_code, scheduled_for, status)
+         (branch_id, invoice_id, failure_code, scheduled_for, status)
        VALUES ($1, $2, 'card_declined', NOW(), 'scheduled') RETURNING id`,
-    [franchiseeId, inv.rows[0]!.id],
+    [branchId, inv.rows[0]!.id],
   );
   return { draftId: draft.rows[0]!.id, retryId: retry.rows[0]!.id };
 }
@@ -113,9 +112,9 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -131,7 +130,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -357,7 +355,7 @@ describe('CO-07 / state machine + validation', () => {
     expect(second.json().error.code).toBe('RETRY_NOT_SCHEDULED');
   });
 
-  it('metrics endpoint returns shape for franchisee-scoped caller', async () => {
+  it('metrics endpoint returns shape for branch-scoped caller', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/collections/metrics',
@@ -376,17 +374,17 @@ describe('CO-07 / state machine + validation', () => {
 describe('CO-07 / webhook retry scheduling', () => {
   it('webhook schedules one retry row per failed event id', async () => {
     const cust = await pool.query<{ id: string }>(
-      `INSERT INTO customers (franchisee_id, name) VALUES ($1, 'Dup') RETURNING id`,
+      `INSERT INTO customers (branch_id, name) VALUES ($1, 'Dup') RETURNING id`,
       [ids.denverId],
     );
     const job = await pool.query<{ id: string }>(
-      `INSERT INTO jobs (franchisee_id, customer_id, title, status)
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
          VALUES ($1, $2, 'dup', 'scheduled') RETURNING id`,
       [ids.denverId, cust.rows[0]!.id],
     );
     const inv = await pool.query<{ id: string }>(
       `INSERT INTO invoices
-           (franchisee_id, job_id, customer_id, status, subtotal, tax_rate,
+           (branch_id, job_id, customer_id, status, subtotal, tax_rate,
             tax_amount, total, finalized_at, stripe_payment_intent_id)
          VALUES ($1, $2, $3, 'sent', 100.00, 0, 0, 100.00, NOW(), 'pi_dup_retry')
          RETURNING id`,

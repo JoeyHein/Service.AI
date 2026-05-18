@@ -15,7 +15,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -27,8 +26,8 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let ids: { franchisorId: string; denverId: string; austinId: string };
-let cookies: { franchisorAdmin: string; denverOwner: string; denverTech: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
+let cookies: { corporateAdmin: string; denverManager: string; denverTech: string };
 
 async function checkReachable(): Promise<boolean> {
   const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
@@ -61,8 +60,8 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function createFranchisorAdmin(franchisorId: string): Promise<string> {
-  const email = 'cv06-fradmin@elevateddoors.test';
+async function createCorporateAdmin(corporateId: string): Promise<string> {
+  const email = 'cv06-coadmin@elevateddoors.test';
   await app.inject({
     method: 'POST',
     url: '/api/auth/sign-up/email',
@@ -76,12 +75,12 @@ async function createFranchisorAdmin(franchisorId: string): Promise<string> {
     .where(eq(users.email, email));
   await pool.query(
     `INSERT INTO memberships (user_id, scope_type, scope_id, role)
-       SELECT $1, 'franchisor'::scope_type, $2, 'franchisor_admin'::role
+       SELECT $1, 'corporate'::scope_type, $2, 'corporate_admin'::role
        WHERE NOT EXISTS (
          SELECT 1 FROM memberships
-          WHERE user_id=$1 AND scope_type='franchisor' AND scope_id=$2 AND deleted_at IS NULL
+          WHERE user_id=$1 AND scope_type='corporate' AND scope_id=$2 AND deleted_at IS NULL
        )`,
-    [userId, franchisorId],
+    [userId, corporateId],
   );
   return await signIn(email);
 }
@@ -93,9 +92,9 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -111,15 +110,14 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
   });
   await app.ready();
   cookies = {
-    franchisorAdmin: await createFranchisorAdmin(ids.franchisorId),
-    denverOwner: await signIn('denver.owner@elevateddoors.test'),
+    corporateAdmin: await createCorporateAdmin(ids.corporateId),
+    denverManager: await signIn('denver.owner@elevateddoors.test'),
     denverTech: await signIn('denver.tech1@elevateddoors.test'),
   };
 }, 60_000);
@@ -134,11 +132,11 @@ beforeEach((ctx) => {
 });
 
 describe('CV-06 / phone provisioning', () => {
-  it('provisions a stable number for a franchisee', async () => {
+  it('provisions a stable number for a branch', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/franchisees/${ids.denverId}/phone/provision`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(201);
@@ -150,13 +148,13 @@ describe('CV-06 / phone provisioning', () => {
     const a = await app.inject({
       method: 'POST',
       url: `/api/v1/franchisees/${ids.denverId}/phone/provision`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: '{}',
     });
     const b = await app.inject({
       method: 'POST',
       url: `/api/v1/franchisees/${ids.denverId}/phone/provision`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(b.statusCode).toBe(200);
@@ -174,11 +172,11 @@ describe('CV-06 / phone provisioning', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('owner → 403 FORBIDDEN', async () => {
+  it('manager → 403 FORBIDDEN', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/franchisees/${ids.denverId}/phone/provision`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(403);
@@ -198,7 +196,7 @@ describe('CV-06 / phone provisioning', () => {
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/franchisees/${ids.denverId}/phone`,
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.phoneNumberE164).toMatch(/^\+1555/);
@@ -206,35 +204,28 @@ describe('CV-06 / phone provisioning', () => {
 });
 
 describe('CV-06 / guardrails PATCH', () => {
-  it('admin can update guardrails', async () => {
+  // Per-branch ai_guardrails was removed by the corporate hub redesign
+  // (migration 0016 dropped the column). The route is preserved as a
+  // 410 GONE stub so the web UI gets a deterministic error code.
+  it('returns 410 GUARDRAILS_REMOVED for corporate admin', async () => {
     const res = await app.inject({
       method: 'PATCH',
       url: `/api/v1/franchisees/${ids.austinId}/ai-guardrails`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
+      headers: { cookie: cookies.corporateAdmin, 'content-type': 'application/json' },
       payload: JSON.stringify({ confidenceThreshold: 0.9, undoWindowSeconds: 1800 }),
     });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().data.confidenceThreshold).toBe(0.9);
-    expect(res.json().data.undoWindowSeconds).toBe(1800);
+    expect(res.statusCode).toBe(410);
+    expect(res.json().error.code).toBe('GUARDRAILS_REMOVED');
   });
 
-  it('non-admin → 403', async () => {
+  it('returns 410 GUARDRAILS_REMOVED for non-admin too (gate is gone, not access)', async () => {
     const res = await app.inject({
       method: 'PATCH',
       url: `/api/v1/franchisees/${ids.denverId}/ai-guardrails`,
       headers: { cookie: cookies.denverTech, 'content-type': 'application/json' },
       payload: JSON.stringify({ confidenceThreshold: 0.1 }),
     });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it('threshold outside [0,1] → 400', async () => {
-    const res = await app.inject({
-      method: 'PATCH',
-      url: `/api/v1/franchisees/${ids.denverId}/ai-guardrails`,
-      headers: { cookie: cookies.franchisorAdmin, 'content-type': 'application/json' },
-      payload: JSON.stringify({ confidenceThreshold: 1.5 }),
-    });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(410);
+    expect(res.json().error.code).toBe('GUARDRAILS_REMOVED');
   });
 });

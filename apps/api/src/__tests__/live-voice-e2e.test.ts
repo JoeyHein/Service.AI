@@ -16,10 +16,15 @@ import * as schema from '@service-ai/db';
 import {
   callSessions,
   jobs,
-  franchisees,
+  branches,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
+
+// Legacy alias retained so the rest of this test file compiles without
+// per-call renames. The franchisees table itself was renamed to `branches`
+// in migration 0016.
+const franchisees = branches;
 import { runReset, runSeed } from '../seed/index.js';
 import {
   buildCsrToolSet,
@@ -43,7 +48,7 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let db: ReturnType<typeof drizzle<typeof schema>>;
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 
 async function checkReachable(): Promise<boolean> {
   const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
@@ -94,15 +99,15 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   db = drizzle(pool, { schema });
   // Stamp Denver with the deterministic provisioning number
   // so call-context resolves it.
   await pool.query(
-    `UPDATE franchisees SET twilio_phone_number = $1 WHERE id = $2`,
+    `UPDATE branches SET twilio_phone_number = $1 WHERE id = $2`,
     ['+15551234567', ids.denverId],
   );
 }, 60_000);
@@ -117,11 +122,10 @@ beforeEach((ctx) => {
 
 function denverScope(): RequestScope {
   return {
-    type: 'franchisee',
+    type: 'branch',
     userId: 'system-voice',
     role: 'csr',
-    franchisorId: ids.franchisorId,
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
   };
 }
 
@@ -150,11 +154,10 @@ async function runSynthesizedCall(script: AssistantTurn[], audioId?: string) {
         state: {},
         async runScoped(fn) {
           const scope: RequestScope = {
-            type: 'franchisee',
+            type: 'branch',
             userId: 'system-voice',
             role: 'csr',
-            franchisorId: t.franchisorId,
-            franchiseeId: t.franchiseeId,
+            branchId: t.branchId,
           };
           return withScope(db, scope, fn);
         },
@@ -209,7 +212,7 @@ describe('CV-07 / synthesized call happy path', () => {
 
     // Job appears in the denver franchisee's jobs.
     const denverJobs = await withScope(db, denverScope(), (tx) =>
-      tx.select().from(jobs).where(eq(jobs.franchiseeId, ids.denverId)),
+      tx.select().from(jobs).where(eq(jobs.branchId, ids.denverId)),
     );
     expect(
       denverJobs.some((j) => j.title === 'Garage door spring replacement'),
@@ -248,16 +251,15 @@ describe('CV-07 / adversarial', () => {
   it('cross-tenant customerId → INVALID_TARGET, loop continues', async () => {
     // Insert a customer into Austin directly.
     const austinScope: RequestScope = {
-      type: 'franchisee',
+      type: 'branch',
       userId: 'system',
       role: 'csr',
-      franchisorId: ids.franchisorId,
-      franchiseeId: ids.austinId,
+      branchId: ids.austinId,
     };
     const austinCustomerId = await withScope(db, austinScope, async (tx) => {
       const rows = await tx
         .insert(schema.customers)
-        .values({ franchiseeId: ids.austinId, name: 'Austin Ghost' })
+        .values({ branchId: ids.austinId, name: 'Austin Ghost' })
         .returning();
       return rows[0]!.id;
     });
@@ -281,7 +283,7 @@ describe('CV-07 / adversarial', () => {
     expect(bookTool?.tool?.result.error?.code).toBe('INVALID_TARGET');
     // No Austin jobs got written from a Denver call.
     const rows = await pool.query<{ c: string }>(
-      `SELECT count(*) AS c FROM jobs WHERE franchisee_id = $1`,
+      `SELECT count(*) AS c FROM jobs WHERE branch_id = $1`,
       [ids.austinId],
     );
     expect(Number(rows.rows[0]?.c)).toBe(0);

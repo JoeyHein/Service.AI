@@ -19,10 +19,8 @@ export interface DispatchEvent {
     | 'job.assigned'
     | 'job.unassigned'
     | 'job.transitioned';
-  /** Franchisee the event belongs to. Used by SSE scope filtering. */
-  franchiseeId: string;
-  /** Franchisor — so franchisor_admin subscribers can match on this. */
-  franchisorId: string;
+  /** Branch the event belongs to. Used by SSE scope filtering. */
+  branchId: string;
   /** Job id. All events carry this so clients know what to re-fetch. */
   jobId: string;
   /** Additional IDs by event type, ids only (no names / prices / etc.). */

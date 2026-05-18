@@ -6,8 +6,8 @@
  *   POST /api/v1/dispatch/suggestions/:id/approve   apply
  *   POST /api/v1/dispatch/suggestions/:id/reject    reject
  *
- * Role policy: platform_admin + franchisor_admin + franchisee
- * role in { franchisee_owner, location_manager, dispatcher } may
+ * Role policy: corporate_admin + corporate_admin + branch
+ * role in { manager, manager, dispatcher } may
  * touch any of these. Tech + CSR → 403.
  */
 
@@ -36,22 +36,16 @@ export interface SuggestionRoutesDeps {
   distanceMatrix?: DistanceMatrixClient;
 }
 
-const DISPATCH_ROLES = new Set([
-  'franchisee_owner',
-  'location_manager',
-  'dispatcher',
-]);
+const DISPATCH_ROLES = new Set(['manager', 'dispatcher']);
 
 function canDispatch(scope: RequestScope): boolean {
-  if (scope.type === 'platform') return true;
-  if (scope.type === 'franchisor') return true;
-  if (scope.type === 'franchisee' && DISPATCH_ROLES.has(scope.role)) return true;
-  return false;
+  if (scope.type === 'corporate') return true;
+  return DISPATCH_ROLES.has(scope.role);
 }
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 const StatusFilter = z.enum([
@@ -82,18 +76,18 @@ export function registerSuggestionRoutes(
         error: { code: 'FORBIDDEN', message: 'Dispatch permission required' },
       });
     }
-    if (scope.type !== 'franchisee') {
+    if (scope.type !== 'branch') {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Impersonate a franchisee to trigger a dispatcher run',
+          message: 'Dispatcher run requires a branch-scoped caller',
         },
       });
     }
     const result = await runDispatcher(
       { db, ai: deps.ai, distanceMatrix: deps.distanceMatrix },
-      { scope, franchiseeId: scope.franchiseeId },
+      { scope, branchId: scope.branchId },
     );
     return reply.code(201).send({ ok: true, data: result });
   });
@@ -126,7 +120,7 @@ export function registerSuggestionRoutes(
     const feScope = scopedFranchiseeId(scope);
     const rows = await withScope(db, scope, (tx) => {
       const conditions: unknown[] = [];
-      if (feScope) conditions.push(eq(aiSuggestions.franchiseeId, feScope));
+      if (feScope) conditions.push(eq(aiSuggestions.branchId, feScope));
       if (statusParsed && statusParsed.success)
         conditions.push(eq(aiSuggestions.status, statusParsed.data));
       const where =
@@ -174,21 +168,9 @@ export function registerSuggestionRoutes(
           .where(eq(aiSuggestions.id, req.params.id));
         const sugg = rows[0];
         if (!sugg) return { kind: 'not_found' as const };
-        if (feScope && sugg.franchiseeId !== feScope)
+        if (feScope && sugg.branchId !== feScope)
           return { kind: 'not_found' as const };
-        if (
-          scope.type === 'franchisor' &&
-          sugg.franchiseeId !== null
-        ) {
-          // Re-verify via the franchisees table so a franchisor
-          // admin cannot approve a sibling franchisor's row.
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, sugg.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' as const };
-        }
+        // CHR-02: corporate sees every branch's suggestions natively.
         if (sugg.status !== 'pending')
           return {
             kind: 'bad_state' as const,
@@ -292,16 +274,9 @@ export function registerSuggestionRoutes(
           .where(eq(aiSuggestions.id, req.params.id));
         const sugg = rows[0];
         if (!sugg) return { kind: 'not_found' as const };
-        if (feScope && sugg.franchiseeId !== feScope)
+        if (feScope && sugg.branchId !== feScope)
           return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, sugg.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' as const };
-        }
+        // CHR-02: corporate sees every branch's suggestions natively.
         if (sugg.status !== 'pending')
           return { kind: 'bad_state' as const, status: sugg.status };
         const now = new Date();
@@ -354,12 +329,12 @@ export function registerSuggestionRoutes(
         error: { code: 'FORBIDDEN', message: 'Dispatch permission required' },
       });
     }
-    if (scope.type !== 'franchisee') {
+    if (scope.type !== 'branch') {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Impersonate a franchisee to read metrics',
+          message: 'Metrics require a branch-scoped caller',
         },
       });
     }
@@ -378,7 +353,7 @@ export function registerSuggestionRoutes(
     const result = await withScope(db, scope, (tx) =>
       computeDailyAiMetrics({
         tx,
-        franchiseeId: scope.franchiseeId,
+        branchId: scope.branchId,
         date,
       }),
     );

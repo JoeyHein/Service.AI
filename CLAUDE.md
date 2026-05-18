@@ -4,11 +4,15 @@ This file is read by every agent at the start of every session. Keep it current.
 
 ## Project identity
 
-Service.AI is an **AI-native field service platform** for trades, launched on **garage doors**, designed as a **franchise platform** from day one. First production customer: Elevated Doors (US). Vertical slicing is mandatory — every phase ships a working end-to-end path.
+Service.AI is an **AI-native field service platform** for trades, launched on **garage doors**, designed as a **corporate hub-and-spoke** operation from day one. One corporate parent (the hub). Many **branches** (the spokes). Each branch is run by a **local W2 manager** paid **base salary + commission**. No independent franchisees, no royalty agreements, no per-branch Stripe accounts. First production customer: Elevated Doors, run as a corporate-operated brand. Vertical slicing is mandatory — every phase ships a working end-to-end path.
 
-Architecturally ERP-agnostic. An external portal may later connect this to Microsoft Business Central. We do not integrate with BC directly.
+Architecturally ERP-agnostic at the core, with supplier integration routed through a provider abstraction (`packages/suppliers`). The first concrete provider, `BcAiAgentProvider`, talks to OPENDC's BC AI Agent, which fronts Microsoft Business Central under the Elevated Doors customer account. Service.AI never speaks BC OData directly — only through a `SupplierProvider`.
 
-**Done-definition for v1**: Elevated Doors runs one territory end-to-end on Service.AI for 30 continuous days.
+**Done-definition for v1**: Elevated Doors runs one branch end-to-end on Service.AI for 30 continuous days.
+
+> **Model change note (2026-05).** This project shipped its first 13 phases on a franchise tenancy model (platform → franchisor → franchisee → location). Phase 14 (`phase_corporate_hub_redesign`, CHR-01..12) replaced that with the corporate hub-and-spoke model described here. Code, schema, and docs are now the corporate model; the franchise model is preserved for historical reference in `docs/ARCHITECTURE.md` Appendix A.
+>
+> **Phase 15 note (2026-05).** Phase 15 (`phase_supplier_quote_bridge`, SQB-01..13) added the live supplier quote bridge: `packages/suppliers` provider abstraction, `apps/api/src/quote-routes.ts` + `margin-engine.ts` + `quote-status-machine.ts`, `/corporate/settings/margins` + `/quotes/new` + tech PWA `/tech/jobs/:id/quote/new` UIs, AI CSR tools `quoteConfigurator` + `commitQuote`, and migration `0017_supplier_quote_bridge.sql`. Detailed reference: `docs/api/supplier-quote-bridge.md`.
 
 ## Tech stack
 
@@ -23,7 +27,7 @@ Architecturally ERP-agnostic. An external portal may later connect this to Micro
 | Database | Postgres 16 (DO Managed) + Drizzle ORM + pgvector |
 | Queue/cache | Redis 7 (DO Managed) + BullMQ |
 | Auth | Better Auth (self-hosted) |
-| Payments | Stripe Connect Standard |
+| Payments | Stripe (single corporate account) |
 | Maps | Google Maps (Places + Geocoding + Distance Matrix) |
 | AI | Multi-provider router (Claude via Anthropic SDK, Grok via xAI SDK) |
 | Vision | Claude Sonnet 4.6 |
@@ -36,14 +40,15 @@ Architecturally ERP-agnostic. An external portal may later connect this to Micro
 ```
 servicetitan-clone/
 ├── apps/
-│   ├── web/          Next.js 15 office UI + dispatch board + franchisor console
-│   ├── api/          Fastify API
+│   ├── web/          Next.js 15 office UI + dispatch board + /corporate hub + /branch manager dashboard
+│   ├── api/          Fastify API (corporate-routes.ts, branch-routes.ts, commission-engine.ts, ...)
 │   └── voice/        Fastify WS voice server
 ├── packages/
-│   ├── db/           Drizzle schema + migrations
-│   ├── contracts/    Zod schemas + ts-rest route definitions
+│   ├── db/           Drizzle schema + migrations (0016 corporate hub redesign, 0017 supplier quote bridge)
+│   ├── contracts/    Zod schemas + ts-rest route definitions (incl. comp-plans.ts, quotes.ts, margins.ts)
 │   ├── ai/           Multi-provider LLM router + prompt library + RAG client
 │   ├── auth/         Better Auth config + middleware
+│   ├── suppliers/    SupplierProvider abstraction (MockSupplierProvider, BcAiAgentProvider, ProviderRegistry)
 │   └── ui/           shadcn component library
 ├── tests/
 │   ├── e2e/          Playwright specs, organized by phase
@@ -57,31 +62,38 @@ servicetitan-clone/
 └── logs/             build run logs and notifications
 ```
 
+Owner-side web route groups: `apps/web/src/app/(app)/corporate/*` (branches, managers, comp-plans, pricebook-suggestions) and `apps/web/src/app/(app)/branch/*` (manager dashboard). The HQ "franchisor console" is gone; the catalog stays as a corporate-owned pricebook editor.
+
 ## Required patterns
 
-### Tenancy (load-bearing)
+### Tenancy (load-bearing — corporate hub model, CHR)
 
-Canonical entry points implemented in phase_tenancy_franchise:
+Canonical entry points:
 
 - `requestScopePlugin` (`apps/api/src/request-scope.ts`) — Fastify
-  plugin that attaches `request.scope`, `request.userId`,
-  `request.impersonation`, and a `request.requireScope()` helper to
-  every authenticated request. Resolves the scope from Better Auth's
-  session + the `memberships` table + optional impersonation header
-  or `serviceai.impersonate` cookie. `RequestScope` is a discriminated
-  union (`platform` / `franchisor` / `franchisee`) — pattern-match on
-  `scope.type`, never access fields that may not exist on the variant.
+  plugin that attaches `request.scope`, `request.userId`, and a
+  `request.requireScope()` helper to every authenticated request.
+  Resolves the scope from Better Auth's session + the `memberships`
+  table. `RequestScope` is a 2-variant discriminated union
+  (`corporate` / `branch`) — pattern-match on `scope.type`, never
+  access fields that may not exist on the variant. **No impersonation**:
+  corporate sees every branch natively; branch-scoped roles are pinned
+  to one branch and cannot read sibling-branch data even with a forged
+  request body.
 - `withScope(db, scope, fn)` (`@service-ai/db`) — runs `fn(tx)` inside
-  a transaction with `app.role`, `app.franchisor_id`, `app.franchisee_id`
-  set via `set_config(..., true)` (transaction-local, auto-clear on
+  a transaction with `app.role`, `app.branch_id`, and `app.user_id` set
+  via `set_config(..., true)` (transaction-local, auto-clear on
   commit/rollback). Every query that reads a tenant-scoped table should
-  run inside this, so Postgres RLS policies fire.
+  run inside this, so Postgres RLS policies fire. The corporate variant
+  passes an empty string for `branchId`; the policy migration uses
+  `nullif(..., '')::uuid` so empty strings coerce to NULL and only the
+  `_corporate_admin` policy permits the read.
 
 Required defence-in-depth combo for every tenant-scoped read:
 
 1. `scope = req.requireScope()` — 401/403 before any DB work
 2. App-layer `WHERE` that matches the scope (e.g.
-   `eq(franchisees.franchisor_id, scope.franchisorId)`). Required
+   `eq(jobs.branchId, scope.branchId)` for branch scope). Required
    because the dev docker Postgres connects as a superuser that bypasses
    RLS; production DO Postgres connects as a non-superuser and RLS does
    its job, but both paths must behave identically.
@@ -89,22 +101,16 @@ Required defence-in-depth combo for every tenant-scoped read:
    filter at the DB layer if the app-layer WHERE is ever forgotten.
 
 Rules:
-- `franchisee_id` is resolved from `request.scope`, **never** from
-  request input. Body fields like `{ franchiseeId }` that cross-reference
-  the scope must validate (e.g. `target.franchisorId ===
-  scope.franchisorId`) — see `apps/api/src/invites.ts#resolveTarget`
-  and `apps/api/src/can-invite.ts` for the pattern.
+- `branch_id` is resolved from `request.scope`, **never** from
+  request input. Body fields like `{ branchId }` that cross-reference
+  the scope must validate (e.g. `target.branchId === scope.branchId`).
 - Every tenant-scoped table has `ROW LEVEL SECURITY ENABLED` +
-  `FORCE ROW LEVEL SECURITY` + three named policies per table
-  (`_platform_admin` / `_franchisor_admin` / `_scoped`). New migrations
+  `FORCE ROW LEVEL SECURITY` + **two** named policies per table
+  (`<table>_corporate_admin` + `<table>_scoped`). New migrations
   that add tenant tables must add policies in the same commit — see
-  migration 0003 for the template.
-- Franchisor cross-tenant access requires either the
-  `X-Impersonate-Franchisee` header or the `serviceai.impersonate`
-  cookie (header wins). The plugin validates and writes exactly one
-  `audit_log` row per impersonated request. UI flow: POST
-  `/impersonate/start` to set the cookie, POST `/impersonate/stop` to
-  clear.
+  migration `0016_corporate_hub_redesign.sql` for the template.
+- Cross-tenant probes return `404 NOT_FOUND` (never `403`) so the
+  caller cannot infer the existence of a branch they shouldn't see.
 
 ### API
 - Every endpoint registered through ts-rest; contract lives in `packages/contracts`.
@@ -138,6 +144,59 @@ When an entity has a status column with structured transitions
    conditional approvals). The app owns correctness; the DB just
    enforces the enum.
 
+### Supplier integration (SQB, load-bearing)
+
+Live quotes against an external supplier go through `packages/suppliers`.
+Business code (routes, AI tools, web) never calls a supplier's HTTP surface
+directly — it goes through a `SupplierProvider`:
+
+- `SupplierProvider` interface: two operations, `priceItems` (read,
+  idempotent, sub-second p95 budget) and `commitQuote` (idempotent on
+  `externalQuoteId`). Plus optional `voidQuote` (best-effort).
+- `BcAiAgentProvider` — first production impl. Native fetch, 50/200/800ms
+  backoff on 5xx + 429, sends `X-Service-AI-Key` (bcrypt-hashed,
+  plaintext-shown-once) and `X-Request-ID` (Service.AI's Fastify request
+  id, threaded end-to-end web → Service.AI → BC AI Agent → BC OData).
+- `MockSupplierProvider` — tests and the early prototype path.
+- `ProviderRegistry` — keyed by `provider_kind`, cached per `supplierId`.
+
+Required invariants:
+
+1. **Cost is never trusted from the client.** Every price call re-fetches
+   `unit_cost_cents` from the provider. Verified by
+   `live-quote-routes.test.ts::test_cost_forgery`.
+2. **Margin engine resolution** (`apps/api/src/margin-engine.ts`): line
+   override → category override → `corporate.default_margin_pct`. Multiplicative
+   formula (`price = cost × (1 + pct/100)`). Bounds enforced against
+   `corporate.min_margin_pct` / `max_margin_pct`. A line override of 0% wins
+   over the default — zero is a valid choice. `applied_margin_pct` is frozen
+   at commit; later category-override edits do not rewrite committed totals.
+3. **Override authorization**: `marginOverridePct` requires
+   `marginOverrideReason` (else 422 `OVERRIDE_REASON_REQUIRED`) and manager+
+   role (csr/tech/dispatcher get 403 `OVERRIDE_NOT_PERMITTED`).
+4. **Idempotency** is layered: the Service.AI `/quotes/:id/commit`
+   `Idempotency-Key` header flows through as the request body's
+   `idempotencyKey`, becomes `externalQuoteId` at the provider boundary,
+   and lands as `external_quote_commits.external_quote_id` (UNIQUE
+   constraint + per-key in-process lock at BC AI Agent). 10× concurrent
+   commits collapse to one BC document + one `commission_ledger` row.
+5. **Status state machine**: `quote-status-machine.ts` follows the pattern
+   from `### Status state machines` above. Commit transitions status
+   `draft|priced → committed` and runs `onQuoteCommitted(tx, ...)` to write
+   the `commission_ledger` row in the same transaction. Void runs
+   `reverseQuoteCommitted(tx, ...)` to write the balancing −cents row with
+   `source_kind=manual_adjustment`, `source_id=reverse:quote_committed:<quoteId>`.
+6. **Secret hygiene**: `X-Service-AI-Key` is in the Pino redact list
+   (`apps/api/src/logger.ts`) in five shapes — inbound headers, outbound
+   headers, generic `apiKey`/`api_key` fields, camelCase, arbitrary
+   bracket-keyed parent. Verified by `sqb-11-redaction.test.ts`. Semgrep
+   rules in `.semgrep.yml` block: raw key in `console.log`, fs writes
+   from `packages/suppliers`, body-derived `branch_id`, direct `fetch` to
+   BC AI Agent's external surface from outside `packages/suppliers`.
+
+Detailed reference (sequences, latency budgets, idempotency map):
+`docs/api/supplier-quote-bridge.md`.
+
 ### Database
 - Every migration is reversible (has `up` + `down`) and idempotent.
 - Every write operation is wrapped in a transaction.
@@ -154,7 +213,7 @@ When an entity has a status column with structured transitions
 ### AI
 - Every AI call goes through `packages/ai`'s router (never direct SDK use in app code).
 - Every AI call persists to `ai_conversations` + `ai_messages`.
-- Every AI-originated action (`ai_actions` row) has a confidence score, and the action respects the franchisee's configured guardrails.
+- Every AI-originated action (`ai_actions` row) has a confidence score and respects the guardrails defaults below. The per-branch guardrails surface (corporate-overridable per branch) is a v1.5 follow-up; static defaults are the source of truth in v1.
 - Prompts live in `packages/ai/prompts/` — not inline strings in business code.
 
 ### Commit messages (Conventional Commits)
@@ -192,14 +251,16 @@ When an entity has a status column with structured transitions
 - No direct DB access from `apps/web` or `apps/voice`. API is the only writer.
 - No direct LLM SDK calls from business code. Route through `packages/ai`.
 - No request-body-derived tenant IDs. Always use `request.scope`.
+- No reintroduction of impersonation. Corporate sees every branch natively — there is no header, cookie, or banner that narrows a corporate session to a single branch.
+- No direct `fetch` (or `axios`, etc.) to BC AI Agent's `/api/external/*` surface from outside `packages/suppliers`. All supplier traffic goes through a `SupplierProvider`. Semgrep-enforced via `.semgrep.yml`.
+- No client-supplied `unit_cost_cents` on quote line writes. Cost comes from the provider on every price call, never from the request body.
+- No raw `X-Service-AI-Key` in logs or error messages. Pino redaction covers it; do not log request/response bodies that bypass that redact list.
 
 ## Multi-tenancy rule (strict)
 
 Every tenant-scoped table carries:
-- `franchisee_id` (may be NULL only for rows that represent the
-  franchisor / platform level; NOT NULL on row types that only make
-  sense inside a franchisee)
-- `location_id` (when applicable)
+- `branch_id` (NOT NULL on row types that only make sense inside a
+  branch; the only tenant scope key in the corporate hub model)
 - `created_at`, `updated_at`
 
 Every SELECT/UPDATE/DELETE against that table:
@@ -209,19 +270,23 @@ Every SELECT/UPDATE/DELETE against that table:
 - Fails closed: if `request.scope` is null, the handler returns 401
   before the query runs (`req.requireScope()` throws)
 
-See `apps/api/src/invites.ts` and `apps/api/src/audit-log-routes.ts`
-for the canonical pattern.
+RLS template: two policies per table — `<table>_corporate_admin` (permissive
+for `app.role = 'corporate_admin'`) plus `<table>_scoped` (matches
+`branch_id = nullif(app.branch_id, '')::uuid`). See migration
+`0016_corporate_hub_redesign.sql` for the canonical pattern.
 
-## AI guardrail defaults (per franchisee)
+## AI guardrail defaults (per branch — corporate-overridable; not yet UI-exposed in v1)
 
 | Capability | Default confidence | Default dollar cap | Default undo window |
 |---|---|---|---|
 | csr.bookJob | 0.80 | n/a | 15 min |
+| csr.quoteConfigurator | 0.70 | n/a | n/a (replayable) |
+| csr.commitQuote | 0.90 | $5,000 | 5 min |
 | dispatcher.autoAssign | 0.80 | n/a | 5 min |
 | tech.photoQuote | 0.75 | $500 | n/a (tech confirms) |
 | collections.sendDraft | 0.90 | n/a | 30 min |
 
-Franchisees can raise thresholds (more human gating) but not lower below the defaults without platform admin override.
+The `franchisees.ai_guardrails` JSONB column went away with the table in CHR-01. The AI runtime currently uses these static defaults for every branch. Per-branch overrides will land behind a `/corporate/branches/:id/ai-guardrails` surface in v1.5; until then, only a `corporate_admin` can tighten or relax them and only via a code change. The values in the table are floors — managers cannot raise their own thresholds.
 
 ## Lessons learned
 
@@ -233,7 +298,8 @@ If any agent genuinely cannot proceed (tests can't be made to pass after 3 attem
 
 ## First-customer specifics (Elevated Doors)
 
-- Legal entity name and brand config populated in seed per the actual onboarding artifacts (to be supplied before phase_franchisor_console).
-- First territory: TBD at pilot start.
-- Twilio number: provisioned automatically on franchisee signup in the correct area code.
-- Pricebook: seeded from a template published by Elevated Doors HQ — platform_admin will load the HQ-blessed catalog before phase_pricebook completes.
+- Elevated Doors is a **corporate-operated brand** (not a franchisee). Its branches are corporate-owned and run by W2 local managers on the standard base + commission comp plan.
+- Legal entity name and brand config populated in seed per the actual onboarding artifacts.
+- First branch: TBD at pilot start.
+- Twilio number: provisioned on branch create through the `/corporate/branches/new` wizard, in the branch's area code.
+- Pricebook: seeded by corporate as a single shared catalog; **no per-branch overrides in v1**. Managers submit `pricebook_suggestions` rows through `/branch/pricebook/suggest`; corporate reviews and approves at `/corporate/pricebook-suggestions`.

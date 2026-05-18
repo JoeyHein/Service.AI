@@ -1,11 +1,11 @@
 /**
  * GET /api/v1/audit-log — paginated, filterable view of audit_log rows.
  *
- * Access: platform_admin and franchisor_admin only. Every other scope
+ * Access: corporate_admin and corporate_admin only. Every other scope
  * type gets 403 AUDIT_FORBIDDEN so we don't leak the route to
- * franchisee-level users (they have no legitimate use for the log).
+ * branch-level users (they have no legitimate use for the log).
  *
- * Filters (all optional, combinable): actorEmail, franchiseeId, action,
+ * Filters (all optional, combinable): actorEmail, branchId, action,
  * fromDate, toDate. Pagination via limit (default 50, max 200) + offset.
  * Results ordered by created_at DESC — newest first is what operators
  * want by default.
@@ -16,9 +16,9 @@
  * and the app-layer filter guards the dev superuser path.
  */
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq, gte, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, lte, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { auditLog, franchisees, users, withScope } from '@service-ai/db';
+import { auditLog, users, withScope } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 
 type Drizzle = NodePgDatabase<typeof schema>;
@@ -30,7 +30,7 @@ export interface AuditLogRow {
   id: string;
   actorUserId: string | null;
   actorEmail: string | null;
-  targetFranchiseeId: string | null;
+  targetBranchId: string | null;
   action: string;
   scopeType: string | null;
   scopeId: string | null;
@@ -49,12 +49,12 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
       });
     }
     const scope = req.scope;
-    if (scope.type !== 'platform' && scope.type !== 'franchisor') {
+    if (scope.type !== 'corporate') {
       return reply.code(403).send({
         ok: false,
         error: {
           code: 'AUDIT_FORBIDDEN',
-          message: 'Only platform or franchisor admins may read the audit log',
+          message: 'Only corporate admins may read the audit log',
         },
       });
     }
@@ -66,7 +66,7 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
     );
     const offset = Math.max(parseInt(q['offset'] ?? '0', 10) || 0, 0);
     const actorEmail = q['actorEmail']?.trim() || null;
-    const franchiseeId = q['franchiseeId']?.trim() || null;
+    const branchId = q['branchId']?.trim() || null;
     const action = q['action']?.trim() || null;
     const fromDate = q['fromDate'] ? new Date(q['fromDate']) : null;
     const toDate = q['toDate'] ? new Date(q['toDate']) : null;
@@ -95,29 +95,10 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
     const { rows, total } = await withScope(db, scope, async (tx) => {
       const conditions = [] as unknown[];
 
-      if (scope.type === 'franchisor') {
-        // target_franchisee_id is in the acting franchisor's tree, or the
-        // row is a cross-franchisee impersonation audit scoped directly
-        // to the franchisor (scope_id = franchisorId, franchisee null).
-        conditions.push(
-          or(
-            inArray(
-              auditLog.targetFranchiseeId,
-              tx
-                .select({ id: franchisees.id })
-                .from(franchisees)
-                .where(eq(franchisees.franchisorId, scope.franchisorId)),
-            ),
-            and(
-              isNull(auditLog.targetFranchiseeId),
-              eq(auditLog.scopeType, 'franchisor'),
-              eq(auditLog.scopeId, scope.franchisorId),
-            ),
-          ),
-        );
-      }
-      if (franchiseeId) {
-        conditions.push(eq(auditLog.targetFranchiseeId, franchiseeId));
+      // CHR-02: corporate sees every branch's audit rows natively; no
+      // franchisor-level tree filter remains.
+      if (branchId) {
+        conditions.push(eq(auditLog.targetBranchId, branchId));
       }
       if (action) {
         conditions.push(ilike(auditLog.action, `%${action}%`));
@@ -155,7 +136,7 @@ export function registerAuditLogRoutes(app: FastifyInstance, db: Drizzle): void 
           id: auditLog.id,
           actorUserId: auditLog.actorUserId,
           actorEmail: users.email,
-          targetFranchiseeId: auditLog.targetFranchiseeId,
+          targetBranchId: auditLog.targetBranchId,
           action: auditLog.action,
           scopeType: auditLog.scopeType,
           scopeId: auditLog.scopeId,

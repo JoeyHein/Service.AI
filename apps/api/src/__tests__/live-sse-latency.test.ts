@@ -29,7 +29,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { inProcessEventBus, type EventBus, type DispatchEvent } from '../event-bus.js';
@@ -74,7 +73,7 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
   const seed = await runSeed(pool);
-  denverFranchiseeId = seed.franchisees.find((f) => f.slug === 'denver')!.id;
+  denverFranchiseeId = seed.branches.find((b) => b.slug === 'denver')!.id;
 
   const db = drizzle(pool, { schema });
   const auth = createAuth({
@@ -91,7 +90,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -150,10 +148,10 @@ describe('DB-05 / SSE fan-out latency (10 concurrent subscribers)', () => {
     const unsubs: Array<() => void> = [];
     const deadlineMs = 500;
 
-    // Register N subscribers, each filtering to the denver franchisee.
+    // Register N subscribers, each filtering to the denver branch.
     for (let i = 0; i < N; i++) {
       const unsub = bus.subscribe(
-        (e) => e.franchiseeId === denverFranchiseeId && e.type === 'job.assigned',
+        (e) => e.branchId === denverFranchiseeId && e.type === 'job.assigned',
         (_event: DispatchEvent) => {
           if (receivedAt[i] === null) receivedAt[i] = performance.now();
         },

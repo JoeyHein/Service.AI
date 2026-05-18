@@ -15,7 +15,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -27,8 +26,8 @@ const DATABASE_URL =
 let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
-let franchisorAdminCookie: string;
-let ids: { franchisorId: string };
+let corporateAdminCookie: string;
+let ids: { corporateId: string };
 
 async function checkReachable(): Promise<boolean> {
   const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
@@ -61,8 +60,8 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function createFranchisorAdmin(franchisorId: string): Promise<string> {
-  const email = 'fc02-fradmin@elevateddoors.test';
+async function createCorporateAdmin(corporateId: string): Promise<string> {
+  const email = 'fc02-coadmin@elevateddoors.test';
   await app.inject({
     method: 'POST',
     url: '/api/auth/sign-up/email',
@@ -76,12 +75,12 @@ async function createFranchisorAdmin(franchisorId: string): Promise<string> {
     .where(eq(users.email, email));
   await pool.query(
     `INSERT INTO memberships (user_id, scope_type, scope_id, role)
-       SELECT $1, 'franchisor'::scope_type, $2, 'franchisor_admin'::role
+       SELECT $1, 'corporate'::scope_type, $2, 'corporate_admin'::role
        WHERE NOT EXISTS (
          SELECT 1 FROM memberships
-          WHERE user_id=$1 AND scope_type='franchisor' AND scope_id=$2 AND deleted_at IS NULL
+          WHERE user_id=$1 AND scope_type='corporate' AND scope_id=$2 AND deleted_at IS NULL
        )`,
-    [userId, franchisorId],
+    [userId, corporateId],
   );
   return await signIn(email);
 }
@@ -92,7 +91,7 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
   const seed = await runSeed(pool);
-  ids = { franchisorId: seed.franchisorId };
+  ids = { corporateId: seed.corporateId };
   const db = drizzle(pool, { schema });
   const auth = createAuth({
     db,
@@ -107,23 +106,22 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
   });
   await app.ready();
-  franchisorAdminCookie = await createFranchisorAdmin(ids.franchisorId);
+  corporateAdminCookie = await createCorporateAdmin(ids.corporateId);
   // Insert a few distinct audit rows so filter matching has
   // something to discriminate on.
   await pool.query(
     `INSERT INTO audit_log (action, scope_type, scope_id, metadata)
      VALUES
-       ('impersonate.request', 'franchisor', $1, '{"note":"hq start"}'::jsonb),
-       ('invoice.finalized',   'franchisor', $1, '{"note":"final"}'::jsonb),
-       ('payment.captured',    'franchisor', $1, '{"note":"paid"}'::jsonb),
-       ('agreement.activated', 'franchisor', $1, '{"note":"active"}'::jsonb)`,
-    [ids.franchisorId],
+       ('impersonate.request', 'corporate', $1, '{"note":"hq start"}'::jsonb),
+       ('invoice.finalized',   'corporate', $1, '{"note":"final"}'::jsonb),
+       ('payment.captured',    'corporate', $1, '{"note":"paid"}'::jsonb),
+       ('agreement.activated', 'corporate', $1, '{"note":"active"}'::jsonb)`,
+    [ids.corporateId],
   );
 }, 60_000);
 
@@ -141,7 +139,7 @@ describe('FC-02 / audit-log filters', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log?q=impersonate',
-      headers: { cookie: franchisorAdminCookie },
+      headers: { cookie: corporateAdminCookie },
     });
     expect(res.statusCode).toBe(200);
     const rows = res.json().data.rows as Array<{ action: string }>;
@@ -153,7 +151,7 @@ describe('FC-02 / audit-log filters', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log?kind=invoice',
-      headers: { cookie: franchisorAdminCookie },
+      headers: { cookie: corporateAdminCookie },
     });
     expect(res.statusCode).toBe(200);
     const rows = res.json().data.rows as Array<{ action: string }>;
@@ -165,7 +163,7 @@ describe('FC-02 / audit-log filters', () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/audit-log?kind=bogus',
-      headers: { cookie: franchisorAdminCookie },
+      headers: { cookie: corporateAdminCookie },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('VALIDATION_ERROR');
@@ -175,7 +173,7 @@ describe('FC-02 / audit-log filters', () => {
     const res = await app.inject({
       method: 'GET',
       url: `/api/v1/audit-log?q=${encodeURIComponent("' OR 1=1--")}`,
-      headers: { cookie: franchisorAdminCookie },
+      headers: { cookie: corporateAdminCookie },
     });
     // No rows match literal `' OR 1=1--` so total should be 0.
     // (If interpolated into SQL, total would be every row.)

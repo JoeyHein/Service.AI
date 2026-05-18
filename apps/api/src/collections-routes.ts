@@ -9,8 +9,8 @@
  *   GET  /api/v1/collections/metrics                     DSO + recovered
  *   POST /api/v1/payments/retries/:id/run                admin retry
  *
- * Role gate: collections dispatch-role (franchisee_owner,
- * location_manager, dispatcher) + admins. Tech / CSR → 403.
+ * Role gate: collections dispatch-role (manager,
+ * manager, dispatcher) + admins. Tech / CSR → 403.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -46,22 +46,16 @@ export interface CollectionsRouteDeps {
   publicBaseUrl: string;
 }
 
-const COLLECTIONS_ROLES = new Set([
-  'franchisee_owner',
-  'location_manager',
-  'dispatcher',
-]);
+const COLLECTIONS_ROLES = new Set(['manager', 'dispatcher']);
 
 function canCollect(scope: RequestScope): boolean {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return true;
-  if (scope.type === 'franchisee' && COLLECTIONS_ROLES.has(scope.role))
-    return true;
-  return false;
+  if (scope.type === 'corporate') return true;
+  return COLLECTIONS_ROLES.has(scope.role);
 }
 
 function scopedFranchiseeId(scope: RequestScope): string | null {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 const StatusFilter = z.enum([
@@ -100,12 +94,12 @@ export function registerCollectionsRoutes(
         error: { code: 'FORBIDDEN', message: 'Collections permission required' },
       });
     }
-    if (scope.type !== 'franchisee') {
+    if (scope.type !== 'branch') {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Impersonate a franchisee to trigger a sweep',
+          message: 'Sweep requires a branch-scoped caller',
         },
       });
     }
@@ -113,7 +107,7 @@ export function registerCollectionsRoutes(
       { db, ai: deps.ai },
       {
         scope,
-        franchiseeId: scope.franchiseeId,
+        branchId: scope.branchId,
         publicBaseUrl: deps.publicBaseUrl,
       },
     );
@@ -149,7 +143,7 @@ export function registerCollectionsRoutes(
     const rows = await withScope(db, scope, (tx) => {
       const conditions: unknown[] = [];
       if (feScope)
-        conditions.push(eq(collectionsDrafts.franchiseeId, feScope));
+        conditions.push(eq(collectionsDrafts.branchId, feScope));
       if (statusParsed && statusParsed.success)
         conditions.push(eq(collectionsDrafts.status, statusParsed.data));
       const where =
@@ -208,16 +202,9 @@ export function registerCollectionsRoutes(
           .where(eq(collectionsDrafts.id, req.params.id));
         const draft = draftRows[0];
         if (!draft) return { kind: 'not_found' };
-        if (feScope && draft.franchiseeId !== feScope)
+        if (feScope && draft.branchId !== feScope)
           return { kind: 'not_found' };
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, draft.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' };
-        }
+        // CHR-02: corporate sees every branch's drafts natively.
         if (draft.status !== 'pending' && draft.status !== 'edited')
           return { kind: 'bad_state', status: draft.status };
 
@@ -264,7 +251,7 @@ export function registerCollectionsRoutes(
         sms?: boolean;
       };
       const sendContext = {
-        franchiseeId: outcome.row.franchiseeId,
+        branchId: outcome.row.branchId,
         invoiceId: outcome.row.invoiceId,
         relatedKind: 'collections',
       };
@@ -356,16 +343,9 @@ export function registerCollectionsRoutes(
           .where(eq(collectionsDrafts.id, req.params.id));
         const draft = rows[0];
         if (!draft) return { kind: 'not_found' as const };
-        if (feScope && draft.franchiseeId !== feScope)
+        if (feScope && draft.branchId !== feScope)
           return { kind: 'not_found' as const };
-        if (scope.type === 'franchisor') {
-          const feRows = await tx
-            .select({ franchisorId: schema.franchisees.franchisorId })
-            .from(schema.franchisees)
-            .where(eq(schema.franchisees.id, draft.franchiseeId));
-          if (feRows[0]?.franchisorId !== scope.franchisorId)
-            return { kind: 'not_found' as const };
-        }
+        // CHR-02: corporate sees every branch's drafts natively.
         if (draft.status !== 'pending' && draft.status !== 'edited')
           return { kind: 'bad_state' as const, status: draft.status };
 
@@ -439,7 +419,7 @@ export function registerCollectionsRoutes(
           .where(eq(collectionsDrafts.id, req.params.id));
         const draft = rows[0];
         if (!draft) return { kind: 'not_found' as const };
-        if (feScope && draft.franchiseeId !== feScope)
+        if (feScope && draft.branchId !== feScope)
           return { kind: 'not_found' as const };
         if (draft.status !== 'pending' && draft.status !== 'edited')
           return { kind: 'bad_state' as const, status: draft.status };
@@ -487,18 +467,18 @@ export function registerCollectionsRoutes(
         error: { code: 'FORBIDDEN', message: 'Collections permission required' },
       });
     }
-    if (scope.type !== 'franchisee') {
+    if (scope.type !== 'branch') {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Impersonate a franchisee to read metrics',
+          message: 'Metrics require a branch-scoped caller',
         },
       });
     }
     const m = await withScope(db, scope, (tx) =>
       computeCollectionsMetrics(tx, {
-        franchiseeId: scope.franchiseeId,
+        branchId: scope.branchId,
       }),
     );
     return reply.code(200).send({ ok: true, data: m });
@@ -540,7 +520,7 @@ export function registerCollectionsRoutes(
           .where(eq(paymentRetries.id, req.params.id));
         const retry = rows[0];
         if (!retry) return { kind: 'not_found' };
-        if (feScope && retry.franchiseeId !== feScope)
+        if (feScope && retry.branchId !== feScope)
           return { kind: 'not_found' };
         if (retry.status !== 'scheduled')
           return { kind: 'bad_state', status: retry.status };
@@ -566,36 +546,23 @@ export function registerCollectionsRoutes(
           },
         });
 
-      // Fire the Stripe call outside the scope transaction.
+      // Fire the Stripe call outside the scope transaction. CHR-08
+      // corporate-hub model: charges land on the single corporate Stripe
+      // account; no per-branch Connect account is consulted.
       let status: 'succeeded' | 'failed' = 'failed';
       let resultRef: Record<string, unknown> = {};
       try {
-        const feRows = await db
-          .select()
-          .from(schema.franchisees)
-          .where(eq(schema.franchisees.id, outcome.invoice.franchiseeId));
-        const fe = feRows[0];
-        if (!fe?.stripeAccountId) {
-          resultRef = { error: 'stripe_not_ready' };
-        } else {
-          const totalCents = Math.round(Number(outcome.invoice.total) * 100);
-          const feeCents = Math.round(
-            Number(outcome.invoice.applicationFeeAmount) * 100,
-          );
-          const pi = await deps.stripe.createPaymentIntent({
-            amount: totalCents,
-            applicationFeeAmount: feeCents,
-            currency: 'usd',
-            onBehalfOf: fe.stripeAccountId,
-            transferDestination: fe.stripeAccountId,
-            metadata: {
-              invoiceId: outcome.invoice.id,
-              retryId: outcome.retry.id,
-            },
-          });
-          resultRef = { paymentIntentId: pi.id, status: pi.status };
-          status = 'succeeded';
-        }
+        const totalCents = Math.round(Number(outcome.invoice.total) * 100);
+        const pi = await deps.stripe.createPaymentIntent({
+          amount: totalCents,
+          currency: 'usd',
+          metadata: {
+            invoiceId: outcome.invoice.id,
+            retryId: outcome.retry.id,
+          },
+        });
+        resultRef = { paymentIntentId: pi.id, status: pi.status };
+        status = 'succeeded';
       } catch (err) {
         resultRef = {
           error: err instanceof Error ? err.message : 'unknown',

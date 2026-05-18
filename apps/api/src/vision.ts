@@ -68,7 +68,7 @@ const BUILTIN_FIXTURES: StubVisionFixture[] = [
     make: 'LiftMaster',
     model: '1/2 HP chain drive',
     failureMode: 'opener chain slipped',
-    tags: ['opener-failure', 'sku:OPN-CHAIN'],
+    tags: ['opener-failure', 'sku:OPENER-CHAIN'],
     rawText:
       'The opener carriage is loose on the chain — likely a stripped gear or failed carriage.',
     confidence: 0.76,

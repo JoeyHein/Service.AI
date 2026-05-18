@@ -5,8 +5,8 @@
  *   POST /api/v1/jobs/:id/notes-to-invoice  run the notesToInvoice pipeline
  *   POST /api/v1/ai/feedback                record accept/override
  *
- * Role policy: tech / dispatcher / franchisee_owner only; CSR →
- * 403. Admins (platform / franchisor) must be impersonating.
+ * Role policy: tech / dispatcher / manager only; CSR →
+ * 403. Admins (platform / corporate) must be impersonating.
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -39,15 +39,12 @@ export interface TechAssistantRouteDeps {
 const ASSISTANT_ROLES = new Set([
   'tech',
   'dispatcher',
-  'location_manager',
-  'franchisee_owner',
+  'manager',
 ]);
 
 function canUseAssistant(scope: RequestScope): boolean {
-  if (scope.type === 'platform' || scope.type === 'franchisor') return true;
-  if (scope.type === 'franchisee' && ASSISTANT_ROLES.has(scope.role))
-    return true;
-  return false;
+  if (scope.type === 'corporate') return true;
+  return ASSISTANT_ROLES.has(scope.role);
 }
 
 const PhotoQuoteBody = z.object({
@@ -105,12 +102,12 @@ export function registerTechAssistantRoutes(
         });
       }
       const scope = req.scope;
-      if (scope.type !== 'franchisee') {
+      if (scope.type !== 'branch') {
         return reply.code(400).send({
           ok: false,
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Impersonate a franchisee to run photoQuote',
+            message: 'photoQuote requires a branch-scoped caller',
           },
         });
       }
@@ -131,7 +128,7 @@ export function registerTechAssistantRoutes(
         { db, ai: deps.ai, vision: deps.vision },
         {
           scope,
-          franchiseeId: scope.franchiseeId,
+          branchId: scope.branchId,
           jobId: req.params.id,
           imageRef: parsed.data.imageRef,
           description: parsed.data.description,
@@ -177,12 +174,12 @@ export function registerTechAssistantRoutes(
         });
       }
       const scope = req.scope;
-      if (scope.type !== 'franchisee') {
+      if (scope.type !== 'branch') {
         return reply.code(400).send({
           ok: false,
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Impersonate a franchisee to run notesToInvoice',
+            message: 'notesToInvoice requires a branch-scoped caller',
           },
         });
       }
@@ -202,7 +199,7 @@ export function registerTechAssistantRoutes(
         { db, ai: deps.ai, vision: deps.vision },
         {
           scope,
-          franchiseeId: scope.franchiseeId,
+          branchId: scope.branchId,
           jobId: req.params.id,
           notes: parsed.data.notes,
         },
@@ -239,12 +236,12 @@ export function registerTechAssistantRoutes(
       });
     }
     const scope = req.scope;
-    if (scope.type !== 'franchisee') {
+    if (scope.type !== 'branch') {
       return reply.code(400).send({
         ok: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'Impersonate a franchisee to record feedback',
+          message: 'Feedback requires a branch-scoped caller',
         },
       });
     }
@@ -252,7 +249,7 @@ export function registerTechAssistantRoutes(
       tx
         .insert(aiFeedback)
         .values({
-          franchiseeId: scope.franchiseeId,
+          branchId: scope.branchId,
           conversationId: parsed.data.conversationId ?? null,
           kind: parsed.data.kind,
           subjectKind: parsed.data.subjectKind,

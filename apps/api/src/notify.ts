@@ -20,7 +20,7 @@ import { logger } from './logger.js';
  * thread it through.
  */
 export interface NotificationContext {
-  franchiseeId: string;
+  branchId: string;
   jobId?: string;
   invoiceId?: string;
   customerId?: string;
@@ -111,7 +111,7 @@ export function withDbLogging(
         if (payload.context) {
           try {
             await db.insert(notificationsLog).values({
-              franchiseeId: payload.context.franchiseeId,
+              branchId: payload.context.branchId,
               channel: 'email',
               direction: 'outbound',
               toAddress: payload.to,
@@ -138,7 +138,7 @@ export function withDbLogging(
         if (payload.context) {
           try {
             await db.insert(notificationsLog).values({
-              franchiseeId: payload.context.franchiseeId,
+              branchId: payload.context.branchId,
               channel: 'sms',
               direction: 'outbound',
               toAddress: payload.to,

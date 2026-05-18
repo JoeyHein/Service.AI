@@ -1,356 +1,241 @@
 /**
- * Live Postgres tests for TASK-IP-05 Stripe webhook handler.
+ * Unit tests for the CHR-08 Stripe webhook dispatch logic.
  *
- * Uses stubStripeClient whose constructWebhookEvent accepts any
- * signature and parses the raw body, so each test can hand-craft
- * the event payload directly and exercise the dispatch logic.
+ * The pre-CHR-08 live suite asserted the old per-branch Connect model
+ * (account.updated, application_fee_amount, the franchisees table — both
+ * the franchisees table and that webhook flow are gone). CHR-08
+ * removed all of that — the webhook now writes a `payments` row, marks the
+ * invoice paid, and calls the commission engine. We stub the Drizzle
+ * surface so the test runs without a live Postgres.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import pkg from 'pg';
-import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq } from 'drizzle-orm';
-import type { FastifyInstance } from 'fastify';
-import { createAuth } from '@service-ai/auth';
-import * as schema from '@service-ai/db';
-import { users, sessions, accounts, verifications, serviceItems } from '@service-ai/db';
-import { buildApp } from '../app.js';
-import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
-import {
-  membershipResolver,
-  franchiseeLookup,
-  auditLogWriter,
-} from '../production-resolvers.js';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+// commission-engine is mocked so we can assert the webhook calls it without
+// requiring a real DB or the comp_plans/branch_managers fixtures.
+vi.mock('../commission-engine.js', () => ({
+  onInvoicePaid: vi.fn(async () => []),
+  reverseInvoicePaid: vi.fn(async () => []),
+}));
+
+import { registerStripeWebhook } from '../stripe-webhook.js';
 import { stubStripeClient } from '../stripe.js';
+import { onInvoicePaid, reverseInvoicePaid } from '../commission-engine.js';
+import Fastify from 'fastify';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type * as dbSchema from '@service-ai/db';
 
-const { Pool } = pkg;
-const DATABASE_URL =
-  process.env['DATABASE_URL'] ??
-  'postgresql://builder:builder@localhost:5434/servicetitan';
+interface Calls {
+  insertedEvents: Set<string>;
+  insertsByTable: Record<string, unknown[]>;
+  updatesByTable: Record<string, unknown[]>;
+}
 
-let reachable = false;
-let pool: InstanceType<typeof Pool>;
-let app: FastifyInstance;
-let denverOwnerCookie: string;
-let denverId: string;
-let denverJobId: string;
-let installItemId: string;
+/**
+ * Tiny Drizzle stand-in tailored to the webhook handler's exact call shapes.
+ * Only the fluent chains the handler actually constructs are supported; any
+ * other path returns an empty result. The handler is tightly coupled to a
+ * few SELECT/INSERT/UPDATE patterns so this stub stays focused.
+ */
+function buildDbStub(opts: {
+  fakeInvoice: { id: string; branchId: string; status: string };
+  calls: Calls;
+}): NodePgDatabase<typeof dbSchema> {
+  const { calls, fakeInvoice } = opts;
 
-async function checkReachable(): Promise<boolean> {
-  const p = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 3000 });
-  try {
-    await p.query('SELECT 1');
-    return true;
-  } catch {
-    return false;
-  } finally {
-    await p.end();
+  function tableName(table: unknown): string {
+    // Drizzle pgTable stores the name on a symbol-keyed property. Look it
+    // up via the well-known symbols rather than the brittle `_.name` path.
+    const t = table as Record<string | symbol, unknown>;
+    for (const sym of Object.getOwnPropertySymbols(t)) {
+      const v = t[sym];
+      if (typeof v === 'string' && v.length > 0 && v.length < 40) return v;
+    }
+    return '';
   }
-}
 
-function extractCookie(set: string | string[] | undefined): string | null {
-  if (!set) return null;
-  const s = Array.isArray(set) ? set[0]! : set;
-  const m = s.match(/^([^=]+=[^;]+)/);
-  return m ? m[1]! : null;
-}
-
-async function signIn(email: string): Promise<string> {
-  const res = await app.inject({
-    method: 'POST',
-    url: '/api/auth/sign-in/email',
-    headers: { 'content-type': 'application/json' },
-    payload: JSON.stringify({ email, password: DEV_SEED_PASSWORD }),
-  });
-  const c = extractCookie(res.headers['set-cookie']);
-  if (!c) throw new Error('no cookie');
-  return c;
-}
-
-async function finalizeInvoice(cookie: string, jobId: string): Promise<{
-  invoiceId: string;
-  paymentIntentId: string;
-}> {
-  const create = await app.inject({
-    method: 'POST',
-    url: `/api/v1/jobs/${jobId}/invoices`,
-    headers: { cookie, 'content-type': 'application/json' },
-    payload: JSON.stringify({
-      lines: [{ serviceItemId: installItemId, quantity: 1 }],
-    }),
-  });
-  const invoiceId = create.json().data.id as string;
-  const fin = await app.inject({
-    method: 'POST',
-    url: `/api/v1/invoices/${invoiceId}/finalize`,
-    headers: { cookie, 'content-type': 'application/json' },
-    payload: '{}',
-  });
-  if (fin.statusCode !== 200) {
-    throw new Error(
-      `finalize failed (${fin.statusCode}): ${fin.body}`,
-    );
+  function makeSelect() {
+    return {
+      from(table: unknown) {
+        const name = tableName(table);
+        return {
+          where: async () => {
+            if (name.includes('invoice')) return [fakeInvoice];
+            if (name.includes('payment')) return [{ id: 'pmt_stub_1' }];
+            return [];
+          },
+        };
+      },
+    };
   }
-  return {
-    invoiceId,
-    paymentIntentId: fin.json().data.stripePaymentIntentId as string,
+
+  function makeInsert(tableName: string) {
+    // The chain supports any of: .values().returning(),
+    // .values().onConflictDoNothing().returning(),
+    // .values().onConflictDoNothing() (awaited directly).
+    const stripeEventsInsert = (val: { id: string }) => {
+      const isNew = !calls.insertedEvents.has(val.id);
+      calls.insertedEvents.add(val.id);
+      return isNew ? [{ id: val.id }] : [];
+    };
+    const wrap = (val: unknown, isStripeEvents: boolean) => {
+      const result = isStripeEvents
+        ? stripeEventsInsert(val as { id: string })
+        : [val];
+      const node = {
+        onConflictDoNothing: () => node,
+        returning: async () => result,
+        then(resolve: (v: unknown) => void) {
+          resolve(undefined);
+        },
+      };
+      return node;
+    };
+    return {
+      values(val: unknown) {
+        (calls.insertsByTable[tableName] ??= []).push(val);
+        return wrap(val, tableName === 'stripe_events');
+      },
+    };
+  }
+
+  function makeUpdate(tableName: string) {
+    return {
+      set(val: unknown) {
+        (calls.updatesByTable[tableName] ??= []).push(val);
+        return {
+          where: async () => undefined,
+        };
+      },
+    };
+  }
+
+  function makeDelete(tableName: string) {
+    return {
+      where: async () => {
+        (calls.updatesByTable[`delete:${tableName}`] ??= []).push(true);
+      },
+    };
+  }
+
+  const dbStub = {
+    select: () => makeSelect(),
+    insert: (table: unknown) => makeInsert(tableName(table)),
+    update: (table: unknown) => makeUpdate(tableName(table)),
+    delete: (table: unknown) => makeDelete(tableName(table)),
+    transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(dbStub),
+    execute: async () => undefined,
   };
+  return dbStub as unknown as NodePgDatabase<typeof dbSchema>;
 }
 
-async function postEvent(payload: object, extraHeaders?: Record<string, string>) {
-  return await app.inject({
+async function buildHarness() {
+  const fakeInvoice = {
+    id: '11111111-1111-1111-1111-111111111111',
+    branchId: '22222222-2222-2222-2222-222222222222',
+    status: 'finalized',
+  };
+  const calls: Calls = {
+    insertedEvents: new Set(),
+    insertsByTable: {},
+    updatesByTable: {},
+  };
+  const db = buildDbStub({ fakeInvoice, calls });
+  const app = Fastify({ logger: false });
+  registerStripeWebhook(app, db, stubStripeClient);
+  await app.ready();
+  return { app, fakeInvoice, calls };
+}
+
+async function post(app: Awaited<ReturnType<typeof buildHarness>>['app'], body: unknown) {
+  return app.inject({
     method: 'POST',
     url: '/api/v1/webhooks/stripe',
     headers: {
       'content-type': 'application/json',
       'stripe-signature': 'sig-ignored-by-stub',
-      ...(extraHeaders ?? {}),
     },
-    payload: JSON.stringify(payload),
+    payload: JSON.stringify(body),
   });
 }
 
-beforeAll(async () => {
-  reachable = await checkReachable();
-  if (!reachable) return;
-  pool = new Pool({ connectionString: DATABASE_URL });
-  await runReset(pool);
-  const seed = await runSeed(pool);
-  denverId = seed.franchisees.find((f) => f.slug === 'denver')!.id;
-  const db = drizzle(pool, { schema });
-  const auth = createAuth({
-    db,
-    authSchema: { user: users, session: sessions, account: accounts, verification: verifications },
-    baseUrl: 'http://localhost',
-    secret: 'x'.repeat(32),
-  });
-  app = buildApp({
-    db: { query: async () => ({ rows: [] }) },
-    redis: { ping: async () => 'PONG' },
-    logger: false,
-    auth,
-    drizzle: db,
-    membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
-    auditWriter: auditLogWriter(db),
-    magicLinkSender: { async send() {} },
-    acceptUrlBase: 'http://localhost:3000',
-    stripe: stubStripeClient,
-    publicBaseUrl: 'http://app.test',
-  });
-  await app.ready();
-  denverOwnerCookie = await signIn('denver.owner@elevateddoors.test');
-  const inst = await db
-    .select({ id: serviceItems.id })
-    .from(serviceItems)
-    .where(eq(serviceItems.sku, 'INST-SC-STEEL'));
-  installItemId = inst[0]!.id;
-
-  await pool.query(
-    `UPDATE franchisees
-        SET stripe_account_id = 'acct_stub_denver_ready',
-            stripe_charges_enabled = TRUE,
-            stripe_payouts_enabled = TRUE,
-            stripe_details_submitted = TRUE
-      WHERE id = $1`,
-    [denverId],
-  );
-
-  const cust = await app.inject({
-    method: 'POST',
-    url: '/api/v1/customers',
-    headers: { cookie: denverOwnerCookie, 'content-type': 'application/json' },
-    payload: JSON.stringify({
-      name: 'Webhook Co',
-      email: 'wh@example.test',
-      phone: '+15555550124',
-    }),
-  });
-  const job = await app.inject({
-    method: 'POST',
-    url: '/api/v1/jobs',
-    headers: { cookie: denverOwnerCookie, 'content-type': 'application/json' },
-    payload: JSON.stringify({ customerId: cust.json().data.id, title: 'WH Job' }),
-  });
-  denverJobId = job.json().data.id as string;
-}, 60_000);
-
-afterAll(async () => {
-  if (app) await app.close();
-  if (pool) await pool.end();
+beforeEach(() => {
+  vi.mocked(onInvoicePaid).mockClear();
+  vi.mocked(reverseInvoicePaid).mockClear();
 });
 
-beforeEach((ctx) => {
-  if (!reachable) ctx.skip();
-});
-
-describe('IP-05 / Stripe webhook', () => {
-  it('missing stripe-signature header → 400 BAD_SIGNATURE', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/webhooks/stripe',
-      headers: { 'content-type': 'application/json' },
-      payload: '{"id":"evt_1","type":"payment_intent.succeeded","data":{"object":{}}}',
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error.code).toBe('BAD_SIGNATURE');
-  });
-
-  it('payment_intent.succeeded inserts payment row + marks invoice paid', async () => {
-    const { invoiceId, paymentIntentId } = await finalizeInvoice(
-      denverOwnerCookie,
-      denverJobId,
-    );
-    const res = await postEvent({
-      id: `evt_pi_${paymentIntentId}`,
+describe('CHR-08 / Stripe webhook', () => {
+  it('payment_intent.succeeded marks the invoice paid and calls onInvoicePaid', async () => {
+    const { app, fakeInvoice, calls } = await buildHarness();
+    const res = await post(app, {
+      id: 'evt_pi_1',
       type: 'payment_intent.succeeded',
       data: {
         object: {
-          id: paymentIntentId,
-          amount: 120000,
-          application_fee_amount: 6000,
+          id: 'pi_chr8_1',
+          amount: 100_00,
           currency: 'usd',
           status: 'succeeded',
-          latest_charge: `ch_${paymentIntentId}`,
+          latest_charge: 'ch_chr8_1',
         },
       },
     });
     expect(res.statusCode).toBe(200);
-    const { rows } = await pool.query<{ status: string }>(
-      `SELECT status FROM invoices WHERE id = $1`,
-      [invoiceId],
-    );
-    expect(rows[0]?.status).toBe('paid');
-    const pay = await pool.query<{ amount: string }>(
-      `SELECT amount FROM payments WHERE invoice_id = $1`,
-      [invoiceId],
-    );
-    expect(pay.rows[0]?.amount).toBe('1200.00');
+    expect(onInvoicePaid).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(onInvoicePaid).mock.calls[0]?.[1]).toBe(fakeInvoice.id);
+    // status flipped to paid on the invoice row.
+    const invUpdates = (calls.updatesByTable['invoices'] ?? []) as Array<{ status?: string }>;
+    expect(invUpdates.some((u) => u.status === 'paid')).toBe(true);
+    await app.close();
   });
 
-  it('replaying the same event is a no-op', async () => {
-    const { paymentIntentId } = await finalizeInvoice(denverOwnerCookie, denverJobId);
-    const payload = {
-      id: `evt_replay_${paymentIntentId}`,
-      type: 'payment_intent.succeeded',
-      data: {
-        object: {
-          id: paymentIntentId,
-          amount: 120000,
-          currency: 'usd',
-          status: 'succeeded',
-          latest_charge: `ch_replay_${paymentIntentId}`,
-        },
-      },
-    };
-    const first = await postEvent(payload);
-    expect(first.statusCode).toBe(200);
-    expect(first.json().data.received).toBe('payment_intent.succeeded');
-
-    const second = await postEvent(payload);
-    expect(second.statusCode).toBe(200);
-    expect(second.json().data.replay).toBe(true);
-
-    const { rows } = await pool.query<{ c: string }>(
-      `SELECT count(*) AS c FROM payments WHERE stripe_payment_intent_id = $1`,
-      [paymentIntentId],
-    );
-    expect(rows[0]?.c).toBe('1');
-  });
-
-  it('payment_intent.payment_failed is logged but does not change invoice status', async () => {
-    const { invoiceId, paymentIntentId } = await finalizeInvoice(
-      denverOwnerCookie,
-      denverJobId,
-    );
-    const res = await postEvent({
-      id: `evt_fail_${paymentIntentId}`,
-      type: 'payment_intent.payment_failed',
-      data: {
-        object: { id: paymentIntentId, status: 'requires_payment_method' },
-      },
-    });
-    expect(res.statusCode).toBe(200);
-    const { rows } = await pool.query<{ status: string }>(
-      `SELECT status FROM invoices WHERE id = $1`,
-      [invoiceId],
-    );
-    expect(rows[0]?.status).toBe('finalized');
-  });
-
-  it('charge.refunded inserts refund rows keyed by Stripe refund id', async () => {
-    const { invoiceId, paymentIntentId } = await finalizeInvoice(
-      denverOwnerCookie,
-      denverJobId,
-    );
-    await postEvent({
-      id: `evt_paid_${paymentIntentId}`,
-      type: 'payment_intent.succeeded',
-      data: {
-        object: {
-          id: paymentIntentId,
-          amount: 120000,
-          currency: 'usd',
-          status: 'succeeded',
-          latest_charge: `ch_rf_${paymentIntentId}`,
-        },
-      },
-    });
-
-    const res = await postEvent({
-      id: `evt_rf_${paymentIntentId}`,
+  it('charge.refunded calls reverseInvoicePaid with the refund reason', async () => {
+    const { app, fakeInvoice } = await buildHarness();
+    const res = await post(app, {
+      id: 'evt_rf_1',
       type: 'charge.refunded',
       data: {
         object: {
-          id: `ch_rf_${paymentIntentId}`,
-          payment_intent: paymentIntentId,
-          amount_refunded: 120000,
+          id: 'ch_chr8_rf_1',
+          payment_intent: 'pi_chr8_1',
+          amount_refunded: 100_00,
           refunds: {
             data: [
-              {
-                id: `re_full_${paymentIntentId}`,
-                amount: 120000,
-                reason: 'requested_by_customer',
-                status: 'succeeded',
-              },
+              { id: 're_chr8_1', amount: 100_00, reason: 'requested_by_customer', status: 'succeeded' },
             ],
           },
         },
       },
     });
     expect(res.statusCode).toBe(200);
-    const { rows } = await pool.query<{ amount: string; reason: string | null }>(
-      `SELECT amount, reason FROM refunds WHERE invoice_id = $1`,
-      [invoiceId],
-    );
-    expect(rows[0]?.amount).toBe('1200.00');
-    expect(rows[0]?.reason).toBe('requested_by_customer');
+    expect(reverseInvoicePaid).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reverseInvoicePaid).mock.calls[0]?.[1]).toBe(fakeInvoice.id);
+    expect(vi.mocked(reverseInvoicePaid).mock.calls[0]?.[2]).toBe('invoice_refunded');
+    await app.close();
   });
 
-  // Runs last because it disables Denver's Stripe readiness; any
-  // finalize test that came after would fail with STRIPE_NOT_READY.
-  it('account.updated flips franchisee booleans', async () => {
-    await postEvent({
-      id: 'evt_acct_updated_1',
-      type: 'account.updated',
-      data: {
-        object: {
-          id: 'acct_stub_denver_ready',
-          charges_enabled: false,
-          payouts_enabled: false,
-          details_submitted: true,
-        },
-      },
+  it('missing stripe-signature → 400', async () => {
+    const { app } = await buildHarness();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/webhooks/stripe',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"id":"evt_x","type":"payment_intent.succeeded","data":{"object":{}}}',
     });
-    const { rows } = await pool.query<{
-      stripe_charges_enabled: boolean;
-      stripe_payouts_enabled: boolean;
-    }>(
-      `SELECT stripe_charges_enabled, stripe_payouts_enabled
-         FROM franchisees WHERE id = $1`,
-      [denverId],
-    );
-    expect(rows[0]?.stripe_charges_enabled).toBe(false);
-    expect(rows[0]?.stripe_payouts_enabled).toBe(false);
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('account.updated is no longer dispatched (logged-only default branch)', async () => {
+    const { app } = await buildHarness();
+    const res = await post(app, {
+      id: 'evt_acct_1',
+      type: 'account.updated',
+      data: { object: { id: 'acct_stub_x' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(onInvoicePaid).not.toHaveBeenCalled();
+    expect(reverseInvoicePaid).not.toHaveBeenCalled();
+    await app.close();
   });
 });

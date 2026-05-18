@@ -8,7 +8,7 @@
  *     on risk
  *
  * A tool implementation MUST enforce scope — the `ToolContext`
- * always carries the franchisee id + user id, and the tool
+ * always carries the branch id + user id, and the tool
  * rejects (via its return value, never by throwing) whenever an
  * argument would cross tenants.
  */
@@ -16,7 +16,7 @@
 import type { ToolSchema } from '../client.js';
 
 export interface ToolContext {
-  franchiseeId: string;
+  branchId: string;
   /** The user or agent identifier that owns the execution — used
    *  for audit rows on side-effectful tools. */
   userId: string | null;

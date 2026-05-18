@@ -14,15 +14,13 @@
  * capabilities are auditable alongside CSR/dispatcher turns.
  */
 
-import { and, desc, eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   aiConversations,
   aiMessages,
-  franchisees,
-  franchiseAgreements,
+  branches,
   jobs,
-  pricebookOverrides,
   serviceCatalogTemplates,
   serviceItems,
   type RequestScope,
@@ -49,7 +47,7 @@ export interface TechAssistantDeps {
 
 export interface PhotoQuoteInput {
   scope: RequestScope;
-  franchiseeId: string;
+  branchId: string;
   jobId: string;
   imageRef: string;
   /** Optional tech-supplied context ("customer says it snapped"). */
@@ -61,7 +59,7 @@ export interface QuoteCandidate {
   sku: string;
   name: string;
   /** Resolved effective price in dollars, already honouring any
-   *  franchisee override. */
+   *  branch override. */
   unitPriceDollars: string;
   confidence: number;
   reasoning: string;
@@ -88,7 +86,7 @@ function extractSkuTags(tags: string[]): string[] {
 
 async function resolveEffectivePrice(
   tx: ScopedTx,
-  franchiseeId: string,
+  branchId: string,
   serviceItemId: string,
 ): Promise<{ basePrice: string; effective: string } | null> {
   const itemRows = await tx
@@ -100,28 +98,23 @@ async function resolveEffectivePrice(
     .where(eq(serviceItems.id, serviceItemId));
   const item = itemRows[0];
   if (!item) return null;
-  const overrideRows = await tx
-    .select({ overridePrice: pricebookOverrides.overridePrice })
-    .from(pricebookOverrides)
-    .where(
-      and(
-        eq(pricebookOverrides.franchiseeId, franchiseeId),
-        eq(pricebookOverrides.serviceItemId, serviceItemId),
-      ),
-    );
-  const effective = overrideRows[0]?.overridePrice ?? item.basePrice;
-  return { basePrice: item.basePrice, effective };
+  // pricebook_overrides was removed by migration 0016. Branch-specific
+  // pricing now flows through pricebook_suggestions / approved manager
+  // overrides at the line-item layer; the catalog base price is used here.
+  void branchId;
+  void tx;
+  return { basePrice: item.basePrice, effective: item.basePrice };
 }
 
 export async function techPhotoQuote(
   deps: TechAssistantDeps,
   input: PhotoQuoteInput,
 ): Promise<PhotoQuoteResult | null> {
-  // 1. Validate the job belongs to the franchisee.
+  // 1. Validate the job belongs to the branch.
   const feRows = await deps.db
     .select()
-    .from(franchisees)
-    .where(eq(franchisees.id, input.franchiseeId));
+    .from(branches)
+    .where(eq(branches.id, input.branchId));
   const fe = feRows[0];
   if (!fe) return null;
   const jobRows = await deps.db
@@ -129,7 +122,7 @@ export async function techPhotoQuote(
     .from(jobs)
     .where(eq(jobs.id, input.jobId));
   const job = jobRows[0];
-  if (!job || job.franchiseeId !== input.franchiseeId) return null;
+  if (!job || job.branchId !== input.branchId) return null;
 
   // 2. Vision.
   const vision = await deps.vision.identify({
@@ -141,7 +134,7 @@ export async function techPhotoQuote(
   const convRows = await deps.db
     .insert(aiConversations)
     .values({
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       capability: 'tech.photoQuote',
       subjectJobId: input.jobId,
     })
@@ -151,7 +144,7 @@ export async function techPhotoQuote(
   // Persist the vision output as a tool row for audit.
   await deps.db.insert(aiMessages).values({
     conversationId,
-    franchiseeId: input.franchiseeId,
+    branchId: input.branchId,
     role: 'tool',
     content: vision.rawText,
     toolName: 'vision.identify',
@@ -173,7 +166,6 @@ export async function techPhotoQuote(
     const docs = await retrieveKnowledge(
       deps.db,
       {
-        franchisorId: fe.franchisorId,
         query: vision.tags.join(' '),
         limit: 5,
       },
@@ -191,17 +183,11 @@ export async function techPhotoQuote(
     return { conversationId, vision, candidates: [] };
   }
 
-  // 6. Resolve SKUs against the franchisee's active published
-  // template — so suggested items come from their pricebook.
+  // 6. Resolve SKUs against the corporate-published catalog template.
   const templateRows = await deps.db
     .select()
     .from(serviceCatalogTemplates)
-    .where(
-      and(
-        eq(serviceCatalogTemplates.franchisorId, fe.franchisorId),
-        eq(serviceCatalogTemplates.status, 'published'),
-      ),
-    )
+    .where(eq(serviceCatalogTemplates.status, 'published'))
     .orderBy(desc(serviceCatalogTemplates.createdAt))
     .limit(1);
   const templateId = templateRows[0]?.id;
@@ -218,10 +204,10 @@ export async function techPhotoQuote(
 
   // 7. Score each match. Simple scheme: base score is vision
   // confidence, plus 0.05 per supporting KB doc that contained the
-  // sku tag, clipped to [0, 1].
-  const capCents =
-    (fe.aiGuardrails as { techPhotoQuoteCapCents?: number } | null)
-      ?.techPhotoQuoteCapCents ?? DEFAULT_CAP_CENTS;
+  // sku tag, clipped to [0, 1]. The per-branch aiGuardrails column was
+  // removed in the corporate hub redesign; every branch uses the default
+  // cap until configurable per-branch guardrails are reintroduced.
+  const capCents = DEFAULT_CAP_CENTS;
 
   const candidates: QuoteCandidate[] = [];
   for (const item of matching) {
@@ -234,7 +220,7 @@ export async function techPhotoQuote(
     );
     const price = await resolveEffectivePrice(
       deps.db as unknown as ScopedTx,
-      input.franchiseeId,
+      input.branchId,
       item.id,
     );
     const effective = price?.effective ?? item.basePrice;
@@ -259,7 +245,7 @@ export async function techPhotoQuote(
   // Record the final assistant message.
   await deps.db.insert(aiMessages).values({
     conversationId,
-    franchiseeId: input.franchiseeId,
+    branchId: input.branchId,
     role: 'assistant',
     content: { candidates: top },
     confidence: vision.confidence.toFixed(4),
@@ -276,7 +262,7 @@ export async function techPhotoQuote(
 
 export interface NotesToInvoiceInput {
   scope: RequestScope;
-  franchiseeId: string;
+  branchId: string;
   jobId: string;
   notes: string;
 }
@@ -305,8 +291,8 @@ export async function techNotesToInvoice(
 ): Promise<NotesToInvoiceResult | null> {
   const feRows = await deps.db
     .select()
-    .from(franchisees)
-    .where(eq(franchisees.id, input.franchiseeId));
+    .from(branches)
+    .where(eq(branches.id, input.branchId));
   const fe = feRows[0];
   if (!fe) return null;
   const jobRows = await deps.db
@@ -314,12 +300,12 @@ export async function techNotesToInvoice(
     .from(jobs)
     .where(eq(jobs.id, input.jobId));
   const job = jobRows[0];
-  if (!job || job.franchiseeId !== input.franchiseeId) return null;
+  if (!job || job.branchId !== input.branchId) return null;
 
   const conv = await deps.db
     .insert(aiConversations)
     .values({
-      franchiseeId: input.franchiseeId,
+      branchId: input.branchId,
       capability: 'tech.photoQuote',
       subjectJobId: input.jobId,
     })
@@ -356,7 +342,7 @@ export async function techNotesToInvoice(
 
   await deps.db.insert(aiMessages).values({
     conversationId,
-    franchiseeId: input.franchiseeId,
+    branchId: input.branchId,
     role: 'assistant',
     content: { description, intent, warnings },
     confidence: '1',
@@ -364,10 +350,6 @@ export async function techNotesToInvoice(
     model: turn.model,
     costUsd: turn.costUsd.toFixed(6),
   });
-
-  // Keep unused-import smoothers so future rule expansions don't
-  // churn the import list.
-  void franchiseAgreements;
 
   return { conversationId, description, intent, warnings };
 }

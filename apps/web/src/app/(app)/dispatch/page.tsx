@@ -37,7 +37,7 @@ export default async function DispatchPage({
   // admins not currently impersonating would need to pick one — for
   // v1 they hit notFound() and can use impersonation to enter a
   // franchisee's context.
-  if (!session || session.scope?.type !== 'franchisee') {
+  if (!session || session.scope?.type !== 'branch') {
     notFound();
   }
 

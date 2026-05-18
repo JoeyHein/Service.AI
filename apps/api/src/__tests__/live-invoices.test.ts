@@ -20,7 +20,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 
@@ -108,7 +107,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -281,7 +279,7 @@ describe('TM-05a / invoice drafts', () => {
     expect(Number(body.total)).toBe(650);
   });
 
-  it('cross-franchisee job id on create → 404', async () => {
+  it('cross-branch job id on create → 404', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${austinJobId}/invoices`,
@@ -291,7 +289,7 @@ describe('TM-05a / invoice drafts', () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it('cross-franchisee GET on an invoice owned by another franchisee → 404', async () => {
+  it('cross-branch GET on an invoice owned by another branch → 404', async () => {
     const create = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${austinJobId}/invoices`,

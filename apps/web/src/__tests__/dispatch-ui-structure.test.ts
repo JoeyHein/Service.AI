@@ -20,7 +20,7 @@ describe('DB-01 / dispatch board files', () => {
   it('page gates to franchisee-scoped callers via notFound()', () => {
     const src = read('src/app/(app)/dispatch/page.tsx');
     expect(src).toMatch(/notFound\(\)/);
-    expect(src).toMatch(/scope\?\.type !== 'franchisee'/);
+    expect(src).toMatch(/scope\?\.type !== 'branch'/);
   });
 
   it('page fetches techs + jobs from the API', () => {

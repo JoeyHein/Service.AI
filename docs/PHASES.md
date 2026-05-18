@@ -4,6 +4,32 @@
 
 Each phase must produce: **running code**, **passing tests**, **documentation**, and **updated gate**. Phase is not complete until its audit returns Verdict: PASS and its gate review is APPROVED.
 
+> **Tenancy model note (2026-05).** The franchise tenancy model that phases 2–13 were originally written against was replaced by a corporate hub-and-spoke model in `phase_corporate_hub_redesign` (CHR). Wherever a phase below references `franchisor` / `franchisee` / `location` / `royalty`, read the equivalent corporate / branch / commission concept from `phases/phase_corporate_hub_redesign_GATE.md`. The two phase sections most directly affected — `phase_royalty_engine` and `phase_franchisor_console` — carry callout boxes below.
+
+---
+
+## phase_corporate_hub_redesign — CHR (2026-05)
+
+**Goal**: Replace the franchise tenancy model with a corporate hub-and-spoke model. One corporate parent; many branches; each branch run by a W2 local manager on base + commission. Single corporate Stripe account, single corporate pricebook, no royalty.
+
+**Vertical slice**: corporate ops logs in, creates a new branch in under 2 minutes, assigns a local manager. The manager logs in, sees their branch dashboard with revenue, jobs in flight, and **projected commission for the current pay period**. Existing techs / CSRs / dispatchers continue working through the same dispatch board and tech PWA — everything flows up through the branch to corporate.
+
+**Deliverables**:
+- Migration `0016_corporate_hub_redesign.sql` — new tables (`corporate`, `branches`, `branch_managers`, `comp_plans`, `user_comp_assignments`, `commission_ledger`, `pricebook_suggestions`); drops (`franchisors`, `franchisees`, `franchise_agreements`, `royalty_rules`, `royalty_statements`, `pricebook_overrides`); renames `franchisee_id` → `branch_id` on every business table; rebuilds RLS with the two-policy template.
+- `RequestScope` collapsed to `corporate | branch` (2 variants, was 3).
+- `withScope` GUCs: `app.role` + `app.branch_id` + `app.user_id` (dropped `app.franchisor_id` + `app.franchisee_id`).
+- Commission engine (`apps/api/src/commission-engine.ts`) with three rule kinds: `flat_percent_of_invoice_paid`, `tiered_percent_of_invoice_paid`, `flat_percent_of_quote_committed`. Idempotent ledger writes keyed on `(user_id, source_kind, source_id)`.
+- `/corporate/*` route set: branches CRUD wizard, managers directory, comp-plans list/create/edit, pricebook-suggestions review queue.
+- `/branch` manager dashboard with projected-commission tile.
+- Stripe Connect onboarding deleted; single corporate Stripe account; webhook drives commission engine on `payment_intent.succeeded` and `charge.refunded`.
+- All `/franchisor/*` routes, the impersonation header + cookie, and the HQ banner deleted.
+- AI prompt + tool surfaces updated for the new role set; voice fixtures regenerated.
+
+**Depends on**: every prior phase (CHR is a top-down sweep — phases 2–13 all had migration work).
+**Out of scope**: multi-branch managers, tech commission splits, per-branch Stripe payouts, per-branch pricebook overrides, per-branch AI guardrail UI (static defaults in v1), territory geography.
+
+See `phases/phase_corporate_hub_redesign_GATE.md` for the locked acceptance criteria.
+
 ---
 
 ## phase_foundation
@@ -148,11 +174,13 @@ Each phase must produce: **running code**, **passing tests**, **documentation**,
 
 ## phase_royalty_engine
 
-**Goal**: Royalty is automatic and reconcilable. Application fee on every charge reflects the active franchise agreement.
+> **REMOVED in CHR-08 (2026-05).** Royalty was a franchise-model concept; the corporate hub uses a commission engine instead (see `apps/api/src/commission-engine.ts` and `phases/phase_corporate_hub_redesign_GATE.md`). The tables `franchise_agreements`, `royalty_rules`, `royalty_statements` are dropped; the `/api/v1/royalty/*` routes are deleted; Stripe Connect onboarding is gone and `application_fee_amount` is no longer set. Everything below is **historical** and describes the v1 design prior to CHR.
 
-**Vertical slice**: franchisor admin configures "8% of gross revenue, min $500/month" for demo franchisee; 20 test jobs processed; at month-end a statement appears showing revenue, royalty, status; Transfer reconciles any difference.
+**Goal** (historical): Royalty is automatic and reconcilable. Application fee on every charge reflects the active franchise agreement.
 
-**Deliverables**:
+**Vertical slice** (historical): franchisor admin configures "8% of gross revenue, min $500/month" for demo franchisee; 20 test jobs processed; at month-end a statement appears showing revenue, royalty, status; Transfer reconciles any difference.
+
+**Deliverables** (historical):
 - Tables: franchise_agreements, royalty_rules, royalty_statements
 - Rule engine (rule types: percentage, flat_per_job, tiered, minimum_floor — combinable)
 - Rule resolves application_fee_amount at PaymentIntent creation
@@ -162,8 +190,8 @@ Each phase must produce: **running code**, **passing tests**, **documentation**,
 - Franchisee view: my royalty, my statements
 - Tests: every rule type + combinations + edge cases (refunds, disputes, month boundaries, TZ)
 
-**Depends on**: phase_invoicing_stripe
-**Out of scope**: royalty tax handling; audit-trail PDFs for accountants (v1.5).
+**Depends on** (historical): phase_invoicing_stripe
+**Out of scope** (historical): royalty tax handling; audit-trail PDFs for accountants (v1.5).
 
 ---
 
@@ -249,11 +277,13 @@ Each phase must produce: **running code**, **passing tests**, **documentation**,
 
 ## phase_franchisor_console
 
-**Goal**: HQ can run the network — see every franchisee, review royalty, onboard new franchisees, audit any cross-tenant read.
+> **REPLACED in CHR-06 (2026-05).** The franchisor console is now the corporate hub at `/corporate/*` — see `apps/web/src/app/(app)/corporate/*` and `phases/phase_corporate_hub_redesign_GATE.md`. Branches replace franchisees, the onboarding wizard no longer publishes a pricebook template or collects a franchise agreement, the Stripe Connect step is gone, and impersonation is removed (corporate sees every branch natively). Everything below is **historical**.
 
-**Vertical slice**: franchisor admin logs in → sees network dashboard (revenue by franchisee, jobs by franchisee, AI spend, NPS stub) → drills into one franchisee's data (audit log entry written) → reviews royalty statements → clicks "invite new franchisee" and runs through the onboarding wizard end-to-end.
+**Goal** (historical): HQ can run the network — see every franchisee, review royalty, onboard new franchisees, audit any cross-tenant read.
 
-**Deliverables**:
+**Vertical slice** (historical): franchisor admin logs in → sees network dashboard (revenue by franchisee, jobs by franchisee, AI spend, NPS stub) → drills into one franchisee's data (audit log entry written) → reviews royalty statements → clicks "invite new franchisee" and runs through the onboarding wizard end-to-end.
+
+**Deliverables** (historical):
 - `/franchisor` route set (web)
 - Network metrics dashboard (aggregated, real-time via SSE)
 - Franchisee drill-down with impersonation flow and on-screen "HQ viewing" banner
@@ -262,8 +292,8 @@ Each phase must produce: **running code**, **passing tests**, **documentation**,
 - Pricebook template publisher UI (platform_admin + franchisor_admin)
 - Franchise agreement authoring UI (terms JSON editor)
 
-**Depends on**: phase_royalty_engine, phase_ai_csr_voice (for Twilio provisioning), phase_pricebook
-**Out of scope**: per-franchisee AI tuning UI (franchisor can edit KB; per-franchisee guardrail UI is v1.5).
+**Depends on** (historical): phase_royalty_engine, phase_ai_csr_voice (for Twilio provisioning), phase_pricebook
+**Out of scope** (historical): per-franchisee AI tuning UI (franchisor can edit KB; per-franchisee guardrail UI is v1.5).
 
 ---
 

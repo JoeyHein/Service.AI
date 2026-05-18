@@ -17,7 +17,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { stubStripeClient } from '../stripe.js';
@@ -94,7 +93,7 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
   const seed = await runSeed(pool);
-  const denverId = seed.franchisees.find((f) => f.slug === 'denver')!.id;
+  const denverId = seed.branches.find((b) => b.slug === 'denver')!.id;
   const db = drizzle(pool, { schema });
   const auth = createAuth({
     db,
@@ -109,7 +108,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -126,11 +124,8 @@ beforeAll(async () => {
   installItemId = inst[0]!.id;
 
   await pool.query(
-    `UPDATE franchisees
-        SET stripe_account_id = 'acct_stub_denver_ready',
-            stripe_charges_enabled = TRUE,
-            stripe_payouts_enabled = TRUE,
-            stripe_details_submitted = TRUE
+    `UPDATE branches
+        SET stripe_account_id = 'acct_stub_denver_ready'
       WHERE id = $1`,
     [denverId],
   );
@@ -170,7 +165,7 @@ describe('IP-07 / public invoice by token', () => {
     const data = res.json().data as {
       total: string;
       customerName: string;
-      franchiseeName: string;
+      branchName: string;
       paymentIntentId: string | null;
     };
     expect(data.customerName).toBe('Public Co');

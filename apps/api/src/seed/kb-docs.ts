@@ -15,8 +15,8 @@
  *     panel-damage, opener-failure, sensor-misalign, cable-snap,
  *     hinge-fail, roller-worn, weather-seal, jackshaft-opener
  *   - part tags: SKU-prefixed SKUs when the article maps to a
- *     specific pricebook entry (e.g. sku:SPR-TORSION,
- *     sku:OPN-CHAIN).
+ *     specific pricebook entry (e.g. sku:SPRING-TORSION,
+ *     sku:OPENER-CHAIN).
  */
 
 import { Pool } from 'pg';
@@ -84,13 +84,13 @@ export const KB_SEED: KbSeed[] = [
     source: 'fail-broken-torsion',
     title: 'Diagnosing a broken torsion spring',
     body: 'A broken torsion spring is usually visually obvious — a gap of 1-3 inches in the coil on the shaft. Door will be extremely heavy to lift and the opener will strain or fail to lift. Always replace in pairs if the door has two springs.',
-    tags: ['broken-spring', 'torsion', 'diagnostic', 'sku:SPR-TORSION', 'sku:SPR-TORSION-PAIR'],
+    tags: ['broken-spring', 'torsion', 'diagnostic', 'sku:SPRING-TORSION', 'sku:SPRING-TORSION-PAIR'],
   },
   {
     source: 'fail-broken-extension',
     title: 'Diagnosing a broken extension spring',
     body: 'Extension springs snap at the end hook most often. Inspect for visible gaps and safety cables. Replace both sides simultaneously even if only one is visibly broken.',
-    tags: ['broken-spring', 'extension', 'diagnostic', 'sku:SPR-EXT', 'sku:SPR-EXT-PAIR'],
+    tags: ['broken-spring', 'extension', 'diagnostic', 'sku:SPRING-EXT', 'sku:SPRING-EXT'],
   },
   {
     source: 'fail-off-track',
@@ -108,13 +108,13 @@ export const KB_SEED: KbSeed[] = [
     source: 'fail-opener-runs-no-move',
     title: 'Opener runs but door does not move',
     body: 'Gear stripping on chain-drive openers (LiftMaster 1/2hp, Genie Pro Series). Sometimes presents as grinding sound. Gear kit replacement is faster than unit replacement on openers <10 years old.',
-    tags: ['opener-failure', 'diagnostic', 'sku:OPN-CHAIN'],
+    tags: ['opener-failure', 'diagnostic', 'sku:OPENER-CHAIN'],
   },
   {
     source: 'fail-sensor-misalign',
     title: 'Safety sensors blinking / flashing LED',
     body: 'Sensors must be aligned within ~1° of each other. Check the indicator LED on the receiving sensor. Common fix: realign by loosening wing nut, sighting down the beam path, and retightening. Lens wipe if blocked.',
-    tags: ['sensor-misalign', 'opener-failure', 'diagnostic', 'sku:REP-SENSORALIGN'],
+    tags: ['sensor-misalign', 'opener-failure', 'diagnostic', 'sku:REP-PHOTOEYE'],
   },
   {
     source: 'fail-cable-snap',
@@ -144,7 +144,7 @@ export const KB_SEED: KbSeed[] = [
     source: 'fail-jackshaft',
     title: 'Jackshaft opener diagnosis',
     body: 'Wall-mounted side-drive openers (LiftMaster 8500, Sommer Direct Drive). No overhead rail. Common failures: motor coupler, encoder sensor, wall mount separation.',
-    tags: ['opener-failure', 'jackshaft-opener', 'diagnostic', 'sku:OPN-JACKSHAFT'],
+    tags: ['opener-failure', 'jackshaft-opener', 'diagnostic', 'sku:OPENER-JACKSHAFT'],
   },
   {
     source: 'fail-panel-damage',
@@ -157,13 +157,13 @@ export const KB_SEED: KbSeed[] = [
     source: 'part-torsion-crossref',
     title: 'Torsion spring cross-reference table',
     body: 'Wire diameter + inside diameter + length determines the spring. Common residential: 0.225 wire, 2-inch ID. Heavy-duty: 0.250 wire. Always match IPPT (inches per pound turn) to the door weight chart.',
-    tags: ['torsion', 'part-crossref', 'sku:SPR-TORSION', 'sku:SPR-HD'],
+    tags: ['torsion', 'part-crossref', 'sku:SPRING-TORSION', 'sku:SPRING-HEAVY'],
   },
   {
     source: 'part-extension-crossref',
     title: 'Extension spring cross-reference',
     body: 'Extension springs are color-coded by lift weight: yellow=80lb, red=100lb, green=120lb, tan=140lb, orange=160lb, gold=180lb. Always match the door lift weight, not the old spring color (can be faded).',
-    tags: ['extension', 'part-crossref', 'sku:SPR-EXT', 'sku:SPR-EXT-PAIR'],
+    tags: ['extension', 'part-crossref', 'sku:SPRING-EXT', 'sku:SPRING-EXT'],
   },
   {
     source: 'part-roller-types',
@@ -175,19 +175,19 @@ export const KB_SEED: KbSeed[] = [
     source: 'part-opener-chain-vs-belt',
     title: 'Chain vs belt opener selection',
     body: 'Belt: quieter, 30% more expensive, better for bedrooms adjacent to garage. Chain: more robust for heavy commercial doors, longer service life under cold-weather cycling. Match HP to door weight: 1/2 hp for single 2-layer, 3/4 hp for 2-car wood.',
-    tags: ['opener-failure', 'part-crossref', 'sku:OPN-CHAIN', 'sku:OPN-BELT'],
+    tags: ['opener-failure', 'part-crossref', 'sku:OPENER-CHAIN', 'sku:OPENER-BELT'],
   },
   {
     source: 'part-smart-openers',
     title: 'Smart opener (myQ, HomeLink) compatibility',
     body: 'myQ-enabled openers report status to a phone app. Older units (pre-2014) lack security 2.0 and cannot pair with modern remotes — upgrade to a smart belt drive.',
-    tags: ['opener-failure', 'part-crossref', 'sku:OPN-SMART-BELT'],
+    tags: ['opener-failure', 'part-crossref', 'sku:OPENER-SMART'],
   },
   {
     source: 'part-remote-keypad',
     title: 'Remote and wireless keypad programming',
     body: 'Three-button remote pairs via the learn button on the opener logic board. Rolling-code remotes from post-2011 openers are not backward-compatible with pre-2011 openers.',
-    tags: ['opener-failure', 'part-crossref', 'sku:OPN-REMOTE', 'sku:OPN-KEYPAD'],
+    tags: ['opener-failure', 'part-crossref', 'sku:OPENER-REMOTE', 'sku:OPENER-KEYPAD'],
   },
   {
     source: 'part-bottom-bracket',
@@ -225,7 +225,7 @@ export const KB_SEED: KbSeed[] = [
     source: 'ops-quote-single-vs-pair',
     title: 'Quoting spring pair vs single',
     body: 'Best practice on dual-spring doors: quote both springs even if only one is broken. Matched cycle life; customer pays one service trip. Single-spring quotes must disclose the risk of the second spring failing within 6-18 months.',
-    tags: ['broken-spring', 'torsion', 'quoting', 'sku:SPR-TORSION-PAIR'],
+    tags: ['broken-spring', 'torsion', 'quoting', 'sku:SPRING-TORSION-PAIR'],
   },
   {
     source: 'ops-quote-tune-up',
@@ -279,22 +279,20 @@ export const KB_SEED: KbSeed[] = [
 ];
 
 /**
- * Idempotent seed helper. Called from runSeed after the base
- * franchisor rows exist. Inserts with `ON CONFLICT (source) DO
- * NOTHING` so re-running is safe.
+ * Idempotent seed helper. Inserts with `ON CONFLICT (source) DO NOTHING`
+ * so re-running is safe. The franchisor_id column on kb_docs was dropped
+ * by migration 0016 — the corpus is now corporate-wide.
  */
 export async function runKbSeed(
   pool: InstanceType<typeof Pool>,
-  franchisorId: string,
 ): Promise<void> {
   for (const doc of KB_SEED) {
     const embedding = await stubEmbeddingClient.embed(doc.tags.join(' '));
     await pool.query(
-      `INSERT INTO kb_docs (franchisor_id, title, body, source, embedding, tags)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+      `INSERT INTO kb_docs (title, body, source, embedding, tags)
+         VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
        ON CONFLICT (source) DO NOTHING`,
       [
-        franchisorId,
         doc.title,
         doc.body,
         doc.source,

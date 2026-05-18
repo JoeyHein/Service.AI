@@ -2,7 +2,7 @@
  * Dispatcher metrics rollup (TASK-DI-07).
  *
  * `computeDailyAiMetrics` reads `ai_suggestions` for a
- * (franchiseeId, UTC-day) window and upserts a single
+ * (branchId, UTC-day) window and upserts a single
  * `ai_metrics` row. Pure-ish — side effects are a single
  * insert-or-update in the caller's transaction so the endpoint
  * handler can wrap it in withScope.
@@ -13,7 +13,7 @@ import { aiMetrics, aiSuggestions, type ScopedTx } from '@service-ai/db';
 
 export interface DailyAiMetricsInput {
   tx: ScopedTx;
-  franchiseeId: string;
+  branchId: string;
   /** UTC-midnight instant for the day being rolled up. */
   date: Date;
 }
@@ -50,7 +50,7 @@ export async function computeDailyAiMetrics(
     .from(aiSuggestions)
     .where(
       and(
-        eq(aiSuggestions.franchiseeId, input.franchiseeId),
+        eq(aiSuggestions.branchId, input.branchId),
         gte(aiSuggestions.createdAt, start),
         lt(aiSuggestions.createdAt, end),
       ),
@@ -71,7 +71,7 @@ export async function computeDailyAiMetrics(
     .from(aiMetrics)
     .where(
       and(
-        eq(aiMetrics.franchiseeId, input.franchiseeId),
+        eq(aiMetrics.branchId, input.branchId),
         eq(aiMetrics.date, start),
       ),
     );
@@ -96,7 +96,7 @@ export async function computeDailyAiMetrics(
     const inserted = await input.tx
       .insert(aiMetrics)
       .values({
-        franchiseeId: input.franchiseeId,
+        branchId: input.branchId,
         date: start,
         ...values,
       })

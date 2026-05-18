@@ -66,31 +66,30 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
   db = drizzle(pool, { schema });
   // Seed an ai_conversations row so tools that write messages
   // have a parent to attach to.
   const scope: RequestScope = {
-    type: 'franchisee',
+    type: 'branch',
     userId: 'system-bot',
     role: 'csr',
-    franchisorId: seed.franchisorId,
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
   };
   conversationId = await withScope(db, scope, async (tx) => {
     const rows = await tx
       .insert(aiConversations)
       .values({
-        franchiseeId: ids.denverId,
+        branchId: ids.denverId,
         capability: 'csr.voice',
       })
       .returning();
     return rows[0]!.id;
   });
   ctx = {
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
     userId: null,
     guardrails: {
       confidenceThreshold: 0.8,
@@ -111,11 +110,10 @@ beforeEach((testCtx) => {
 
 function denverScope(): RequestScope {
   return {
-    type: 'franchisee',
+    type: 'branch',
     userId: 'system-bot',
     role: 'csr',
-    franchisorId: '00000000-0000-0000-0000-000000000000', // not actually checked in tool scope
-    franchiseeId: ids.denverId,
+    branchId: ids.denverId,
   };
 }
 
@@ -139,7 +137,7 @@ describe('CV-03 / lookupCustomer', () => {
 });
 
 describe('CV-03 / createCustomer', () => {
-  it('creates a franchisee-scoped customer and echoes the id', async () => {
+  it('creates a branch-scoped customer and echoes the id', async () => {
     const deps = makeDeps(denverScope(), conversationId);
     const tools = buildCsrToolSet(deps);
     const res = await tools.createCustomer!.execute(
@@ -189,7 +187,7 @@ describe('CV-03 / bookJob', () => {
     const rows = await withScope(db, denverScope(), (tx) =>
       tx.select().from(schema.jobs).where(eq(schema.jobs.id, data.jobId)),
     );
-    expect(rows[0]?.franchiseeId).toBe(ids.denverId);
+    expect(rows[0]?.branchId).toBe(ids.denverId);
   });
 
   it('refuses with INVALID_INPUT when no customerId resolved', async () => {
@@ -202,16 +200,15 @@ describe('CV-03 / bookJob', () => {
   it('cross-tenant customerId → INVALID_TARGET', async () => {
     // Insert a customer into Austin directly, then try to book it as Denver.
     const austinScope: RequestScope = {
-      type: 'franchisee',
+      type: 'branch',
       userId: 'system-bot',
       role: 'csr',
-      franchisorId: '00000000-0000-0000-0000-000000000000',
-      franchiseeId: ids.austinId,
+      branchId: ids.austinId,
     };
     const austinCustomerId = await withScope(db, austinScope, async (tx) => {
       const rows = await tx
         .insert(schema.customers)
-        .values({ franchiseeId: ids.austinId, name: 'Austin C' })
+        .values({ branchId: ids.austinId, name: 'Austin C' })
         .returning();
       return rows[0]!.id;
     });

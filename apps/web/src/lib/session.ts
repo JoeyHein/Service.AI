@@ -7,17 +7,16 @@ import { redirect } from 'next/navigation';
 import { apiServerFetch } from './api.js';
 
 export interface MeScope {
-  type: 'platform' | 'franchisor' | 'franchisee';
+  type: 'corporate' | 'branch';
   userId: string;
   role: string;
-  franchisorId?: string;
-  franchiseeId?: string;
+  branchId?: string;
   locationId?: string | null;
 }
 
 export interface ImpersonatingContext {
-  targetFranchiseeId: string;
-  targetFranchiseeName: string | null;
+  targetBranchId: string;
+  targetBranchName: string | null;
 }
 
 export interface MeResponse {

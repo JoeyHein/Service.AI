@@ -19,7 +19,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { stubStripeClient, type StripeClient } from '../stripe.js';
@@ -33,12 +32,12 @@ let reachable = false;
 let pool: InstanceType<typeof Pool>;
 let app: FastifyInstance;
 let cookies: {
-  denverOwner: string;
+  denverManager: string;
   denverTech: string;
-  austinOwner: string;
-  franchisorAdmin: string;
+  austinManager: string;
+  corporateAdmin: string;
 };
-let ids: { franchisorId: string; denverId: string; austinId: string };
+let ids: { corporateId: string; denverId: string; austinId: string };
 let denverJobId: string;
 let austinJobId: string;
 let installItemId: string;
@@ -75,8 +74,8 @@ async function signIn(email: string): Promise<string> {
   return c;
 }
 
-async function createFranchisorAdmin(franchisorId: string): Promise<string> {
-  const email = 'ip07-fradmin@elevateddoors.test';
+async function createCorporateAdmin(corporateId: string): Promise<string> {
+  const email = 'ip07-coadmin@elevateddoors.test';
   await app.inject({
     method: 'POST',
     url: '/api/auth/sign-up/email',
@@ -90,12 +89,12 @@ async function createFranchisorAdmin(franchisorId: string): Promise<string> {
     .where(eq(users.email, email));
   await pool.query(
     `INSERT INTO memberships (user_id, scope_type, scope_id, role)
-       SELECT $1, 'franchisor'::scope_type, $2, 'franchisor_admin'::role
+       SELECT $1, 'corporate'::scope_type, $2, 'corporate_admin'::role
        WHERE NOT EXISTS (
          SELECT 1 FROM memberships
-          WHERE user_id=$1 AND scope_type='franchisor' AND scope_id=$2 AND deleted_at IS NULL
+          WHERE user_id=$1 AND scope_type='corporate' AND scope_id=$2 AND deleted_at IS NULL
        )`,
-    [userId, franchisorId],
+    [userId, corporateId],
   );
   return await signIn(email);
 }
@@ -121,7 +120,7 @@ async function finalizeDenver(): Promise<{ invoiceId: string; token: string }> {
   const create = await app.inject({
     method: 'POST',
     url: `/api/v1/jobs/${denverJobId}/invoices`,
-    headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+    headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
     payload: JSON.stringify({
       lines: [{ serviceItemId: installItemId, quantity: 1 }],
     }),
@@ -130,7 +129,7 @@ async function finalizeDenver(): Promise<{ invoiceId: string; token: string }> {
   const fin = await app.inject({
     method: 'POST',
     url: `/api/v1/invoices/${invoiceId}/finalize`,
-    headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+    headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
     payload: '{}',
   });
   return { invoiceId, token: fin.json().data.paymentLinkToken as string };
@@ -143,9 +142,9 @@ beforeAll(async () => {
   await runReset(pool);
   const seed = await runSeed(pool);
   ids = {
-    franchisorId: seed.franchisorId,
-    denverId: seed.franchisees.find((f) => f.slug === 'denver')!.id,
-    austinId: seed.franchisees.find((f) => f.slug === 'austin')!.id,
+    corporateId: seed.corporateId,
+    denverId: seed.branches.find((b) => b.slug === 'denver')!.id,
+    austinId: seed.branches.find((b) => b.slug === 'austin')!.id,
   };
 
   // A "strict" stripe client whose constructWebhookEvent always
@@ -173,7 +172,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -182,10 +180,10 @@ beforeAll(async () => {
   });
   await app.ready();
   cookies = {
-    denverOwner: await signIn('denver.owner@elevateddoors.test'),
+    denverManager: await signIn('denver.owner@elevateddoors.test'),
     denverTech: await signIn('denver.tech1@elevateddoors.test'),
-    austinOwner: await signIn('austin.owner@elevateddoors.test'),
-    franchisorAdmin: await createFranchisorAdmin(ids.franchisorId),
+    austinManager: await signIn('austin.owner@elevateddoors.test'),
+    corporateAdmin: await createCorporateAdmin(ids.corporateId),
   };
 
   const inst = await db
@@ -195,16 +193,13 @@ beforeAll(async () => {
   installItemId = inst[0]!.id;
 
   await pool.query(
-    `UPDATE franchisees
-        SET stripe_account_id = 'acct_stub_denver_ready',
-            stripe_charges_enabled = TRUE,
-            stripe_payouts_enabled = TRUE,
-            stripe_details_submitted = TRUE
+    `UPDATE branches
+        SET stripe_account_id = 'acct_stub_denver_ready'
       WHERE id = $1`,
     [ids.denverId],
   );
-  denverJobId = (await createCustomerAndJob(cookies.denverOwner, 'Sec D')).jobId;
-  austinJobId = (await createCustomerAndJob(cookies.austinOwner, 'Sec A')).jobId;
+  denverJobId = (await createCustomerAndJob(cookies.denverManager, 'Sec D')).jobId;
+  austinJobId = (await createCustomerAndJob(cookies.austinManager, 'Sec A')).jobId;
   // Keep strictStripe referenced so the variable isn't flagged unused by eslint.
   void strictStripe;
 }, 60_000);
@@ -223,9 +218,9 @@ beforeEach((ctx) => {
 // ---------------------------------------------------------------------------
 
 describe('IP-08 / anonymous 401 on every new endpoint', () => {
+  // /connect/onboard + /connect/status were removed by CHR-08 (single
+  // corporate Stripe account replaces per-branch Connect).
   const authedOps: Array<{ method: 'POST' | 'GET'; url: string; body?: string }> = [
-    { method: 'POST', url: '/api/v1/franchisees/00000000-0000-0000-0000-000000000000/connect/onboard', body: '{}' },
-    { method: 'GET', url: '/api/v1/franchisees/00000000-0000-0000-0000-000000000000/connect/status' },
     { method: 'POST', url: '/api/v1/invoices/00000000-0000-0000-0000-000000000000/finalize', body: '{}' },
     { method: 'POST', url: '/api/v1/invoices/00000000-0000-0000-0000-000000000000/send', body: '{}' },
     { method: 'POST', url: '/api/v1/invoices/00000000-0000-0000-0000-000000000000/refund', body: '{}' },
@@ -249,25 +244,15 @@ describe('IP-08 / anonymous 401 on every new endpoint', () => {
 // ---------------------------------------------------------------------------
 
 describe('IP-08 / Connect onboarding role boundary', () => {
-  it('tech onboarding → 403 FORBIDDEN', async () => {
+  // CHR-08 removed per-branch Stripe Connect; these endpoints are gone.
+  it('connect/onboard route is removed → 404', async () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/franchisees/${ids.denverId}/connect/onboard`,
       headers: { cookie: cookies.denverTech, 'content-type': 'application/json' },
       payload: '{}',
     });
-    expect(res.statusCode).toBe(403);
-    expect(res.json().error.code).toBe('FORBIDDEN');
-  });
-
-  it('franchisee owner onboarding → 403 FORBIDDEN', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/v1/franchisees/${ids.denverId}/connect/onboard`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
-      payload: '{}',
-    });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(404);
   });
 });
 
@@ -280,7 +265,7 @@ describe('IP-08 / invoice transition security', () => {
     const create = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${denverJobId}/invoices`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({
         lines: [{ serviceItemId: installItemId, quantity: 1 }],
       }),
@@ -289,7 +274,7 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${id}/finalize`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(404);
@@ -300,7 +285,7 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${invoiceId}/send`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(404);
@@ -312,17 +297,17 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${invoiceId}/refund`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(404);
   });
 
-  it('finalize when franchisee is not Stripe-ready → 409 STRIPE_NOT_READY', async () => {
+  it('finalize succeeds even when branch lacks per-branch Stripe Connect (CHR-08 removed the readiness gate)', async () => {
     const create = await app.inject({
       method: 'POST',
       url: `/api/v1/jobs/${austinJobId}/invoices`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: JSON.stringify({
         lines: [{ serviceItemId: installItemId, quantity: 1 }],
       }),
@@ -330,11 +315,10 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${create.json().data.id}/finalize`,
-      headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.austinManager, 'content-type': 'application/json' },
       payload: '{}',
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error.code).toBe('STRIPE_NOT_READY');
+    expect(res.statusCode).toBe(200);
   });
 
   it('refund on non-paid invoice → 409 INVALID_TRANSITION', async () => {
@@ -342,7 +326,7 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${invoiceId}/refund`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: '{}',
     });
     expect(res.statusCode).toBe(409);
@@ -355,7 +339,7 @@ describe('IP-08 / invoice transition security', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/invoices/${invoiceId}/refund`,
-      headers: { cookie: cookies.denverOwner, 'content-type': 'application/json' },
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
       payload: JSON.stringify({ amount: 999999 }),
     });
     expect(res.statusCode).toBe(400);
@@ -411,13 +395,13 @@ describe('IP-08 / public invoice by token', () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it('non-UUID id on connect status → 400', async () => {
+  it('connect/status route is removed → 404 (CHR-08)', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/franchisees/not-a-uuid/connect/status',
-      headers: { cookie: cookies.franchisorAdmin },
+      headers: { cookie: cookies.corporateAdmin },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(404);
   });
 
   it('public response omits internal fields (application fee, stripe account id)', async () => {

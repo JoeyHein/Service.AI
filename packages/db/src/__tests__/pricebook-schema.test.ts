@@ -1,3 +1,12 @@
+/**
+ * Tests for the post-CHR Drizzle pricebook schema.
+ *
+ * pricebookOverrides was dropped by migration 0016 (CHR-01) and replaced
+ * by `pricebook_suggestions` (a corporate-review queue). The legacy
+ * three-policy + franchisor-scoped pricebook checks no longer apply;
+ * the new template / item schema is corporate-owned with no per-branch
+ * override path under v1.
+ */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -5,31 +14,28 @@ import { fileURLToPath } from 'node:url';
 import {
   serviceCatalogTemplates,
   serviceItems,
-  pricebookOverrides,
+  pricebookSuggestions,
   catalogStatus,
 } from '../schema.js';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const UP = readFileSync(resolve(PKG_ROOT, 'migrations', '0006_pricebook.sql'), 'utf8');
-const DOWN = readFileSync(
-  resolve(PKG_ROOT, 'migrations', '0006_pricebook.down.sql'),
+const CHR_UP = readFileSync(
+  resolve(PKG_ROOT, 'migrations', '0016_corporate_hub_redesign.sql'),
   'utf8',
 );
 
-describe('PB-01 / Drizzle schema', () => {
-  it('exports all three tables + the enum', () => {
+describe('PB / Drizzle schema after CHR-01', () => {
+  it('exports the catalog tables + the catalog_status enum', () => {
     expect(serviceCatalogTemplates).toBeDefined();
     expect(serviceItems).toBeDefined();
-    expect(pricebookOverrides).toBeDefined();
     expect(catalogStatus.enumValues).toEqual(['draft', 'published', 'archived']);
   });
 
-  it('service_items has the expected price columns', () => {
+  it('service_items keeps the expected price columns', () => {
     const keys = Object.keys(serviceItems);
     for (const col of [
       'id',
       'templateId',
-      'franchisorId',
       'sku',
       'name',
       'category',
@@ -43,59 +49,31 @@ describe('PB-01 / Drizzle schema', () => {
     }
   });
 
-  it('pricebookOverrides carries denormalised franchisor_id for RLS', () => {
-    expect(Object.keys(pricebookOverrides)).toContain('franchisorId');
+  it('service_items no longer carries franchisorId (CHR-01 dropped it)', () => {
+    expect(Object.keys(serviceItems)).not.toContain('franchisorId');
+  });
+
+  it('exports pricebookSuggestions (CHR-01 replacement for overrides)', () => {
+    expect(pricebookSuggestions).toBeDefined();
+    const keys = Object.keys(pricebookSuggestions);
+    for (const col of [
+      'branchId',
+      'serviceItemId',
+      'suggestedPriceCents',
+      'status',
+      'suggestedByUserId',
+    ]) {
+      expect(keys).toContain(col);
+    }
   });
 });
 
-describe('PB-01 / migration 0006 structure', () => {
-  const tables = [
-    'service_catalog_templates',
-    'service_items',
-    'pricebook_overrides',
-  ] as const;
-
-  it('creates all three tables', () => {
-    for (const t of tables) {
-      expect(UP).toMatch(new RegExp(`CREATE TABLE IF NOT EXISTS ${t}`));
-    }
+describe('PB / migration 0016 drops the legacy override table', () => {
+  it('drops pricebook_overrides', () => {
+    expect(CHR_UP).toMatch(/DROP TABLE IF EXISTS pricebook_overrides/);
   });
 
-  it('templates + items have a READ-only scoped policy for franchisee users', () => {
-    expect(UP).toMatch(/CREATE POLICY service_catalog_templates_scoped_read/);
-    expect(UP).toMatch(/CREATE POLICY service_items_scoped_read/);
-    // FOR SELECT USING ... — matches the read-only pattern
-    expect(UP).toMatch(
-      /service_catalog_templates_scoped_read[\s\S]+?FOR SELECT USING/,
-    );
-    expect(UP).toMatch(/service_items_scoped_read[\s\S]+?FOR SELECT USING/);
-  });
-
-  it('pricebook_overrides uses the three-policy franchisee-scoped pattern', () => {
-    expect(UP).toMatch(/CREATE POLICY pricebook_overrides_platform_admin/);
-    expect(UP).toMatch(/CREATE POLICY pricebook_overrides_franchisor_admin/);
-    expect(UP).toMatch(/CREATE POLICY pricebook_overrides_scoped/);
-  });
-
-  it('enables + forces RLS on every table', () => {
-    for (const t of tables) {
-      expect(UP).toMatch(new RegExp(`ALTER TABLE ${t}\\s+ENABLE ROW LEVEL SECURITY`));
-      expect(UP).toMatch(new RegExp(`ALTER TABLE ${t}\\s+FORCE  ROW LEVEL SECURITY`));
-    }
-  });
-
-  it('down migration drops everything + the enum', () => {
-    for (const t of tables) {
-      expect(DOWN).toMatch(new RegExp(`DROP TABLE IF EXISTS ${t}\\s+CASCADE`));
-    }
-    expect(DOWN).toMatch(/DROP TYPE IF EXISTS catalog_status/);
-  });
-
-  it('down drops tables in FK-safe order (overrides → items → templates)', () => {
-    const overridesIdx = DOWN.indexOf('DROP TABLE IF EXISTS pricebook_overrides');
-    const itemsIdx = DOWN.indexOf('DROP TABLE IF EXISTS service_items');
-    const templatesIdx = DOWN.indexOf('DROP TABLE IF EXISTS service_catalog_templates');
-    expect(overridesIdx).toBeLessThan(itemsIdx);
-    expect(itemsIdx).toBeLessThan(templatesIdx);
+  it('creates pricebook_suggestions in its place', () => {
+    expect(CHR_UP).toMatch(/CREATE TABLE pricebook_suggestions\b/);
   });
 });

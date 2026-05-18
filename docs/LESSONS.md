@@ -108,6 +108,92 @@ The root `eslint.config.js` uses only `@typescript-eslint`. `apps/web` runs `nex
 
 ---
 
+## phase_supplier_quote_bridge (2026-05-17)
+
+### L-SQB-01: Cost is never trusted from the client
+
+**Why:** Early SQB-07 drafts allowed the route to accept a client-side
+`unitCostCents` on the price body. A manager could in principle forge
+a higher cost to inflate their commission preview (the manager UI
+shows `cost × margin% → price`; the bigger the cost, the bigger the
+commission base). The fix is structural: the route re-fetches cost
+from the SupplierProvider on every `/price` call and ignores any
+cost field on the body.
+
+**How to apply:** Any time a route accepts a number from the client
+that feeds an internal calculation, ask "what stops the client from
+overstating this?" If the answer involves human review, it's not
+enough. Re-derive the number server-side from a trusted source on
+every call. Covered by `live-quote-routes.test.ts::cost-forgery
+integration test`.
+
+---
+
+### L-SQB-02: A line override of 0% is a real choice, not a missing field
+
+**Why:** Initial `resolveSellingPrice` used `if (lineOverridePct)` to
+test for an override. `0` is falsy in JS — a manager setting "sell at
+cost" was silently falling through to the category default. Caught
+by the property-based bounds test that exercised `percent: 0`.
+
+**How to apply:** When a numeric option's lower bound is meaningful
+(0%, 0 cents, 0 quantity), use `Number.isFinite(x) && x !== null` or
+explicit `x === null || x === undefined` checks. Never use truthiness
+to detect "present." This rule kicks in for every margin / discount /
+override field across the platform.
+
+---
+
+### L-SQB-03: Idempotency requires both an in-process lock AND a DB UNIQUE constraint
+
+**Why:** SQB-05's first draft of `commit_external_quote` only used
+the DB UNIQUE on `external_quote_id`. The 10× concurrent test passed
+in single-process SQLite but would have failed under multi-worker
+Gunicorn because each worker had its own connection — the UNIQUE
+race produced one BC document, but two workers both believed they had
+"won" and called BC `add_quote_line` twice (creating a quote with
+4 lines instead of 2). The fix layers a per-key threading.Lock inside
+the function. The UNIQUE constraint is the cross-process correctness
+layer; the in-process lock makes the same-process race deterministic.
+
+**How to apply:** For any idempotent write that fans out to a real
+upstream (BC, Stripe, Twilio): UNIQUE in the DB AND a per-key
+in-process lock. The DB is the source of truth for "did this commit
+succeed"; the lock is the source of truth for "am I the one running
+the upstream right now." Both are required.
+
+---
+
+### L-SQB-04: Don't recurse to retry — loop
+
+**Why:** SQB-05's IntegrityError retry path called `commit_external_quote`
+recursively. The function holds a `threading.Lock` (non-reentrant);
+the recursive call deadlocked the second-process race. Caught by the
+10× concurrent test. Fix: loop within the function, never recurse.
+
+**How to apply:** Mutex-holding code never recurses into itself. Loop
+or use a non-mutex retry strategy (e.g., exponential backoff outside
+the critical section). Applies anywhere `threading.Lock` /
+`asyncio.Lock` / `Mutex` appears.
+
+---
+
+### L-SQB-05: ToolResult isn't a discriminated union — use optional chaining
+
+**Why:** `@service-ai/ai`'s `ToolResult` is `{ ok: boolean; data?: T;
+error?: {...} }` rather than `{ ok: true; data: T } | { ok: false;
+error: {...} }`. TypeScript can't narrow on `ok` because both fields
+are optional on the merged shape. Tests doing `if (res.ok) return;
+expect(res.error.code).toBe('X')` fail strict typecheck — `res.error`
+is `possibly undefined`.
+
+**How to apply:** Until the type is refactored to a true
+discriminated union, every consumer test uses optional chaining:
+`expect(res.error?.code).toBe('X')`. Flagged in
+`packages/ai/src/tools/types.ts` for a future cleanup.
+
+---
+
 ## Overrides (human-added)
 
 _Rules the evolver must never regress. Format: `- <date> — <override> — <reason>`_

@@ -7,25 +7,25 @@ import { stubTelephonyClient, strictStubTelephonyClient } from '../telephony.js'
 import { stubAsrClient, stubTtsClient } from '@service-ai/ai';
 
 describe('CV-04 / telephony stub', () => {
-  it('provisions a stable E.164 number for a given franchiseeId', async () => {
+  it('provisions a stable E.164 number for a given branchId', async () => {
     const t = stubTelephonyClient();
-    const a = await t.provisionNumber({ franchiseeId: 'fe-1' });
-    const b = await t.provisionNumber({ franchiseeId: 'fe-1' });
+    const a = await t.provisionNumber({ branchId: 'br-1' });
+    const b = await t.provisionNumber({ branchId: 'br-1' });
     expect(a.phoneNumberE164).toBe(b.phoneNumberE164);
     expect(a.phoneNumberE164).toMatch(/^\+1555\d{7}$/);
     expect(a.twilioSid).toMatch(/^PN/);
   });
 
-  it('different franchisees get different numbers', async () => {
+  it('different branches get different numbers', async () => {
     const t = stubTelephonyClient();
-    const a = await t.provisionNumber({ franchiseeId: 'fe-a' });
-    const b = await t.provisionNumber({ franchiseeId: 'fe-b' });
+    const a = await t.provisionNumber({ branchId: 'br-a' });
+    const b = await t.provisionNumber({ branchId: 'br-b' });
     expect(a.phoneNumberE164).not.toBe(b.phoneNumberE164);
   });
 
   it('area code override honoured', async () => {
     const t = stubTelephonyClient();
-    const r = await t.provisionNumber({ franchiseeId: 'fe-1', areaCode: '720' });
+    const r = await t.provisionNumber({ branchId: 'br-1', areaCode: '720' });
     expect(r.phoneNumberE164).toMatch(/^\+1720\d{7}$/);
   });
 

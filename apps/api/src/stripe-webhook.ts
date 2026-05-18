@@ -16,39 +16,39 @@
  *      violation the handler short-circuits to 200 (replay).
  *   4. Dispatches per event type.
  *
- * The dispatch itself runs OUTSIDE `withScope` because the event
- * has no franchisee context until we look up the invoice /
- * payment_intent / account. The queries use Drizzle directly —
- * this endpoint trusts the event payload after signature
- * verification. Every row we write is keyed on a Stripe id so
- * replay + concurrent delivery is idempotent even without RLS.
+ * Lookups run on the raw Drizzle handle; the row writes that follow
+ * run inside a `withScope` transaction stamped with the synthetic
+ * `corporate_admin` scope (CHR-08), so the commission engine's
+ * scoped queries succeed when production RLS is active. Every row we
+ * write is keyed on a Stripe id so replay + concurrent delivery is
+ * idempotent.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
-  franchisees,
   invoices,
   payments,
   refunds,
   stripeEvents,
+  withScope,
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 import { logger } from './logger.js';
 import type { StripeClient } from './stripe.js';
+import { onInvoicePaid, reverseInvoicePaid } from './commission-engine.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
 interface PaymentIntentLike {
   id?: string;
   amount?: number;
-  application_fee_amount?: number | null;
   currency?: string;
   status?: string;
   latest_charge?: string | null;
   charges?: { data?: Array<{ id: string }> };
-  metadata?: { invoiceId?: string; franchiseeId?: string };
+  metadata?: { invoiceId?: string; branchId?: string };
 }
 
 interface ChargeLike {
@@ -63,13 +63,6 @@ interface ChargeLike {
       status?: string | null;
     }>;
   };
-}
-
-interface AccountLike {
-  id?: string;
-  charges_enabled?: boolean;
-  payouts_enabled?: boolean;
-  details_submitted?: boolean;
 }
 
 async function insertEventIdempotent(
@@ -87,6 +80,18 @@ async function insertEventIdempotent(
     .returning({ id: stripeEvents.id });
   return rows.length === 1;
 }
+
+/**
+ * Synthetic corporate scope used by the webhook handler so the commission
+ * engine's RLS-scoped queries succeed. The webhook is an untrusted caller
+ * with no session, but every event we process is a corporate-side action
+ * (invoice paid/refunded) so corporate_admin is the correct role.
+ */
+const WEBHOOK_SCOPE = {
+  type: 'corporate' as const,
+  userId: 'stripe-webhook',
+  role: 'corporate_admin' as const,
+};
 
 async function handlePaymentIntentSucceeded(
   db: Drizzle,
@@ -107,28 +112,32 @@ async function handlePaymentIntentSucceeded(
     pi.charges?.data?.[0]?.id ??
     `${pi.id}_charge`;
 
-  await db.insert(payments).values({
-    franchiseeId: invoice.franchiseeId,
-    invoiceId: invoice.id,
-    stripePaymentIntentId: pi.id,
-    stripeChargeId: chargeId,
-    amount: ((pi.amount ?? 0) / 100).toFixed(2),
-    applicationFeeAmount: ((pi.application_fee_amount ?? 0) / 100).toFixed(2),
-    currency: pi.currency ?? 'usd',
-    status: pi.status ?? 'succeeded',
-  })
-    .onConflictDoNothing({ target: payments.stripeChargeId });
+  await withScope(db, WEBHOOK_SCOPE, async (tx) => {
+    await tx.insert(payments).values({
+      branchId: invoice.branchId,
+      invoiceId: invoice.id,
+      stripePaymentIntentId: pi.id!,
+      stripeChargeId: chargeId,
+      amount: ((pi.amount ?? 0) / 100).toFixed(2),
+      currency: pi.currency ?? 'usd',
+      status: pi.status ?? 'succeeded',
+    })
+      .onConflictDoNothing({ target: payments.stripeChargeId });
 
-  if (invoice.status !== 'paid') {
-    await db
-      .update(invoices)
-      .set({
-        status: 'paid',
-        paidAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(invoices.id, invoice.id));
-  }
+    if (invoice.status !== 'paid') {
+      await tx
+        .update(invoices)
+        .set({
+          status: 'paid',
+          paidAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(invoices.id, invoice.id));
+    }
+    // CHR-08: the commission ledger replaces royalty accounting. Credit the
+    // branch manager's active comp plan for this invoice in the same tx.
+    await onInvoicePaid(tx, invoice.id);
+  });
 }
 
 async function handlePaymentIntentFailed(
@@ -150,7 +159,7 @@ async function handlePaymentIntentFailed(
   const { schedulePaymentRetry } = await import('./ai-collections.js');
   const failureCode = pi.last_payment_error?.code ?? 'unknown';
   await schedulePaymentRetry(db, {
-    franchiseeId: invoice.franchiseeId,
+    branchId: invoice.branchId,
     invoiceId: invoice.id,
     failureCode,
   });
@@ -174,36 +183,25 @@ async function handleChargeRefunded(db: Drizzle, charge: ChargeLike): Promise<vo
     .where(eq(payments.stripePaymentIntentId, piId));
   const payment = paymentRows[0];
 
-  for (const r of charge.refunds?.data ?? []) {
-    await db
-      .insert(refunds)
-      .values({
-        franchiseeId: invoice.franchiseeId,
-        invoiceId: invoice.id,
-        paymentId: payment?.id ?? null,
-        stripeRefundId: r.id,
-        amount: (r.amount / 100).toFixed(2),
-        reason: r.reason ?? null,
-        status: r.status ?? 'succeeded',
-      })
-      .onConflictDoNothing({ target: refunds.stripeRefundId });
-  }
-}
-
-async function handleAccountUpdated(
-  db: Drizzle,
-  account: AccountLike,
-): Promise<void> {
-  if (!account.id) return;
-  await db
-    .update(franchisees)
-    .set({
-      stripeChargesEnabled: account.charges_enabled ?? false,
-      stripePayoutsEnabled: account.payouts_enabled ?? false,
-      stripeDetailsSubmitted: account.details_submitted ?? false,
-      updatedAt: new Date(),
-    })
-    .where(eq(franchisees.stripeAccountId, account.id));
+  await withScope(db, WEBHOOK_SCOPE, async (tx) => {
+    for (const r of charge.refunds?.data ?? []) {
+      await tx
+        .insert(refunds)
+        .values({
+          branchId: invoice.branchId,
+          invoiceId: invoice.id,
+          paymentId: payment?.id ?? null,
+          stripeRefundId: r.id,
+          amount: (r.amount / 100).toFixed(2),
+          reason: r.reason ?? null,
+          status: r.status ?? 'succeeded',
+        })
+        .onConflictDoNothing({ target: refunds.stripeRefundId });
+    }
+    // CHR-08: balancing entry in the commission ledger so the manager's
+    // accrued commission is clawed back in the current period.
+    await reverseInvoicePaid(tx, invoice.id, 'invoice_refunded');
+  });
 }
 
 export function registerStripeWebhook(
@@ -288,9 +286,6 @@ export function registerStripeWebhook(
           break;
         case 'charge.refunded':
           await handleChargeRefunded(db, (event.data.object ?? {}) as ChargeLike);
-          break;
-        case 'account.updated':
-          await handleAccountUpdated(db, (event.data.object ?? {}) as AccountLike);
           break;
         default:
           logger.debug({ type: event.type, id: event.id }, 'stripe webhook: unhandled type');

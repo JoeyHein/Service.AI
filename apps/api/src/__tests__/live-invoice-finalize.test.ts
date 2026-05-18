@@ -15,7 +15,6 @@ import { buildApp } from '../app.js';
 import { runReset, runSeed, DEV_SEED_PASSWORD } from '../seed/index.js';
 import {
   membershipResolver,
-  franchiseeLookup,
   auditLogWriter,
 } from '../production-resolvers.js';
 import { stubStripeClient } from '../stripe.js';
@@ -93,7 +92,7 @@ beforeAll(async () => {
   pool = new Pool({ connectionString: DATABASE_URL });
   await runReset(pool);
   const seed = await runSeed(pool);
-  const denverId = seed.franchisees.find((f) => f.slug === 'denver')!.id;
+  const denverId = seed.branches.find((b) => b.slug === 'denver')!.id;
   const db = drizzle(pool, { schema });
   const auth = createAuth({
     db,
@@ -108,7 +107,6 @@ beforeAll(async () => {
     auth,
     drizzle: db,
     membershipResolver: membershipResolver(db),
-    franchiseeLookup: franchiseeLookup(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
     acceptUrlBase: 'http://localhost:3000',
@@ -140,12 +138,10 @@ beforeAll(async () => {
   denverJobId = (await createReadyCustomerAndJob(cookies.denverOwner)).jobId;
 
   // Flip Denver's Connect readiness flags so finalize can succeed.
+  // CHR-01 dropped the three boolean columns; only stripe_account_id remains.
   await pool.query(
-    `UPDATE franchisees
-        SET stripe_account_id = 'acct_stub_denver_ready',
-            stripe_charges_enabled = TRUE,
-            stripe_payouts_enabled = TRUE,
-            stripe_details_submitted = TRUE
+    `UPDATE branches
+        SET stripe_account_id = 'acct_stub_denver_ready'
       WHERE id = $1`,
     [denverId],
   );
@@ -189,8 +185,9 @@ describe('IP-04 / invoice finalize + send', () => {
     expect(data.status).toBe('finalized');
     expect(data.stripePaymentIntentId).toMatch(/^pi_stub_/);
     expect(data.paymentLinkToken).toMatch(/^[A-Za-z0-9_-]{40,}$/);
-    // total = 1200, 5% fee = 60
-    expect(Number(data.applicationFeeAmount)).toBe(60);
+    // CHR-08 removed the per-branch royalty / application fee path;
+    // the single-corporate-account model leaves the column at 0.
+    expect(Number(data.applicationFeeAmount)).toBe(0);
     expect(data.paymentUrl).toContain(`http://app.test/invoices/${data.paymentLinkToken}/pay`);
   });
 
@@ -220,8 +217,7 @@ describe('IP-04 / invoice finalize + send', () => {
     expect(second.json().error.code).toBe('INVALID_TRANSITION');
   });
 
-  it('finalize rejected when franchisee has no Stripe Connect readiness → 409 STRIPE_NOT_READY', async () => {
-    // Austin has not been flipped to ready.
+  it('finalize succeeds for a branch without per-branch Connect (CHR-08 removed the readiness gate)', async () => {
     const austinCust = await app.inject({
       method: 'POST',
       url: '/api/v1/customers',
@@ -250,8 +246,7 @@ describe('IP-04 / invoice finalize + send', () => {
       headers: { cookie: cookies.austinOwner, 'content-type': 'application/json' },
       payload: '{}',
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error.code).toBe('STRIPE_NOT_READY');
+    expect(res.statusCode).toBe(200);
   });
 
   it('finalize on zero-total invoice → 400 EMPTY_INVOICE', async () => {

@@ -2,7 +2,7 @@
  * Concrete dispatcher agent tool implementations (TASK-DI-03).
  *
  * Each tool runs against the scoped Drizzle db. Tenant scope is
- * enforced at the tool boundary — cross-franchisee arguments
+ * enforced at the tool boundary — cross-branch arguments
  * return INVALID_TARGET (never throw) so the agent loop feeds
  * the failure back as a tool_result.
  */
@@ -63,7 +63,7 @@ export function listUnassignedJobsTool(deps: DispatcherToolDeps): Tool<{
     schema: {
       name: 'listUnassignedJobs',
       description:
-        'List unassigned + not-deleted jobs for the franchisee. Includes customer location when set. Results are ordered by scheduled_start (nulls last).',
+        'List unassigned + not-deleted jobs for the branch. Includes customer location when set. Results are ordered by scheduled_start (nulls last).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -90,7 +90,7 @@ export function listUnassignedJobsTool(deps: DispatcherToolDeps): Tool<{
           .leftJoin(customers, eq(customers.id, jobs.customerId))
           .where(
             and(
-              eq(jobs.franchiseeId, ctx.franchiseeId),
+              eq(jobs.branchId, ctx.branchId),
               eq(jobs.status, 'unassigned'),
               isNull(jobs.deletedAt),
             ),
@@ -125,7 +125,7 @@ export function listTechsTool(deps: DispatcherToolDeps): Tool<{
     schema: {
       name: 'listTechs',
       description:
-        'List active tech memberships for the franchisee. If `skill` is provided, filters to techs who carry that skill.',
+        'List active tech memberships for the branch. If `skill` is provided, filters to techs who carry that skill.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -145,8 +145,8 @@ export function listTechsTool(deps: DispatcherToolDeps): Tool<{
           .innerJoin(users, eq(users.id, memberships.userId))
           .where(
             and(
-              eq(memberships.scopeType, 'franchisee'),
-              eq(memberships.scopeId, ctx.franchiseeId),
+              eq(memberships.scopeType, 'branch'),
+              eq(memberships.scopeId, ctx.branchId),
               eq(memberships.role, 'tech'),
               isNull(memberships.deletedAt),
             ),
@@ -157,7 +157,7 @@ export function listTechsTool(deps: DispatcherToolDeps): Tool<{
           .from(techSkills)
           .where(
             and(
-              eq(techSkills.franchiseeId, ctx.franchiseeId),
+              eq(techSkills.branchId, ctx.branchId),
               eq(techSkills.skill, input.skill),
             ),
           );
@@ -193,7 +193,7 @@ export function getTechCurrentLoadTool(deps: DispatcherToolDeps): Tool<{
       },
     },
     async execute(input, ctx) {
-      // Validate the tech belongs to the franchisee.
+      // Validate the tech belongs to the branch.
       const okTech = await deps.runScoped(async (tx) => {
         const rows = await tx
           .select()
@@ -201,8 +201,8 @@ export function getTechCurrentLoadTool(deps: DispatcherToolDeps): Tool<{
           .where(
             and(
               eq(memberships.userId, input.techUserId),
-              eq(memberships.scopeType, 'franchisee'),
-              eq(memberships.scopeId, ctx.franchiseeId),
+              eq(memberships.scopeType, 'branch'),
+              eq(memberships.scopeId, ctx.branchId),
               eq(memberships.role, 'tech'),
               isNull(memberships.deletedAt),
             ),
@@ -210,7 +210,7 @@ export function getTechCurrentLoadTool(deps: DispatcherToolDeps): Tool<{
         return rows.length > 0;
       });
       if (!okTech)
-        return err('INVALID_TARGET', 'Tech not found in this franchisee');
+        return err('INVALID_TARGET', 'Tech not found in this branch');
 
       const day = input.date ? new Date(`${input.date}T00:00:00Z`) : new Date();
       const dayStart = new Date(
@@ -237,7 +237,7 @@ export function getTechCurrentLoadTool(deps: DispatcherToolDeps): Tool<{
           .leftJoin(customers, eq(customers.id, jobs.customerId))
           .where(
             and(
-              eq(jobs.franchiseeId, ctx.franchiseeId),
+              eq(jobs.branchId, ctx.branchId),
               eq(jobs.assignedTechUserId, input.techUserId),
               gte(jobs.scheduledStart, dayStart),
               lt(jobs.scheduledStart, dayEnd),
@@ -329,7 +329,7 @@ export function proposeAssignmentTool(
       },
     },
     async execute(input, ctx) {
-      // Validate that the job + tech belong to this franchisee so
+      // Validate that the job + tech belong to this branch so
       // the agent can't propose a cross-tenant assignment.
       const check = await deps.runScoped(async (tx) => {
         const jobRows = await tx
@@ -338,7 +338,7 @@ export function proposeAssignmentTool(
           .where(
             and(
               eq(jobs.id, input.jobId),
-              eq(jobs.franchiseeId, ctx.franchiseeId),
+              eq(jobs.branchId, ctx.branchId),
               isNull(jobs.deletedAt),
             ),
           );
@@ -349,8 +349,8 @@ export function proposeAssignmentTool(
           .where(
             and(
               eq(memberships.userId, input.techUserId),
-              eq(memberships.scopeType, 'franchisee'),
-              eq(memberships.scopeId, ctx.franchiseeId),
+              eq(memberships.scopeType, 'branch'),
+              eq(memberships.scopeId, ctx.branchId),
               eq(memberships.role, 'tech'),
               isNull(memberships.deletedAt),
             ),
@@ -359,9 +359,9 @@ export function proposeAssignmentTool(
         return 'ok' as const;
       });
       if (check === 'bad_job')
-        return err('INVALID_TARGET', 'Job not found in this franchisee');
+        return err('INVALID_TARGET', 'Job not found in this branch');
       if (check === 'bad_tech')
-        return err('INVALID_TARGET', 'Tech not found in this franchisee');
+        return err('INVALID_TARGET', 'Tech not found in this branch');
 
       const proposal: ProposedAssignment = {
         jobId: input.jobId,
@@ -412,7 +412,7 @@ export function applyAssignmentTool(deps: DispatcherToolDeps): Tool<{
           .where(
             and(
               eq(jobs.id, input.jobId),
-              eq(jobs.franchiseeId, ctx.franchiseeId),
+              eq(jobs.branchId, ctx.branchId),
               isNull(jobs.deletedAt),
             ),
           );
@@ -423,8 +423,8 @@ export function applyAssignmentTool(deps: DispatcherToolDeps): Tool<{
           .where(
             and(
               eq(memberships.userId, input.techUserId),
-              eq(memberships.scopeType, 'franchisee'),
-              eq(memberships.scopeId, ctx.franchiseeId),
+              eq(memberships.scopeType, 'branch'),
+              eq(memberships.scopeId, ctx.branchId),
               eq(memberships.role, 'tech'),
               isNull(memberships.deletedAt),
             ),
@@ -447,9 +447,9 @@ export function applyAssignmentTool(deps: DispatcherToolDeps): Tool<{
         return { kind: 'ok' as const, job: updated[0]! };
       });
       if (result === 'bad_job')
-        return err('INVALID_TARGET', 'Job not found in this franchisee');
+        return err('INVALID_TARGET', 'Job not found in this branch');
       if (result === 'bad_tech')
-        return err('INVALID_TARGET', 'Tech not found in this franchisee');
+        return err('INVALID_TARGET', 'Tech not found in this branch');
       return ok({
         jobId: result.job.id,
         techUserId: result.job.assignedTechUserId,

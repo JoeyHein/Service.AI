@@ -56,73 +56,56 @@ function unauthorized(reply: ReturnType<FastifyInstance['inject']> extends never
 void unauthorized;
 
 /**
- * Resolve the target franchisee for a create / read query, enforcing
- * that non-platform callers can only act within their own franchisee.
+ * Resolve the target branch for a create / read query, enforcing
+ * that non-platform callers can only act within their own branch.
  * Platform admin callers must supply `locationId` that exists; we
- * pick its franchisee via a lookup (not needed in v1 scope — platform
+ * pick its branch via a lookup (not needed in v1 scope — platform
  * admin can still create customers in any location id they pass, and
  * we trust that the location id is real; the FK will fail otherwise).
  */
-function franchiseeIdFromScope(scope: RequestScope): string | null {
-  if (scope.type === 'platform') return null;
-  if (scope.type === 'franchisor') return null;
-  return scope.franchiseeId;
+function branchIdFromScope(scope: RequestScope): string | null {
+  if (scope.type === 'corporate') return null;
+  return scope.branchId;
 }
 
 async function resolveFranchiseeForCreate(
   db: Drizzle,
   scope: RequestScope,
   body: CreateInput,
-): Promise<{ ok: true; franchiseeId: string } | { ok: false; code: string; message: string }> {
-  // For platform / franchisor callers, locationId is REQUIRED so we can
-  // derive the target franchisee — there's no default otherwise.
-  if (scope.type === 'platform' || scope.type === 'franchisor') {
+): Promise<{ ok: true; branchId: string } | { ok: false; code: string; message: string }> {
+  // For corporate callers, locationId is REQUIRED so we can derive the
+  // target branch — there's no default otherwise.
+  if (scope.type === 'corporate') {
     if (!body.locationId) {
       return {
         ok: false,
         code: 'VALIDATION_ERROR',
-        message: 'platform/franchisor admins must specify locationId to scope the customer',
+        message: 'corporate admins must specify locationId to scope the customer',
       };
     }
     const rows = await db
-      .select({ franchiseeId: locations.franchiseeId })
+      .select({ branchId: locations.branchId })
       .from(locations)
       .where(eq(locations.id, body.locationId));
     const row = rows[0];
     if (!row) {
       return { ok: false, code: 'INVALID_TARGET', message: 'locationId does not exist' };
     }
-    if (scope.type === 'franchisor') {
-      // franchisor_admin can only create inside franchisees under their
-      // franchisor — verify via a second lookup.
-      const feRows = await db
-        .select({ franchisorId: schema.franchisees.franchisorId })
-        .from(schema.franchisees)
-        .where(eq(schema.franchisees.id, row.franchiseeId));
-      if (feRows[0]?.franchisorId !== scope.franchisorId) {
-        return {
-          ok: false,
-          code: 'INVALID_TARGET',
-          message: 'locationId is outside the acting franchisor',
-        };
-      }
-    }
-    return { ok: true, franchiseeId: row.franchiseeId };
+    return { ok: true, branchId: row.branchId };
   }
 
-  // franchisee-scoped caller: if they pass locationId, it must belong
-  // to their franchisee. Otherwise fall back to their scope's
-  // franchiseeId.
+  // branch-scoped caller: if they pass locationId, it must belong
+  // to their branch. Otherwise fall back to their scope's branchId.
   if (body.locationId) {
     const rows = await db
-      .select({ franchiseeId: locations.franchiseeId })
+      .select({ branchId: locations.branchId })
       .from(locations)
       .where(eq(locations.id, body.locationId));
-    if (rows[0]?.franchiseeId !== scope.franchiseeId) {
+    if (rows[0]?.branchId !== scope.branchId) {
       return { ok: false, code: 'INVALID_TARGET', message: 'locationId outside your scope' };
     }
   }
-  return { ok: true, franchiseeId: scope.franchiseeId };
+  return { ok: true, branchId: scope.branchId };
 }
 
 export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void {
@@ -150,7 +133,7 @@ export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void 
     const inserted = await db
       .insert(customers)
       .values({
-        franchiseeId: resolved.franchiseeId,
+        branchId: resolved.branchId,
         locationId: parsed.data.locationId ?? null,
         name: parsed.data.name,
         email: parsed.data.email ?? null,
@@ -186,8 +169,8 @@ export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void 
 
     const { rows, total } = await withScope(db, scope, async (tx) => {
       const conditions: unknown[] = [isNull(customers.deletedAt)];
-      const scopeFe = franchiseeIdFromScope(scope);
-      if (scopeFe) conditions.push(eq(customers.franchiseeId, scopeFe));
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch) conditions.push(eq(customers.branchId, scopeBranch));
       if (search) {
         const like = `%${search}%`;
         conditions.push(
@@ -240,15 +223,9 @@ export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void 
         .where(and(eq(customers.id, req.params.id), isNull(customers.deletedAt)));
       const r = rows[0];
       if (!r) return null;
-      const scopeFe = franchiseeIdFromScope(scope);
-      if (scopeFe && r.franchiseeId !== scopeFe) return null;
-      if (scope.type === 'franchisor') {
-        const feRows = await tx
-          .select({ franchisorId: schema.franchisees.franchisorId })
-          .from(schema.franchisees)
-          .where(eq(schema.franchisees.id, r.franchiseeId));
-        if (feRows[0]?.franchisorId !== scope.franchisorId) return null;
-      }
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && r.branchId !== scopeBranch) return null;
+      // CHR-02: corporate sees every branch's customers natively.
       return r;
     });
     if (!row) {
@@ -288,8 +265,8 @@ export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void 
         .where(and(eq(customers.id, req.params.id), isNull(customers.deletedAt)));
       const existing = existingRows[0];
       if (!existing) return { status: 'not_found' as const };
-      const scopeFe = franchiseeIdFromScope(scope);
-      if (scopeFe && existing.franchiseeId !== scopeFe) return { status: 'not_found' as const };
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && existing.branchId !== scopeBranch) return { status: 'not_found' as const };
 
       const values: Record<string, unknown> = { updatedAt: new Date() };
       const d = parsed.data;
@@ -340,13 +317,13 @@ export function registerCustomerRoutes(app: FastifyInstance, db: Drizzle): void 
     const scope = req.scope;
     const result = await withScope(db, scope, async (tx) => {
       const rows = await tx
-        .select({ id: customers.id, franchiseeId: customers.franchiseeId, deletedAt: customers.deletedAt })
+        .select({ id: customers.id, branchId: customers.branchId, deletedAt: customers.deletedAt })
         .from(customers)
         .where(eq(customers.id, req.params.id));
       const row = rows[0];
       if (!row) return { status: 'not_found' as const };
-      const scopeFe = franchiseeIdFromScope(scope);
-      if (scopeFe && row.franchiseeId !== scopeFe) return { status: 'not_found' as const };
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && row.branchId !== scopeBranch) return { status: 'not_found' as const };
       if (row.deletedAt !== null) return { status: 'already' as const };
       await tx
         .update(customers)
