@@ -1,0 +1,65 @@
+rules:
+  # SQB-11 / SQB-12 enforce: the supplier API key must never be
+  # console-logged or written to a file via the standard libraries.
+  # The pino redact list catches anything routed through the shared
+  # logger; this rule catches the bypass paths (raw console, fs).
+  - id: no-raw-supplier-key-in-console
+    pattern-either:
+      - pattern: console.log($X, ..., 'X-Service-AI-Key', ...)
+      - pattern: console.log(...'sai_live_'...)
+      - pattern: console.log(...'sai_test_'...)
+    message: >
+      Raw API key being console-logged. Route through pino so the
+      redact list (apps/api/src/logger.ts) censors it. SQB-11.
+    languages: [typescript, javascript]
+    severity: ERROR
+
+  - id: no-supplier-key-fs-write
+    pattern-either:
+      - pattern: fs.writeFile(..., $X, ...)
+      - pattern: writeFileSync(..., $X, ...)
+    paths:
+      include:
+        - "apps/api/src/**/*supplier*"
+        - "apps/api/src/**/*provider*"
+        - "packages/suppliers/**"
+    message: >
+      Direct fs write from supplier code path. If you're persisting a
+      key, use a secrets manager — never the filesystem.
+    languages: [typescript, javascript]
+    severity: WARNING
+
+  # No request-body-derived branch_id (corporate-hub rule from
+  # CLAUDE.md). request.scope is the source of truth.
+  - id: no-body-derived-branch-id
+    pattern-either:
+      - pattern: request.body.branchId
+      - pattern: req.body.branchId
+      - pattern: $REQ.body.branchId
+    paths:
+      include:
+        - "apps/api/src/**/*-routes.ts"
+    message: >
+      Tenant id derived from request body. Resolve `branchId` via
+      `req.requireScope()` per the corporate hub tenancy rule
+      (CLAUDE.md). See apps/api/src/customers-routes.ts for the
+      canonical pattern.
+    languages: [typescript]
+    severity: ERROR
+
+  # The provider abstraction is the seam — no direct fetch to
+  # /api/external/* from app code.
+  - id: no-direct-bc-external-fetch
+    pattern-either:
+      - pattern: fetch('https://portal.opendc.ca/api/external/$ANYTHING')
+      - pattern: fetch($URL, ...) where $URL contains '/api/external/'
+    paths:
+      exclude:
+        - "packages/suppliers/**"
+    message: >
+      Direct call to BC AI Agent's external surface from app code.
+      Use the SupplierProvider via packages/suppliers — the seam exists
+      so the provider impl is swappable and observability + retry +
+      auth all stay centralized.
+    languages: [typescript, javascript]
+    severity: ERROR

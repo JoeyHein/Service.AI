@@ -1,0 +1,382 @@
+/**
+ * BcAiAgentProvider — first real `SupplierProvider` impl (SQB-06).
+ *
+ * Talks to BC AI Agent's `/api/external/*` surface (SQB-03..05) with
+ * native fetch. No external HTTP dep. Bound to a single `suppliers`
+ * row (one BC customer account per provider instance).
+ *
+ * Retry policy:
+ *   - Network-level errors (DNS, ECONNRESET, fetch TypeError) and
+ *     5xx responses retry up to `maxRetries` times with exponential
+ *     backoff (50ms, 200ms, 800ms).
+ *   - 4xx responses do NOT retry — they're caller bugs (bad key,
+ *     bad body, account mismatch).
+ *   - `commitQuote` retries are SAFE because the BC AI Agent side is
+ *     idempotent on `externalQuoteId` (SQB-05). A retry that lands
+ *     after the original succeeded returns the cached `SQ-XXXXXX`.
+ *
+ * Latency budget:
+ *   - SQB-04 (price-items) p95 < 600ms at the BC AI Agent boundary.
+ *   - With one retry on a 5xx, p99 stays under ~1.4s. Service.AI's
+ *     overall p95 < 1.0s budget for the live re-price call has room.
+ *
+ * Errors are mapped to the structured `SupplierError` envelope. HTTP
+ * codes:
+ *   401 → UNAUTHORIZED
+ *   404 → NOT_FOUND
+ *   400 → INVALID_REQUEST
+ *   409 → IDEMPOTENCY_CONFLICT (or in-progress; both surface as same)
+ *   429 → RATE_LIMITED
+ *   5xx → UPSTREAM_ERROR
+ *   network → NETWORK_ERROR
+ */
+import type {
+  CommitQuoteRequest,
+  CommitQuoteResponse,
+  PriceItemsRequest,
+  PriceItemsResponse,
+  SupplierCatalogEntry,
+  SupplierError,
+  SupplierLinePrice,
+  SupplierProvider,
+  SupplierResult,
+} from './types.js';
+import type {
+  SupplierConfig,
+  SupplierProviderFactory,
+} from './registry.js';
+
+export interface BcAiAgentProviderOptions extends SupplierConfig {
+  /** Default 2 retries. 0 disables retry entirely. */
+  maxRetries?: number;
+  /** Custom fetch (tests inject); defaults to globalThis.fetch. */
+  fetchImpl?: typeof fetch;
+  /** Per-call timeout in ms. Default 8000. */
+  timeoutMs?: number;
+  /** Optional Sentry-style hook for instrumentation. */
+  onError?: (ctx: {
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote';
+    error: SupplierError;
+    attempt: number;
+  }) => void;
+}
+
+interface BcAiAgentErrorEnvelope {
+  ok: false;
+  error: {
+    code?: string;
+    message?: string;
+    retryable?: boolean;
+  };
+}
+
+interface BcAiAgentSuccessEnvelope<T> {
+  ok: true;
+  data: T;
+}
+
+type BcAiAgentResponse<T> = BcAiAgentSuccessEnvelope<T> | BcAiAgentErrorEnvelope;
+
+interface BcPriceLine {
+  sku: string;
+  quantity: number;
+  unitPriceCents: number;
+  unitCostCents: number;
+  lineTotalCents: number;
+  itemCategory: string | null;
+  description: string;
+  currency: 'CAD' | 'USD';
+  priceSource: string;
+}
+
+interface BcPriceItemsData {
+  items: BcPriceLine[];
+  subtotalCents: number;
+  taxCents: number;
+  totalCents: number;
+  currency: 'CAD' | 'USD';
+  validUntil: string;
+}
+
+interface BcCommitData {
+  supplierQuoteRef: string;
+  supplierQuoteId: string;
+  validUntil: string;
+  currency: 'CAD' | 'USD';
+  cached: boolean;
+}
+
+const DEFAULT_RETRIES = 2;
+const DEFAULT_TIMEOUT_MS = 8000;
+const BACKOFF_MS = [50, 200, 800];
+
+export class BcAiAgentProvider implements SupplierProvider {
+  readonly providerKind = 'bc_ai_agent' as const;
+  readonly supplierId: string;
+
+  private readonly endpointUrl: string;
+  private readonly apiKey: string;
+  private readonly defaultAccountCode: string;
+  private readonly maxRetries: number;
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+  private readonly onError?: BcAiAgentProviderOptions['onError'];
+
+  constructor(opts: BcAiAgentProviderOptions) {
+    this.supplierId = opts.supplierId;
+    this.endpointUrl = opts.endpointUrl.replace(/\/+$/, '');
+    this.apiKey = opts.apiKey;
+    this.defaultAccountCode = opts.supplierAccountCode;
+    this.maxRetries = opts.maxRetries ?? DEFAULT_RETRIES;
+    this.fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.onError = opts.onError;
+  }
+
+  async priceItems(
+    req: PriceItemsRequest,
+  ): Promise<SupplierResult<PriceItemsResponse>> {
+    const body = {
+      supplierAccountCode: req.supplierAccountCode || this.defaultAccountCode,
+      items: req.items.map((i) => ({
+        sku: i.sku,
+        quantity: i.quantity,
+        options: i.options ?? undefined,
+      })),
+      currency: req.currency ?? 'CAD',
+    };
+    const raw = await this.callWithRetry<BcPriceItemsData>(
+      'priceItems',
+      '/api/external/price-items',
+      body,
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
+
+    const items: SupplierLinePrice[] = raw.data.items.map((line) => ({
+      sku: line.sku,
+      quantity: line.quantity,
+      unitPriceCents: line.unitPriceCents,
+      unitCostCents: line.unitCostCents,
+      lineTotalCents: line.lineTotalCents,
+      itemCategory: line.itemCategory,
+      description: line.description,
+      currency: line.currency,
+    }));
+
+    return {
+      ok: true,
+      data: {
+        items,
+        subtotalCents: raw.data.subtotalCents,
+        taxCents: raw.data.taxCents,
+        totalCents: raw.data.totalCents,
+        currency: raw.data.currency,
+        validUntil: raw.data.validUntil,
+      },
+    };
+  }
+
+  async commitQuote(
+    req: CommitQuoteRequest,
+  ): Promise<SupplierResult<CommitQuoteResponse>> {
+    const body = {
+      supplierAccountCode: req.supplierAccountCode || this.defaultAccountCode,
+      externalQuoteId: req.externalQuoteId,
+      items: req.items.map((i) => {
+        // commitQuote needs prices — they should have been resolved on
+        // the Service.AI side via a prior priceItems call and stored
+        // on the quote line. The `options` carrier from the read side
+        // is repurposed here to ferry unitPriceCents + description.
+        const opts = (i.options ?? {}) as {
+          unitPriceCents?: number;
+          description?: string;
+        };
+        return {
+          sku: i.sku,
+          quantity: i.quantity,
+          unitPriceCents: opts.unitPriceCents ?? 0,
+          description: opts.description,
+        };
+      }),
+      currency: req.currency ?? 'CAD',
+      notes: req.notes,
+    };
+    const raw = await this.callWithRetry<BcCommitData>(
+      'commitQuote',
+      '/api/external/quotes',
+      body,
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
+    return {
+      ok: true,
+      data: {
+        supplierQuoteRef: raw.data.supplierQuoteRef,
+        supplierQuoteId: raw.data.supplierQuoteId,
+        validUntil: raw.data.validUntil,
+        currency: raw.data.currency,
+      },
+    };
+  }
+
+  /**
+   * Optional `voidQuote` + `listCatalog` — not yet exposed by BC AI
+   * Agent's external API (SQB scope only). Stub returns the
+   * not-implemented error envelope so callers get a structured signal.
+   */
+  async voidQuote(_supplierQuoteRef: string): Promise<SupplierResult<void>> {
+    return {
+      ok: false,
+      error: {
+        code: 'UPSTREAM_ERROR',
+        message: 'voidQuote is not yet exposed by BC AI Agent',
+        retryable: false,
+      },
+    };
+  }
+
+  async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
+    // Not exposed externally; consumers should use Service.AI's own
+    // pricebook for the autocomplete catalog.
+    return { ok: true, data: [] };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transport
+  // ---------------------------------------------------------------------------
+
+  private async callWithRetry<T>(
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote',
+    path: string,
+    body: unknown,
+    requestId?: string,
+  ): Promise<SupplierResult<T>> {
+    let lastError: SupplierError | null = null;
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const result = await this.doFetch<T>(path, body, requestId);
+      if (result.ok) return result;
+      lastError = result.error;
+      this.onError?.({ operation, error: result.error, attempt });
+      if (!result.error.retryable) return result;
+      // Backoff before the next attempt.
+      if (attempt < this.maxRetries) {
+        const ms = BACKOFF_MS[attempt] ?? 800;
+        await sleep(ms);
+      }
+    }
+    return { ok: false, error: lastError ?? unknownError() };
+  }
+
+  private async doFetch<T>(
+    path: string,
+    body: unknown,
+    requestId?: string,
+  ): Promise<SupplierResult<T>> {
+    const url = `${this.endpointUrl}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      // SQB-11: thread the inbound request id through to BC AI Agent
+      // so one X-Request-ID traces the whole chain. The header is
+      // included only when set — anonymous traffic (tests, smoke
+      // probes) doesn't ship a request id.
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Service-AI-Key': this.apiKey,
+      };
+      if (requestId) headers['X-Request-ID'] = requestId;
+
+      const resp = await this.fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      // Parse the envelope. BC AI Agent returns JSON for every status
+      // code except a few infrastructure-level errors (nginx 502
+      // before FastAPI runs); handle text fallback there.
+      let parsed: BcAiAgentResponse<T> | null = null;
+      try {
+        parsed = (await resp.json()) as BcAiAgentResponse<T>;
+      } catch {
+        parsed = null;
+      }
+
+      if (resp.ok && parsed && parsed.ok === true) {
+        return { ok: true, data: parsed.data };
+      }
+
+      // Map HTTP status to SupplierError code.
+      const code = httpStatusToCode(resp.status);
+      const message =
+        (parsed && !parsed.ok ? parsed.error?.message : undefined) ??
+        `BC AI Agent returned ${resp.status}`;
+      const retryable = resp.status >= 500 || resp.status === 429;
+      return {
+        ok: false,
+        error: {
+          code,
+          message,
+          retryable,
+          details: parsed ? ({ envelope: parsed } as Record<string, unknown>) : undefined,
+        },
+      };
+    } catch (err: unknown) {
+      // Network-level failure (DNS, ECONNRESET, AbortError on timeout, etc.).
+      const isAbort =
+        err instanceof Error &&
+        (err.name === 'AbortError' || /aborted/i.test(err.message));
+      return {
+        ok: false,
+        error: {
+          code: 'NETWORK_ERROR',
+          message: isAbort
+            ? `BC AI Agent request timed out after ${this.timeoutMs}ms`
+            : `BC AI Agent network error: ${(err as Error).message ?? 'unknown'}`,
+          retryable: true,
+        },
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function httpStatusToCode(status: number): SupplierError['code'] {
+  if (status === 401) return 'UNAUTHORIZED';
+  if (status === 404) return 'NOT_FOUND';
+  if (status === 400 || status === 422) return 'INVALID_REQUEST';
+  if (status === 409) return 'IDEMPOTENCY_CONFLICT';
+  if (status === 429) return 'RATE_LIMITED';
+  if (status >= 500) return 'UPSTREAM_ERROR';
+  return 'UPSTREAM_ERROR';
+}
+
+function unknownError(): SupplierError {
+  return {
+    code: 'UPSTREAM_ERROR',
+    message: 'BC AI Agent call failed without a recorded error',
+    retryable: true,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Factory for the ProviderRegistry. Registers under provider_kind
+ * `bc_ai_agent`. Service.AI's app boot calls:
+ *
+ *     registry.registerFactory('bc_ai_agent', bcAiAgentFactory);
+ *     registry.bind({ supplierId, providerKind: 'bc_ai_agent', ... });
+ */
+export const bcAiAgentFactory: SupplierProviderFactory = (config) =>
+  new BcAiAgentProvider(config);

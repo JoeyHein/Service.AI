@@ -1,0 +1,24 @@
+{
+  "name": "@service-ai/suppliers",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Service.AI supplier provider abstraction — SupplierProvider interface, ProviderRegistry, MockProvider. BcAiAgentProvider impl lives behind this seam (SQB-06).",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock": "./src/mock-provider.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "^3",
+    "typescript": "^5.4.0",
+    "vitest": "^3"
+  }
+}

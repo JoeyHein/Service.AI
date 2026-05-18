@@ -52,8 +52,17 @@ export const logger = pino({
     paths: [
       'req.headers.authorization',
       'req.headers.cookie',
+      'req.headers["x-service-ai-key"]',
+      'res.headers["x-service-ai-key"]',
       '*.authorization',
       'authorization',
+      '*.apiKey',
+      '*.api_key',
+      // SQB-11: BC AI Agent provider auth header. Must never reach
+      // Axiom — the key grants commit-quote access for a whole BC
+      // customer account.
+      '*["x-service-ai-key"]',
+      '*.xServiceAiKey',
     ],
     censor: '[REDACTED]',
   },
