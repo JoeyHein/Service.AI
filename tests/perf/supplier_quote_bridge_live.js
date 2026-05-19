@@ -6,9 +6,10 @@
  * every 1.5s for 5 minutes, then commit once. Mirrors the live
  * keystroke-driven workload described in the SQB gate.
  *
- * Latency budgets (per the gate doc):
+ * Latency budgets (per the gate docs):
  *   - p95 `priceItems` end-to-end (Service.AI → BC AI Agent → BC → back) < 1.0 s
  *   - p95 `commitQuote` end-to-end < 2.5 s
+ *   - p95 `accept` end-to-end (incl. QOC convert-to-order hop) < 2.5 s
  *   - 0 5xx, 0 timeouts
  *
  * Run:
@@ -45,8 +46,10 @@ const DURATION = __ENV.DURATION || '5m';
 
 const priceLatency = new Trend('price_latency_ms', true);
 const commitLatency = new Trend('commit_latency_ms', true);
+const acceptLatency = new Trend('accept_latency_ms', true);
 const priceErrors = new Counter('price_errors');
 const commitErrors = new Counter('commit_errors');
+const acceptErrors = new Counter('accept_errors');
 
 export const options = {
   scenarios: {
@@ -57,12 +60,14 @@ export const options = {
     },
   },
   thresholds: {
-    // Hard gates from the gate doc.
+    // Hard gates from the gate docs (SQB + QOC).
     'price_latency_ms': ['p(95)<1000'],
     'commit_latency_ms': ['p(95)<2500'],
+    'accept_latency_ms': ['p(95)<2500'],
     'http_req_failed': ['rate<0.01'],
     'price_errors': ['count<1'],
     'commit_errors': ['count<1'],
+    'accept_errors': ['count<1'],
   },
 };
 
@@ -152,17 +157,37 @@ export default function () {
     sleep(1.5);
   }
 
-  // 3. Commit once at the end. Provide our own idempotency key so a
-  // retry under k6's restart-on-failure semantics still collapses.
+  // 3. Commit once at the end. Send the canonical `Idempotency-Key`
+  // header (QOC-FU1) so a retry under k6's restart-on-failure semantics
+  // still collapses at the route's primary precedence path.
   const idempotencyKey = uuidv4();
+  const commitHeaders = { ...HEADERS, 'Idempotency-Key': idempotencyKey };
   const t0 = Date.now();
   const commitRes = http.post(
     `${API_BASE}/api/v1/quotes/${quoteId}/commit`,
-    JSON.stringify({ idempotencyKey }),
-    { headers: HEADERS, tags: { name: 'commit' }, timeout: '8s' },
+    JSON.stringify({}),
+    { headers: commitHeaders, tags: { name: 'commit' }, timeout: '8s' },
   );
   commitLatency.add(Date.now() - t0);
   if (commitRes.status !== 200) {
     commitErrors.add(1);
+    return; // No point trying to accept a quote that didn't commit.
+  }
+
+  // 4. Accept (QOC). Synchronously triggers the supplier quote→order
+  // conversion at BC AI Agent. p95 < 2.5s end-to-end.
+  // ~30% of scenario VUs simulate the "customer hung up; no acceptance
+  // yet" path by skipping accept — keeps the perf coverage realistic.
+  if (Math.random() < 0.7) {
+    const tA = Date.now();
+    const acceptRes = http.post(
+      `${API_BASE}/api/v1/quotes/${quoteId}/accept`,
+      JSON.stringify({ acknowledgmentChannel: 'verbal_phone' }),
+      { headers: HEADERS, tags: { name: 'accept' }, timeout: '8s' },
+    );
+    acceptLatency.add(Date.now() - tA);
+    if (acceptRes.status !== 200) {
+      acceptErrors.add(1);
+    }
   }
 }

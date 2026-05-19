@@ -32,6 +32,54 @@ See `phases/phase_corporate_hub_redesign_GATE.md` for the locked acceptance crit
 
 ---
 
+## phase_supplier_quote_bridge — SQB (2026-05)
+
+**Goal**: Let a branch CSR or local manager (or the AI CSR voice agent) build a live quote against an external supplier's ERP in real time, commit it with one click, and book a commission row in the same transaction. First (and currently only) provider: BC AI Agent fronting Microsoft Business Central under the Elevated Doors customer account.
+
+**Vertical slice**: a CSR is on the phone with a homeowner, configures a door (size/model/options), watches the live BC SalesPriceLists price update within ~600ms of each keystroke, clicks "Send to supplier" when the customer says yes, gets a BC `SQ-XXXXXX` number back inside 2.5s, and a `commission_ledger` row is written for the manager/closer on plans that pay on `quote_committed`. Same flow works for a tech on the PWA, with last-priceItems cached for offline use (commit is gated on connectivity).
+
+**Deliverables**:
+- Migration `0017_supplier_quote_bridge.sql` — new tables (`suppliers`, `margin_overrides`, `quotes`, `quote_line_items`, `quote_status_log`). Two-policy RLS on the branch-scoped ones; `_scoped USING (false)` on corporate-only ones.
+- New package `packages/suppliers` — `SupplierProvider` interface, `MockSupplierProvider`, `BcAiAgentProvider` (native fetch, 50/200/800ms backoff, `X-Service-AI-Key` + `X-Request-ID` propagation), `ProviderRegistry`.
+- BC AI Agent side: `external_api_keys` table + management endpoints, `POST /api/external/price-items` (with 60s Redis cache + customer→group→all-customers fall-through), `POST /api/external/quotes` (idempotent on `external_quote_id` via UNIQUE + per-key in-process `threading.Lock`).
+- `apps/api/src/quote-routes.ts` — `POST /quotes`, `/quotes/:id/price`, `/quotes/:id/commit` (Idempotency-Key header), `/quotes/:id/accept`, `/quotes/:id/void`. `quote-status-machine.ts` enforces the matrix; `margin-engine.ts` resolves line override → category override → corporate default, bounded by min/max. Cost re-fetched from provider on every price call (never trusted from client). Commission write on commit + balancing reversal on void in the same `withScope` tx.
+- AI CSR tools `quoteConfigurator` + `commitQuote` with in-tool guardrails (commitQuote enforces confidence ≥ 0.90 + $5,000 cap).
+- Web: `/quotes/new` with debounced live re-price, role-gated margin column + per-line override popover, manager commission preview (placeholder 4% — see TD-SQB-A5); `/tech/jobs/:id/quote/new` mobile clone; `/corporate/settings/margins` default + category overrides surface.
+- Observability: Pino redact list for `X-Service-AI-Key` in five shapes (sqb-11-redaction test); Semgrep rules block raw key in console.log, direct fetch to BC AI Agent's `/api/external/*` from outside `packages/suppliers`, body-derived `branch_id`, fs writes from suppliers code.
+- k6: `supplier_quote_bridge_live.js` (20 CSRs, 5-min p95 budgets) and `supplier_quote_bridge_idempotency.js` (10× concurrent commit collapse).
+- Docs: `docs/api/supplier-quote-bridge.md`, `ARCHITECTURE.md` §8a, CLAUDE.md "Supplier integration" section on both repos, TD-SQB-P1..P5 parked items.
+
+**Depends on**: `phase_corporate_hub_redesign` — every reference to `branch_id`, the two-policy RLS template, and the corporate role set comes from CHR.
+**Out of scope**: customer-facing accept link (TD-SQB-P4), PDF rendering (TD-SQB-P2), quote-to-order conversion (TD-SQB-P3 — closed by QOC below), multi-supplier UI (TD-SQB-P1), configurator UX inside Service.AI (TD-SQB-P5).
+
+See `phases/phase_supplier_quote_bridge_GATE.md` for the locked acceptance criteria.
+
+---
+
+## phase_quote_order_conversion — QOC (2026-05)
+
+**Goal**: Close the SQB loop. When a CSR or tech records the customer's acceptance, Service.AI asks the supplier provider to convert the committed BC sales quote into a BC sales order; the new `SO-XXXXXX` ref + BC GUID land on the same Service.AI quote row. One BC quote → one BC order (BC's `makeOrder` is 1:1).
+
+**Vertical slice**: the homeowner says yes on the phone. The CSR (or tech on the PWA) clicks "Customer accepted." Within ~1.5s the quote shows a "BC order SO-001234 created" badge; the BC sales quote is now an order; OPENDC's fulfillment team picks it up out of BC.
+
+**Deliverables**:
+- Migration `0018_quote_order_conversion.sql` — three nullable columns on `quotes`: `supplier_order_ref`, `supplier_order_id`, `ordered_at`. Partial-unique index on `supplier_order_ref`. No new table; existing RLS policies cover.
+- `SupplierProvider.convertQuoteToOrder` (optional like `voidQuote`); `MockSupplierProvider` returns deterministic `SO-<hex>`; `BcAiAgentProvider` POSTs to the new external endpoint.
+- BC AI Agent side: alembic migration extending `external_quote_commits` with `bc_order_id` + `bc_order_ref` + `converted_at`. `POST /api/external/quotes/{external_quote_id}/convert-to-order` endpoint wrapping `bc_client.convert_quote_to_order(bc_quote_id)`. Idempotent on `external_quote_id` (replay returns cached `SO-XXXXXX`). Per-key `threading.Lock`. 422 UNPROCESSABLE on non-committed source quotes; 404 cross-key probes.
+- `apps/api/src/quote-routes.ts::/accept` — wired to call `provider.convertQuoteToOrder` outside the local tx after the status transition. Best-effort: provider failure logs + continues; the local `accepted` state persists. On success, a follow-up `withScope` tx stamps the SO ref on the row.
+- Web: `QuoteBuilder.tsx` + `MobileQuoteBuilder.tsx` — "Customer accepted" button after the commit banner, "BC order: SO-XXXXXX" badge after acceptance, copy affordance for both refs. Also wires the commit POST to send `Idempotency-Key: <quoteId>` header (closes TD-SQB-FU1).
+- Tests: `live-quote-routes.test.ts` extended with the QOC 6-case matrix (happy, 401, 404 cross-branch, 400 malformed UUID, 409 INVALID_TRANSITION, provider failure best-effort, idempotent retry).
+- Docs: `supplier-quote-bridge.md` adds the QOC endpoint + sequence diagram + idempotency-map rows; PHASES.md adds the missing SQB section + this QOC section; CLAUDE.md notes on both repos.
+
+**Closes**: TD-SQB-P3 (quote-to-order conversion — this phase IS it), TD-SQB-FU1 (web client now sends `Idempotency-Key` header), TD-SQB-FU2 (Accept route now has UI button; ts-rest contract migration remains as a smaller follow-up if desired).
+
+**Depends on**: `phase_supplier_quote_bridge`. Every reference to `external_quote_id`, `external_quote_commits`, `BcAiAgentProvider`, and the `/accept` route assumes SQB shipped first.
+**Out of scope**: BC → Service.AI order status sync (delivery / shipped / invoiced — needs a poller or webhook), linking the BC order to a Service.AI invoice, order cancellation on void (the BC order stays alive if Service.AI voids — TD-FU candidate), customer-facing order confirmation, multi-supplier conversion UI.
+
+See `phases/phase_quote_order_conversion_GATE.md` for the locked acceptance criteria.
+
+---
+
 ## phase_foundation
 
 **Goal**: Bare skeleton running on DO App Platform with CI. Everything that comes after assumes this works.

@@ -925,9 +925,32 @@ export function registerQuoteRoutes(
           reason: notes,
           metadata: { acknowledgmentChannel: channel },
         });
+        // QOC-AUDIT M3: corporate audit_log row, matching the gate's
+        // named action verb. The status_log row above is the per-quote
+        // state machine trail; this is the cross-quote operator trail
+        // that surfaces in /corporate/audit.
+        await tx.insert(auditLog).values({
+          actorUserId: scope.userId,
+          targetBranchId: q.branchId,
+          action: 'quote.accept',
+          scopeType: scope.type,
+          scopeId: null,
+          metadata: {
+            quoteId: q.id,
+            acknowledgmentChannel: channel,
+            supplierQuoteRef: q.supplierQuoteRef,
+          } as Record<string, unknown>,
+        });
 
         const detail = await loadQuoteDetail(tx, q.id, scope);
-        return { kind: 'ok' as const, detail };
+        return {
+          kind: 'ok' as const,
+          detail,
+          quoteId: q.id,
+          branchId: q.branchId,
+          supplierId: q.supplierId,
+          alreadyConverted: q.orderedAt != null,
+        };
       });
 
       if (outcome.kind === 'not_found') {
@@ -945,7 +968,77 @@ export function registerQuoteRoutes(
           },
         });
       }
-      return reply.code(200).send({ ok: true, data: outcome.detail });
+
+      // QOC-05: best-effort supplier-side quote → order conversion.
+      // Same shape as the void path: a provider failure logs a warning
+      // and is swallowed; the local 'accepted' state already succeeded.
+      // Skips when the bound provider has no convertQuoteToOrder method
+      // (mock providers in older tests, future providers that don't
+      // expose the op). Skips when the quote was already converted
+      // (e.g., a retried /accept after a successful prior conversion).
+      let finalDetail = outcome.detail;
+      if (!outcome.alreadyConverted) {
+        try {
+          const supRows = await db
+            .select()
+            .from(suppliers)
+            .where(eq(suppliers.id, outcome.supplierId))
+            .limit(1);
+          const sup = supRows[0];
+          if (sup) {
+            const provider = bindProvider(registry, sup);
+            if (provider.convertQuoteToOrder) {
+              const res = await provider.convertQuoteToOrder({
+                externalQuoteId: outcome.quoteId,
+                requestId: String(req.id),
+              });
+              if (res.ok) {
+                const orderedAt = new Date(res.data.orderedAt);
+                await withScope(db, scope, async (tx) => {
+                  await tx
+                    .update(quotes)
+                    .set({
+                      supplierOrderRef: res.data.supplierOrderRef,
+                      supplierOrderId: res.data.supplierOrderId,
+                      orderedAt,
+                      updatedAt: orderedAt,
+                    })
+                    .where(eq(quotes.id, outcome.quoteId));
+                  await tx.insert(quoteStatusLog).values({
+                    quoteId: outcome.quoteId,
+                    branchId: outcome.branchId,
+                    fromStatus: 'accepted',
+                    toStatus: 'accepted',
+                    actorUserId: scope.userId,
+                    reason: 'order_converted',
+                    metadata: {
+                      supplierOrderRef: res.data.supplierOrderRef,
+                    },
+                  });
+                  const refreshed = await loadQuoteDetail(
+                    tx,
+                    outcome.quoteId,
+                    scope,
+                  );
+                  if (refreshed) finalDetail = refreshed;
+                });
+              } else {
+                app.log.warn(
+                  { code: res.error.code, message: res.error.message },
+                  'supplier convertQuoteToOrder returned an error; accepted state persists, order ref not stamped',
+                );
+              }
+            }
+          }
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'supplier convertQuoteToOrder threw; continuing',
+          );
+        }
+      }
+
+      return reply.code(200).send({ ok: true, data: finalDetail });
     },
   );
 

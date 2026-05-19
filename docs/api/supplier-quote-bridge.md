@@ -53,6 +53,7 @@ Central tenant under the Elevated Doors customer account.
 | POST | `/api/v1/quotes` | branch+ | Create draft |
 | POST | `/api/v1/quotes/:id/price` | branch+ | Replace lines + re-price |
 | POST | `/api/v1/quotes/:id/commit` | branch+ | Supplier commit + commission write |
+| POST | `/api/v1/quotes/:id/accept` | branch+ | Record customer acceptance + trigger BC order conversion (QOC) |
 | POST | `/api/v1/quotes/:id/void` | branch+ | Void + commission reversal |
 | GET | `/api/v1/quotes/:id` | branch+ | Detail + last 10 status_log rows |
 | GET | `/api/v1/quotes` | branch+ | List with `branchId` / `customerId` / `jobId` / `status` |
@@ -74,6 +75,7 @@ All endpoints return the standard envelope:
 |---|---|---|---|
 | POST | `/api/external/price-items` | `X-Service-AI-Key` | Resolve BC SalesPriceLists for a basket |
 | POST | `/api/external/quotes` | `X-Service-AI-Key` | Idempotent commit, returns SQ-XXXXXX |
+| POST | `/api/external/quotes/:external_quote_id/convert-to-order` | `X-Service-AI-Key` | Idempotent quote→order conversion (QOC), returns SO-XXXXXX |
 | POST | `/api/external-keys` | admin JWT | Mint a new key (plaintext returned ONCE) |
 | GET | `/api/external-keys` | admin JWT | List active + revoked keys |
 | POST | `/api/external-keys/:id/revoke` | admin JWT | Revoke (idempotent) |
@@ -177,6 +179,56 @@ second BC document. Stress test: 10 concurrent commits collapse to 1
 winner + 9 cached replays (per
 `bc-ai-agent/backend/tests/test_external_quote_commit.py::TestConcurrency`).
 
+## Sequence — accept (with QOC quote→order conversion)
+
+```
+operator         apps/web              apps/api              BcAiAgentProvider     BC AI Agent
+   │                 │                     │                       │                     │
+   │ click "Accept"  │                     │                       │                     │
+   │ ───────────────▶│                     │                       │                     │
+   │                 │ POST /quotes/:id/accept                     │                     │
+   │                 │ { acknowledgmentChannel: 'verbal_phone' }   │                     │
+   │                 │ ──────────────────▶ │                       │                     │
+   │                 │                     │ withScope(tx)         │                     │
+   │                 │                     │ canTransition(?, accepted)                  │
+   │                 │                     │ status: committed → accepted                │
+   │                 │                     │ insert quote_status_log                     │
+   │                 │                     │ tx commit                                   │
+   │                 │                     │                                             │
+   │                 │                     │ provider.convertQuoteToOrder({ externalQuoteId: quoteId })
+   │                 │                     │ ──────────────────▶  │                     │
+   │                 │                     │                       │ POST /api/external/quotes/{id}/convert-to-order
+   │                 │                     │                       │ X-Service-AI-Key    │
+   │                 │                     │                       │ X-Request-ID        │
+   │                 │                     │                       │ ──────────────────▶│
+   │                 │                     │                       │                     │ load external_quote_commits row
+   │                 │                     │                       │                     │ if converted_at IS NOT NULL → return cached
+   │                 │                     │                       │                     │ acquire per-key threading.Lock
+   │                 │                     │                       │                     │ bc_client.convert_quote_to_order(bc_quote_id)
+   │                 │                     │                       │                     │   → BC salesQuotes({id}).makeOrder
+   │                 │                     │                       │                     │   (manual-fallback if delivery-date issue)
+   │                 │                     │                       │                     │ persist bc_order_id + bc_order_ref + converted_at
+   │                 │                     │                       │ ◀──────────────────│ SO-001234
+   │                 │                     │ ◀──────────────────  │                     │
+   │                 │                     │ withScope(tx):                              │
+   │                 │                     │   UPDATE quotes SET supplier_order_ref, supplier_order_id, ordered_at
+   │                 │                     │   insert quote_status_log (accepted→accepted, reason='order_converted')
+   │                 │                     │ refreshed = loadQuoteDetail(...)            │
+   │                 │◀────────────────────│ envelope (quote.supplierOrderRef = SO-001234)
+   │                 │                     │                                             │
+   │ SO-001234 +     │                     │                                             │
+   │ Copy SO button  │                     │                                             │
+```
+
+**Best-effort invariant**: a provider failure (`NETWORK_ERROR`,
+`UPSTREAM_ERROR`, BC down) logs a warning and is swallowed; the
+local `accepted` state already committed. `supplier_order_ref`
+stays null. A subsequent operator action (e.g., a follow-up phase's
+"retry order creation" surface) can re-call the conversion
+endpoint, which is idempotent on `external_quote_id`. Until then
+the quote sits in `accepted` with no BC order, and the BC AI
+Agent's `external_quote_commits` row has `bc_order_*` null.
+
 ## Sequence — void (with commission reversal)
 
 ```
@@ -275,7 +327,10 @@ Key invariants:
 |---|---|---|
 | `BcAiAgentProvider.commitQuote` | `externalQuoteId` field | passes through to BC AI Agent |
 | `/api/external/quotes` (BC AI Agent) | `external_quote_id` body | `external_quote_commits.external_quote_id` UNIQUE + per-key in-process lock |
-| Service.AI `/quotes/:id/commit` | `Idempotency-Key` header → `idempotencyKey` body | request body → BC AI Agent |
+| Service.AI `/quotes/:id/commit` | `Idempotency-Key` header → `idempotencyKey` body → quote-id fallback | request body → BC AI Agent |
+| `BcAiAgentProvider.convertQuoteToOrder` | `externalQuoteId` field | passes through to BC AI Agent |
+| `/api/external/quotes/:id/convert-to-order` (BC AI Agent) | `external_quote_id` path | same `external_quote_commits` row + `converted_at IS NOT NULL` replay + per-key in-process lock |
+| Service.AI `/quotes/:id/accept` | quote-id (path), implicit | best-effort; the route never blocks on conversion |
 | `commission_ledger` | `(user_id, source_kind, source_id)` | DB UNIQUE index |
 
 A 10× concurrent commit with the same key collapses to one BC

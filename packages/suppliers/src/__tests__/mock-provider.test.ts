@@ -235,6 +235,92 @@ describe('MockSupplierProvider.voidQuote', () => {
 });
 
 // ---------------------------------------------------------------------------
+// convertQuoteToOrder (QOC-02) — idempotency + requires-commit invariant
+// ---------------------------------------------------------------------------
+
+async function commitFixture(
+  p: MockSupplierProvider,
+  externalQuoteId: string,
+): Promise<void> {
+  const res = await p.commitQuote({
+    supplierAccountCode: 'ED',
+    externalQuoteId,
+    items: [{ sku: 'GD-STEEL-9X7', quantity: 1 }],
+  });
+  if (!res.ok) {
+    throw new Error(`commit fixture failed: ${res.error.code}`);
+  }
+}
+
+describe('MockSupplierProvider.convertQuoteToOrder', () => {
+  it('mints a deterministic SO-XXXXXX after commit', async () => {
+    const p = makeProvider();
+    const externalQuoteId = 'qoc-mock-1';
+    await commitFixture(p, externalQuoteId);
+    const res = await p.convertQuoteToOrder({ externalQuoteId });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.supplierOrderRef).toMatch(/^SO-\d{6}$/);
+    expect(res.data.supplierOrderId).toBeTruthy();
+    expect(typeof res.data.orderedAt).toBe('string');
+    expect(p.isConverted(externalQuoteId)).toBe(true);
+  });
+
+  it('is idempotent on externalQuoteId — same in, same out', async () => {
+    const p = makeProvider();
+    const externalQuoteId = 'qoc-mock-2';
+    await commitFixture(p, externalQuoteId);
+    const a = await p.convertQuoteToOrder({ externalQuoteId });
+    const b = await p.convertQuoteToOrder({ externalQuoteId });
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(b.data.supplierOrderRef).toBe(a.data.supplierOrderRef);
+    expect(b.data.supplierOrderId).toBe(a.data.supplierOrderId);
+  });
+
+  it('refuses to convert an unknown / un-committed externalQuoteId', async () => {
+    const p = makeProvider();
+    const res = await p.convertQuoteToOrder({
+      externalQuoteId: 'never-committed',
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.code).toBe('NOT_FOUND');
+  });
+
+  it('returns the injected failure when the mock is wired to fail', async () => {
+    const p = makeProvider();
+    const externalQuoteId = 'qoc-mock-fail';
+    await commitFixture(p, externalQuoteId);
+    p.injectFailure('convertToOrder', {
+      code: 'UPSTREAM_ERROR',
+      message: 'simulated BC outage',
+      retryable: true,
+    });
+    const res = await p.convertQuoteToOrder({ externalQuoteId });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error.code).toBe('UPSTREAM_ERROR');
+    // Failure is single-shot by default; a retry succeeds.
+    const retry = await p.convertQuoteToOrder({ externalQuoteId });
+    expect(retry.ok).toBe(true);
+  });
+
+  it('clearCommits also resets convertQuoteToOrder state', async () => {
+    const p = makeProvider();
+    const externalQuoteId = 'qoc-mock-clear';
+    await commitFixture(p, externalQuoteId);
+    await p.convertQuoteToOrder({ externalQuoteId });
+    expect(p.isConverted(externalQuoteId)).toBe(true);
+    p.clearCommits();
+    expect(p.isConverted(externalQuoteId)).toBe(false);
+    // Now /convert without a prior commit must NOT_FOUND.
+    const res = await p.convertQuoteToOrder({ externalQuoteId });
+    expect(res.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // listCatalog
 // ---------------------------------------------------------------------------
 

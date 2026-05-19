@@ -33,6 +33,8 @@
 import type {
   CommitQuoteRequest,
   CommitQuoteResponse,
+  ConvertQuoteToOrderRequest,
+  ConvertQuoteToOrderResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -55,7 +57,7 @@ export interface BcAiAgentProviderOptions extends SupplierConfig {
   timeoutMs?: number;
   /** Optional Sentry-style hook for instrumentation. */
   onError?: (ctx: {
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote';
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder';
     error: SupplierError;
     attempt: number;
   }) => void;
@@ -103,6 +105,13 @@ interface BcCommitData {
   supplierQuoteId: string;
   validUntil: string;
   currency: 'CAD' | 'USD';
+  cached: boolean;
+}
+
+interface BcConvertData {
+  supplierOrderRef: string;
+  supplierOrderId: string;
+  orderedAt: string;
   cached: boolean;
 }
 
@@ -236,6 +245,36 @@ export class BcAiAgentProvider implements SupplierProvider {
     };
   }
 
+  /**
+   * QOC-02. Convert a committed BC sales quote into a BC sales order.
+   * Idempotent on `externalQuoteId` (same as commit): a repeat call
+   * returns the cached `SO-XXXXXX` without creating a second BC document.
+   * Path: POST /api/external/quotes/{external_quote_id}/convert-to-order
+   * (QOC-04 on the BC AI Agent side).
+   */
+  async convertQuoteToOrder(
+    req: ConvertQuoteToOrderRequest,
+  ): Promise<SupplierResult<ConvertQuoteToOrderResponse>> {
+    // External IDs are server-assigned UUIDs from Service.AI, but be
+    // defensive against any caller smuggling a path-traversal payload.
+    const safeId = encodeURIComponent(req.externalQuoteId);
+    const raw = await this.callWithRetry<BcConvertData>(
+      'convertQuoteToOrder',
+      `/api/external/quotes/${safeId}/convert-to-order`,
+      {},
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
+    return {
+      ok: true,
+      data: {
+        supplierOrderRef: raw.data.supplierOrderRef,
+        supplierOrderId: raw.data.supplierOrderId,
+        orderedAt: raw.data.orderedAt,
+      },
+    };
+  }
+
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
     // Not exposed externally; consumers should use Service.AI's own
     // pricebook for the autocomplete catalog.
@@ -247,7 +286,7 @@ export class BcAiAgentProvider implements SupplierProvider {
   // ---------------------------------------------------------------------------
 
   private async callWithRetry<T>(
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote',
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder',
     path: string,
     body: unknown,
     requestId?: string,

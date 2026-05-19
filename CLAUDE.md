@@ -13,6 +13,8 @@ Architecturally ERP-agnostic at the core, with supplier integration routed throu
 > **Model change note (2026-05).** This project shipped its first 13 phases on a franchise tenancy model (platform → franchisor → franchisee → location). Phase 14 (`phase_corporate_hub_redesign`, CHR-01..12) replaced that with the corporate hub-and-spoke model described here. Code, schema, and docs are now the corporate model; the franchise model is preserved for historical reference in `docs/ARCHITECTURE.md` Appendix A.
 >
 > **Phase 15 note (2026-05).** Phase 15 (`phase_supplier_quote_bridge`, SQB-01..13) added the live supplier quote bridge: `packages/suppliers` provider abstraction, `apps/api/src/quote-routes.ts` + `margin-engine.ts` + `quote-status-machine.ts`, `/corporate/settings/margins` + `/quotes/new` + tech PWA `/tech/jobs/:id/quote/new` UIs, AI CSR tools `quoteConfigurator` + `commitQuote`, and migration `0017_supplier_quote_bridge.sql`. Detailed reference: `docs/api/supplier-quote-bridge.md`.
+>
+> **Phase 16 note (2026-05).** Phase 16 (`phase_quote_order_conversion`, QOC-01..08) closes the SQB loop: a CSR/tech clicks "Customer accepted" → `POST /api/v1/quotes/:id/accept` transitions the quote to `accepted` and best-effort calls `provider.convertQuoteToOrder`, which hits BC AI Agent's new `POST /api/external/quotes/:id/convert-to-order` endpoint and stamps `SO-XXXXXX` onto the Service.AI quote row. Migration `0018_quote_order_conversion.sql` adds `supplier_order_ref`, `supplier_order_id`, `ordered_at` to `quotes`. Same idempotency key (`external_quote_id`) as commit; same per-key in-process lock at BC AI Agent.
 
 ## Tech stack
 
@@ -44,7 +46,7 @@ servicetitan-clone/
 │   ├── api/          Fastify API (corporate-routes.ts, branch-routes.ts, commission-engine.ts, ...)
 │   └── voice/        Fastify WS voice server
 ├── packages/
-│   ├── db/           Drizzle schema + migrations (0016 corporate hub redesign, 0017 supplier quote bridge)
+│   ├── db/           Drizzle schema + migrations (0016 corporate hub redesign, 0017 supplier quote bridge, 0018 quote order conversion)
 │   ├── contracts/    Zod schemas + ts-rest route definitions (incl. comp-plans.ts, quotes.ts, margins.ts)
 │   ├── ai/           Multi-provider LLM router + prompt library + RAG client
 │   ├── auth/         Better Auth config + middleware
@@ -150,9 +152,11 @@ Live quotes against an external supplier go through `packages/suppliers`.
 Business code (routes, AI tools, web) never calls a supplier's HTTP surface
 directly — it goes through a `SupplierProvider`:
 
-- `SupplierProvider` interface: two operations, `priceItems` (read,
-  idempotent, sub-second p95 budget) and `commitQuote` (idempotent on
-  `externalQuoteId`). Plus optional `voidQuote` (best-effort).
+- `SupplierProvider` interface: three core operations — `priceItems`
+  (read, idempotent, sub-second p95 budget), `commitQuote` (idempotent
+  on `externalQuoteId`), and `convertQuoteToOrder` (idempotent on the
+  same `externalQuoteId`, best-effort from the route handler). Plus
+  optional `voidQuote`.
 - `BcAiAgentProvider` — first production impl. Native fetch, 50/200/800ms
   backoff on 5xx + 429, sends `X-Service-AI-Key` (bcrypt-hashed,
   plaintext-shown-once) and `X-Request-ID` (Service.AI's Fastify request

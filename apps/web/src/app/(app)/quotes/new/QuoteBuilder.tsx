@@ -54,6 +54,8 @@ interface QuoteDetail {
     totalCents: number;
     currencyCode: string;
     supplierQuoteRef?: string | null;
+    supplierOrderRef?: string | null;
+    orderedAt?: string | null;
   };
   lineItems: Array<{
     position: number;
@@ -130,6 +132,9 @@ export function QuoteBuilder({
   const [committing, setCommitting] = useState(false);
   const [committedRef, setCommittedRef] = useState<string | null>(null);
   const [committedQuoteId, setCommittedQuoteId] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const [acceptedOrderRef, setAcceptedOrderRef] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
   const [totals, setTotals] = useState<{
     subtotalCents: number;
     taxCents: number;
@@ -320,7 +325,12 @@ export function QuoteBuilder({
       `/api/v1/quotes/${quoteId}/commit`,
       {
         method: 'POST',
+        // QOC-FU1 follow-up — also forward Idempotency-Key header so the
+        // route's canonical idempotency path is the one being exercised
+        // (not the body-field-or-quote-id fallback). Uses the quoteId so
+        // a double-click collapses to one BC document.
         body: JSON.stringify({}),
+        headers: { 'Idempotency-Key': quoteId },
       },
     );
     setCommitting(false);
@@ -330,6 +340,30 @@ export function QuoteBuilder({
     }
     setCommittedRef(res.body.data.quote.supplierQuoteRef ?? null);
     setCommittedQuoteId(res.body.data.quote.id);
+  }
+
+  async function accept(): Promise<void> {
+    if (!quoteId || !committedQuoteId) return;
+    setAccepting(true);
+    setAcceptError(null);
+    const res = await apiClientFetch<QuoteDetail>(
+      `/api/v1/quotes/${quoteId}/accept`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ acknowledgmentChannel: 'verbal_phone' }),
+      },
+    );
+    setAccepting(false);
+    if (res.status !== 200 || !res.body.ok || !res.body.data) {
+      setAcceptError(res.body.error?.message ?? 'Accept failed');
+      return;
+    }
+    // QOC-07: the /accept route synchronously triggers the supplier
+    // quote→order conversion. On success the response carries the
+    // freshly-stamped SO-XXXXXX; on a best-effort BC failure the local
+    // accept succeeds with supplierOrderRef left null. Either way we
+    // unlock the "accepted" UI state.
+    setAcceptedOrderRef(res.body.data.quote.supplierOrderRef ?? null);
   }
 
   function retry(): void {
@@ -403,6 +437,10 @@ export function QuoteBuilder({
         committedRef={committedRef}
         committedQuoteId={committedQuoteId}
         onCommit={commit}
+        accepting={accepting}
+        acceptedOrderRef={acceptedOrderRef}
+        acceptError={acceptError}
+        onAccept={accept}
       />
     </div>
   );
@@ -800,14 +838,23 @@ function CommitBar({
   committedRef,
   committedQuoteId,
   onCommit,
+  accepting,
+  acceptedOrderRef,
+  acceptError,
+  onAccept,
 }: {
   canCommit: boolean;
   committing: boolean;
   committedRef: string | null;
   committedQuoteId: string | null;
   onCommit: () => void;
+  accepting: boolean;
+  acceptedOrderRef: string | null;
+  acceptError: string | null;
+  onAccept: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'quote' | 'order' | null>(null);
+  const [accepted, setAccepted] = useState(false);
   return (
     <div
       className="lg:col-span-3 sticky bottom-0 -mx-4 sm:-mx-6 lg:-mx-8 mt-6 border-t border-slate-200 bg-white px-4 sm:px-6 lg:px-8 py-3"
@@ -820,11 +867,28 @@ function CommitBar({
         >
           <div className="text-sm">
             <span className="font-medium text-emerald-700">
-              Sent to supplier
+              {accepted || acceptedOrderRef ? 'Customer accepted' : 'Sent to supplier'}
             </span>
             {committedRef && (
               <span className="ml-2 text-slate-700">
                 Ref: <code className="font-mono">{committedRef}</code>
+              </span>
+            )}
+            {acceptedOrderRef && (
+              <span
+                className="ml-2 text-slate-700"
+                data-testid="order-ref-badge"
+              >
+                BC order:{' '}
+                <code className="font-mono text-emerald-800">{acceptedOrderRef}</code>
+              </span>
+            )}
+            {acceptError && (
+              <span
+                className="ml-2 text-rose-700"
+                data-testid="accept-error"
+              >
+                ({acceptError})
               </span>
             )}
           </div>
@@ -834,14 +898,43 @@ function CommitBar({
                 type="button"
                 onClick={() => {
                   navigator.clipboard.writeText(committedRef).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1500);
+                    setCopied('quote');
+                    setTimeout(() => setCopied(null), 1500);
                   });
                 }}
                 className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 data-testid="copy-ref"
               >
-                {copied ? 'Copied' : 'Copy'}
+                {copied === 'quote' ? 'Copied' : 'Copy SQ'}
+              </button>
+            )}
+            {acceptedOrderRef && (
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(acceptedOrderRef).then(() => {
+                    setCopied('order');
+                    setTimeout(() => setCopied(null), 1500);
+                  });
+                }}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                data-testid="copy-order-ref"
+              >
+                {copied === 'order' ? 'Copied' : 'Copy SO'}
+              </button>
+            )}
+            {!accepted && !acceptedOrderRef && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAccepted(true);
+                  onAccept();
+                }}
+                disabled={accepting}
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+                data-testid="accept-quote"
+              >
+                {accepting ? 'Recording...' : 'Customer accepted'}
               </button>
             )}
             <a

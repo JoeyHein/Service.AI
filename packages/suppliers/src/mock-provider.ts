@@ -19,6 +19,8 @@ import { randomUUID } from 'node:crypto';
 import type {
   CommitQuoteRequest,
   CommitQuoteResponse,
+  ConvertQuoteToOrderRequest,
+  ConvertQuoteToOrderResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -52,7 +54,7 @@ export interface MockProviderOptions {
  * Cleared after a single use so tests don't have to remember to reset.
  */
 interface InjectedFailure {
-  op: 'price' | 'commit';
+  op: 'price' | 'commit' | 'convertToOrder';
   error: SupplierError;
   /** When true, the failure fires on every call until cleared. */
   sticky: boolean;
@@ -64,7 +66,9 @@ export class MockSupplierProvider implements SupplierProvider {
 
   private catalog = new Map<string, MockCatalogEntry>();
   private commits = new Map<string, CommitQuoteResponse>();
+  private conversions = new Map<string, ConvertQuoteToOrderResponse>();
   private nextRefSerial = 100_000;
+  private nextOrderSerial = 200_000;
   private readonly latencyMs: number;
   private readonly currency: 'CAD' | 'USD';
   private readonly validityDays: number;
@@ -94,12 +98,18 @@ export class MockSupplierProvider implements SupplierProvider {
   /** Drop every committed quote — used between tests. */
   clearCommits(): void {
     this.commits.clear();
+    this.conversions.clear();
     this.voidedRefs.clear();
     this.nextRefSerial = 100_000;
+    this.nextOrderSerial = 200_000;
   }
 
-  /** Make the next priceItems / commitQuote call fail. */
-  injectFailure(op: 'price' | 'commit', error: SupplierError, sticky = false): void {
+  /** Make the next priceItems / commitQuote / convertQuoteToOrder call fail. */
+  injectFailure(
+    op: 'price' | 'commit' | 'convertToOrder',
+    error: SupplierError,
+    sticky = false,
+  ): void {
     this.injectedFailure = { op, error, sticky };
   }
 
@@ -206,6 +216,44 @@ export class MockSupplierProvider implements SupplierProvider {
     return { ok: true, data: undefined };
   }
 
+  async convertQuoteToOrder(
+    req: ConvertQuoteToOrderRequest,
+  ): Promise<SupplierResult<ConvertQuoteToOrderResponse>> {
+    if (this.latencyMs > 0) await sleep(this.latencyMs);
+    const fail = this.takeFailure('convertToOrder');
+    if (fail) return { ok: false, error: fail };
+
+    // Idempotency: same externalQuoteId → same supplierOrderRef.
+    const existing = this.conversions.get(req.externalQuoteId);
+    if (existing) return { ok: true, data: existing };
+
+    // The quote must have been committed first — match BC's 422 semantic.
+    if (!this.commits.has(req.externalQuoteId)) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'No committed quote found for externalQuoteId',
+          retryable: false,
+        },
+      };
+    }
+
+    this.nextOrderSerial += 1;
+    const response: ConvertQuoteToOrderResponse = {
+      supplierOrderRef: `SO-${String(this.nextOrderSerial).padStart(6, '0')}`,
+      supplierOrderId: randomUUID(),
+      orderedAt: new Date().toISOString(),
+    };
+    this.conversions.set(req.externalQuoteId, response);
+    return { ok: true, data: response };
+  }
+
+  /** Test helper — has this quote been converted to an order? */
+  isConverted(externalQuoteId: string): boolean {
+    return this.conversions.has(externalQuoteId);
+  }
+
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
     return {
       ok: true,
@@ -223,7 +271,9 @@ export class MockSupplierProvider implements SupplierProvider {
     return this.voidedRefs.has(supplierQuoteRef);
   }
 
-  private takeFailure(op: 'price' | 'commit'): SupplierError | null {
+  private takeFailure(
+    op: 'price' | 'commit' | 'convertToOrder',
+  ): SupplierError | null {
     if (!this.injectedFailure || this.injectedFailure.op !== op) return null;
     const err = this.injectedFailure.error;
     if (!this.injectedFailure.sticky) this.injectedFailure = null;

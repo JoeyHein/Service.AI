@@ -89,6 +89,27 @@ export interface CommitQuoteResponse {
   currency: 'CAD' | 'USD';
 }
 
+export interface ConvertQuoteToOrderRequest {
+  /**
+   * The SAME `externalQuoteId` that was used at commit time. The provider
+   * looks up the supplier-side quote document via this idempotency key,
+   * then asks the supplier to convert it to an order. A repeat call with
+   * the same id returns the cached order ref.
+   */
+  externalQuoteId: string;
+  /** SQB-11 request-ID propagation; see PriceItemsRequest.requestId. */
+  requestId?: string;
+}
+
+export interface ConvertQuoteToOrderResponse {
+  /** Human-facing supplier order reference (e.g., 'SO-001234'). */
+  supplierOrderRef: string;
+  /** Provider-native UUID for the persisted order document. */
+  supplierOrderId: string;
+  /** ISO timestamp — when the supplier created the order. */
+  orderedAt: string;
+}
+
 /**
  * Catalog row used by the live-quote autocomplete. Optional helper —
  * providers that don't expose a browsable catalog can return [].
@@ -152,6 +173,19 @@ export interface SupplierProvider {
    * when the supplier-side document was already voided (idempotent).
    */
   voidQuote?(supplierQuoteRef: string): Promise<SupplierResult<void>>;
+
+  /**
+   * QOC-02. Convert a committed supplier quote into a supplier order.
+   * Triggered by Service.AI's `/api/v1/quotes/:id/accept` after the
+   * operator records the customer's acceptance. Idempotent on
+   * `externalQuoteId` — the same id used at commit; a repeat call
+   * returns the cached order ref without creating a second supplier
+   * document. Optional on the interface so mock providers and pre-QOC
+   * providers can omit it; the route handler null-checks before invoking.
+   */
+  convertQuoteToOrder?(
+    req: ConvertQuoteToOrderRequest,
+  ): Promise<SupplierResult<ConvertQuoteToOrderResponse>>;
 
   /**
    * Optional catalog browse — used by the live-quote autocomplete.

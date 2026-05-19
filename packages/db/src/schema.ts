@@ -1430,6 +1430,9 @@ export const quotes = pgTable(
     /** SQ-XXXXXX assigned by BC at commit. NULL until status >= committed. */
     supplierQuoteRef: text('supplier_quote_ref'),
     supplierQuoteId: text('supplier_quote_id'),
+    /** SO-XXXXXX assigned by BC when /accept triggers convert_quote_to_order (QOC-01). NULL until conversion succeeds. */
+    supplierOrderRef: text('supplier_order_ref'),
+    supplierOrderId: uuid('supplier_order_id'),
     validUntil: timestamp('valid_until', { withTimezone: true }),
     createdByUserId: text('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
@@ -1441,6 +1444,8 @@ export const quotes = pgTable(
     notes: text('notes'),
     committedAt: timestamp('committed_at', { withTimezone: true }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    /** When the BC sales order was created via convert_quote_to_order (QOC). */
+    orderedAt: timestamp('ordered_at', { withTimezone: true }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1454,6 +1459,9 @@ export const quotes = pgTable(
     supplierQuoteRefUnique: uniqueIndex('quotes_supplier_quote_ref_unique')
       .on(t.supplierQuoteRef)
       .where(sql`${t.supplierQuoteRef} IS NOT NULL`),
+    supplierOrderRefUnique: uniqueIndex('quotes_supplier_order_ref_unique')
+      .on(t.supplierOrderRef)
+      .where(sql`${t.supplierOrderRef} IS NOT NULL`),
   }),
 );
 

@@ -93,10 +93,7 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: would land at `/api/v1/quotes/:id/pdf` (new) + a Puppeteer or BC AI Agent passthrough renderer.
   - Resolution: Defer to the accept-link follow-up phase (TD-SQB-P4) — PDF + accept link + Stripe deposit collection ship together so the customer flow is coherent.
 
-- [LOW] TD-SQB-P3 · phase_supplier_quote_bridge · Quote-to-order conversion
-  - What: A `committed → accepted` transition exists but does not currently call BC AI Agent's `convert_quote_to_order` — order creation is manual on the BC side. Acceptance is informational in v1.
-  - Where: `apps/api/src/quote-status-machine.ts` (`accepted` transition), `packages/suppliers` (`SupplierProvider` needs a `convertQuoteToOrder` op).
-  - Resolution: Add `convertQuoteToOrder` to `SupplierProvider`, wire BC AI Agent's existing endpoint through, fire on the `accepted` transition. Depends on TD-SQB-P4 being live so we know who clicked accept.
+- [CLOSED] TD-SQB-P3 · phase_supplier_quote_bridge · Quote-to-order conversion → shipped as `phase_quote_order_conversion` (QOC-01..08, commit pending). `SupplierProvider.convertQuoteToOrder` + BC AI Agent's `POST /api/external/quotes/:id/convert-to-order` endpoint + `/accept` route wiring + UI badge all live. Closed 2026-05-18.
 
 - [LOW] TD-SQB-P4 · phase_supplier_quote_bridge · Customer-facing accept link
   - What: No signed-URL surface lets a homeowner accept a committed quote without logging in. Today acceptance is recorded by a CSR / tech on the customer's verbal yes.
@@ -110,15 +107,14 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### Audit-1 follow-ups (deferred from MAJOR fixes — see phase_supplier_quote_bridge_AUDIT_1.md)
 
-- [MED] TD-SQB-FU1 · phase_supplier_quote_bridge · QuoteBuilder web client should send `Idempotency-Key` header on commit
-  - What: The M1 fix wired the commit route to read the `Idempotency-Key` HTTP header (with body-field + quote-id fallback). The web client `apps/web/src/app/(app)/quotes/new/QuoteBuilder.tsx::commit` currently sends neither — it relies on the quote-id fallback at the route. Today's UX is safe but the contract is not exercised by the canonical client.
-  - Where: `apps/web/src/app/(app)/quotes/new/QuoteBuilder.tsx::commit`
-  - Resolution: Set `Idempotency-Key: <quoteId>` on the commit POST. Add a vitest asserting the header is sent and a live integration test that fires 10 concurrent commits with the same header and asserts a single BC document.
+- [CLOSED] TD-SQB-FU1 · phase_supplier_quote_bridge · QuoteBuilder + MobileQuoteBuilder now send `Idempotency-Key: <quoteId>` header on commit (shipped in QOC alongside the accept-button wiring). A live concurrent-commit test under the header path remains a smaller follow-up (filed as TD-QOC-A1 if the auditor surfaces it).
 
-- [MED] TD-SQB-FU2 · phase_supplier_quote_bridge · `/accept` needs ts-rest contract + QuoteBuilder UI button
-  - What: M2 added `POST /api/v1/quotes/:id/accept` directly on Fastify. The phase's other quote routes also live as ts-rest contracts in `packages/contracts`; this one does not yet, and there is no "Accept" button in `QuoteBuilder.tsx`. The route works (AI tools and the tech PWA can call it raw), but the consistency story is incomplete.
-  - Where: `packages/contracts/src/quotes.ts` (new contract entry), `apps/web/src/app/(app)/quotes/new/QuoteBuilder.tsx` (UI), `apps/api/src/quote-routes.ts::/accept` (migrate from raw to ts-rest binding once contract exists).
-  - Resolution: Add the contract, generate the client, drop an "Accept" button after the commit banner that calls it with `{ acknowledgmentChannel: 'verbal_phone' }`. Add the 5-case test matrix per CLAUDE.md.
+- [CLOSED] TD-SQB-FU2 · phase_supplier_quote_bridge · "Customer accepted" button shipped in QOC-07 (both `QuoteBuilder.tsx` and `MobileQuoteBuilder.tsx`). The ts-rest contract migration is a smaller follow-up under TD-QOC-FU1 below if desired.
+
+- [LOW] TD-QOC-FU1 · phase_quote_order_conversion · `/accept` should be a ts-rest contract entry
+  - What: QOC ships the accept endpoint as a raw Fastify handler. Other quote routes in `packages/contracts/src/quotes.ts` live as ts-rest contracts. The UI works today by calling fetch directly; type safety would improve with the contract layer.
+  - Where: `packages/contracts/src/` (new entry), `apps/api/src/quote-routes.ts::/accept` (migrate the binding).
+  - Resolution: Add the ts-rest contract entry, generate the client, switch QuoteBuilder/MobileQuoteBuilder to use the typed client.
 
 - [LOW] TD-SQB-FU3 · phase_supplier_quote_bridge · Per-tool AI guardrails in `ctx.guardrails`
   - What: M3 added an in-tool confidence + dollar-cap guard inside `commitQuoteTool` (floors hard-coded to 0.9 and $5,000 per CLAUDE.md). The agent loop still uses a single global `confidenceThreshold` for every gated tool; per-tool floors are encoded only inside the tool that needs them. Works today (only `commitQuote` has a higher floor than the global), will get noisy once a fourth gated tool with its own floor lands.
@@ -166,3 +162,59 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - What: `packages/suppliers/src/bc-ai-agent-provider.ts:228-237` returns `UPSTREAM_ERROR` for `voidQuote`; `quote-routes.ts` swallows the error best-effort. Result: voiding a committed Service.AI quote leaves the BC SQ-XXXXXX alive in BC. Local + BC state drift on every void of a committed quote.
   - Where: bc-ai-agent's `external_quotes` API + `bc_quote_service` (add `void_sales_quote` op), then `packages/suppliers/src/bc-ai-agent-provider.ts::voidQuote`.
   - Resolution: Either (a) push BC-side `/api/external/quotes/:id/void` into BC AI Agent and wire `BcAiAgentProvider.voidQuote` to it (best fix; gate doesn't strictly require it since voidQuote is best-effort), or (b) add a void-followup queue and an operator runbook to manually void the BC quote via the OPENDC portal. Recommend (a).
+
+## phase_quote_order_conversion
+
+### Audit-1 follow-ups (deferred from MAJOR fixes — see phase_quote_order_conversion_AUDIT_1.md)
+
+- [LOW] TD-QOC-A1 · phase_quote_order_conversion · 10× concurrent convert-to-order stress test
+  - What: The QOC audit M1 was closed by a 12-case pytest file (`test_external_quote_convert_to_order.py`) that covers single-threaded happy path + replay + cross-key + status-invariant + BC-failure modes. The gate's stretch goal was a 10× concurrent stress test asserting "exactly one BC `convert_quote_to_order` call across all 10 racers." The single-process test exists; the concurrency test does not.
+  - Where: `bc-ai-agent/backend/tests/test_external_quote_convert_to_order.py` (add a `TestConcurrency` class), mirror `test_external_quote_commit.py`'s pattern.
+  - Resolution: Add a `threading`-based test that spawns 10 threads calling the endpoint with the same `external_quote_id` and asserts `fake_bc.convert_calls` length ≤ 1 (or exactly 1 if the lock holds across threads in the test environment). Useful once BC AI Agent runs in production with gunicorn workers.
+
+- [LOW] TD-QOC-A2 · phase_quote_order_conversion · `audit_log` insert assertion in live test
+  - What: The QOC audit M3 wired a `quote.accept` audit_log row into the /accept handler's tx, but the existing live test (`live-quote-routes.test.ts::accept happy path`) does not directly assert the row landed. The persisted state (status='accepted', supplierOrderRef populated) IS asserted, which exercises the same code path; but a future refactor that drops the audit_log insert silently would not be caught by the existing test.
+  - Where: `apps/api/src/__tests__/live-quote-routes.test.ts::quote routes — accept + quote-to-order conversion`
+  - Resolution: Add a `SELECT * FROM audit_log WHERE action = 'quote.accept' AND metadata->>'quoteId' = $1` query after the happy-path accept call; assert exactly one row exists with the expected actor + metadata.
+
+### Audit-1 minors (deferred — see phase_quote_order_conversion_AUDIT_1.md)
+
+- [LOW] TD-QOC-A3 · phase_quote_order_conversion · Lock-map release race (inherited from SQB)
+  - What: `external_order_conversion_service.py:171-179` reuses `_release_lock` from `external_quote_service.py`, which pops the per-id lock from the global `_locks` dict on every release — creating a window where a concurrent caller can acquire a stale lock that no longer guards the same row. BC's `makeOrder` is idempotent on the quote id so the blast radius is at most one extra BC HTTP call.
+  - Where: `bc-ai-agent/backend/app/services/external_quote_service.py:87-89` (`_release_lock` definition), `external_order_conversion_service.py:178` (caller).
+  - Resolution: Either (a) move lock map cleanup to a process-lifecycle hook (or just leak — UUID keys, conversion is once-per-quote), or (b) replace the in-process lock with a Postgres advisory lock keyed on `hashtext(external_quote_id)` so cross-worker concurrency is handled correctly.
+
+- [LOW] TD-QOC-A4 · phase_quote_order_conversion · `quote_status_log` self-loop row on order conversion
+  - What: On a successful supplier conversion, `quote-routes.ts::/accept` writes a `quote_status_log` row with `fromStatus='accepted', toStatus='accepted', reason='order_converted'`. The status didn't actually change; the log table is being used as an event log here. A downstream consumer assuming `fromStatus !== toStatus` would see surprising data.
+  - Where: `apps/api/src/quote-routes.ts` (accept handler, ~line 991)
+  - Resolution: Move the order_converted event into `audit_log` (consistent with the M3 fix's audit_log row pattern) and drop the self-loop status-log row.
+
+- [LOW] TD-QOC-A5 · phase_quote_order_conversion · `db.select().from(suppliers)` outside `withScope` in the new convert call path
+  - What: After the local accept tx commits, the convert path reads the suppliers row with `db.select().from(suppliers)` — no `withScope` wrapper. The suppliers table is corporate-only with `_scoped USING (false)`, so the read is safe (corporate_admin or RLS-bypassing builder); but the pattern diverges from the codebase's "every tenant-scoped read goes through `withScope`" convention.
+  - Where: `apps/api/src/quote-routes.ts` (accept handler, supplier lookup ~line 950)
+  - Resolution: Wrap the suppliers read in `withScope` for consistency, even though the table's RLS happens to permit raw reads from any scope today.
+
+- [LOW] TD-QOC-A6 · phase_quote_order_conversion · BC AI Agent convert endpoint accepts any content-type
+  - What: The new `POST /api/external/quotes/:id/convert-to-order` endpoint has no request body (the operation is keyed entirely on the path param). FastAPI accepts any content-type for empty-body POSTs; a future regression that adds a body would not detect mismatched content-types.
+  - Where: `bc-ai-agent/backend/app/api/external_quotes.py::convert_to_order`
+  - Resolution: Either explicitly accept `None` body type with `Body(None)`, or add a request-body model that validates `{}` strictly. Low priority; tighten when body fields are added.
+
+- [LOW] TD-QOC-A7 · phase_quote_order_conversion · `convertQuoteToOrder` provider call doesn't pass `Idempotency-Key` header
+  - What: The Service.AI provider's `BcAiAgentProvider.convertQuoteToOrder` does not send an HTTP `Idempotency-Key` header. Idempotency is enforced via the URL path's `external_quote_id` instead, which is sufficient for the BC AI Agent endpoint's contract. But the header convention would be useful for nginx/reverse-proxy debugging and for any future generic-replay middleware.
+  - Where: `packages/suppliers/src/bc-ai-agent-provider.ts::convertQuoteToOrder`
+  - Resolution: Add `Idempotency-Key: ${externalQuoteId}` to the request headers. Cosmetic but consistent.
+
+- [LOW] TD-QOC-A8 · phase_quote_order_conversion · `external_call_log` not implemented (inherited from SQB)
+  - What: The SQB gate called for an `external_call_log` table that records every external API call (key_id, latency, status). It was never implemented in SQB; QOC's convert endpoint inherits the gap.
+  - Where: bc-ai-agent's `external_quotes.py`, `external_pricing.py`, new `external_quotes/convert-to-order` (all three lack the call log).
+  - Resolution: Add an `external_call_log` table + a small wrapper that records every external call. One follow-up phase that covers all three endpoints. Useful for billing / rate limiting / debug.
+
+- [LOW] TD-QOC-A9 · phase_quote_order_conversion · Migration 0018 not transactional-DDL-safe under CONCURRENTLY
+  - What: `0018_quote_order_conversion.sql` uses plain `ALTER TABLE` + `CREATE UNIQUE INDEX`. Postgres holds an ACCESS EXCLUSIVE lock on `quotes` for the duration of the ALTER. On a hot table at scale this would briefly block all writes. v1 tables are small so this is a non-issue; flagged for awareness.
+  - Where: `packages/db/migrations/0018_quote_order_conversion.sql`
+  - Resolution: For large-table cases, switch to `ALTER TABLE ... ADD COLUMN <name> <type> NULL` (cheap) + `CREATE UNIQUE INDEX CONCURRENTLY` (no exclusive lock). Not yet needed.
+
+- [LOW] TD-QOC-A10 · phase_quote_order_conversion · Live happy-path test doesn't directly query the `quotes` row
+  - What: `live-quote-routes.test.ts::accept happy path` asserts the route's response body but doesn't issue a SELECT to confirm the columns persisted on the `quotes` row. The response is built from `loadQuoteDetail` which IS a `SELECT *`, so the assertion does exercise the persistence — but a future regression that omits the write but somehow keeps the response shape (e.g., projected from in-memory state) wouldn't be caught.
+  - Where: `apps/api/src/__tests__/live-quote-routes.test.ts::happy path: accept stamps SO-XXXXXX...`
+  - Resolution: Add a direct `pool.query(...)` after the response assertion to read `supplier_order_ref`, `supplier_order_id`, `ordered_at` from the row.

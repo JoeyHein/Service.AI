@@ -193,6 +193,9 @@ export function MobileQuoteBuilder({
   const [pricingError, setPricingError] = useState<string | null>(null);
   const [committing, setCommitting] = useState(false);
   const [committedRef, setCommittedRef] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const [acceptedOrderRef, setAcceptedOrderRef] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [totals, setTotals] = useState({
@@ -363,7 +366,11 @@ export function MobileQuoteBuilder({
     try {
       const res = await apiClientFetch<{ supplierQuoteRef: string }>(
         `/api/v1/quotes/${quoteId}/commit`,
-        { method: 'POST', body: JSON.stringify({}) },
+        {
+          method: 'POST',
+          body: JSON.stringify({}),
+          headers: { 'Idempotency-Key': quoteId },
+        },
       );
       if (res.status !== 200 || !res.body.ok || !res.body.data) {
         setPricingError(res.body.error?.message ?? 'Commit failed');
@@ -375,6 +382,36 @@ export function MobileQuoteBuilder({
       clearCache(cacheKeyFor(quoteId));
     } finally {
       setCommitting(false);
+    }
+  }
+
+  async function accept(): Promise<void> {
+    if (!quoteId || !committedRef) return;
+    if (!online) {
+      // Acceptance requires the supplier-side convert call; we don't
+      // queue it offline in v1. Tech can mark the quote as accepted
+      // later from the office UI when reconnected.
+      setAcceptError('Cannot record acceptance offline — try when reconnected');
+      return;
+    }
+    setAccepting(true);
+    setAcceptError(null);
+    try {
+      const res = await apiClientFetch<{
+        quote: { supplierOrderRef?: string | null };
+      }>(`/api/v1/quotes/${quoteId}/accept`, {
+        method: 'POST',
+        body: JSON.stringify({ acknowledgmentChannel: 'verbal_inperson' }),
+      });
+      if (res.status !== 200 || !res.body.ok || !res.body.data) {
+        setAcceptError(res.body.error?.message ?? 'Accept failed');
+        return;
+      }
+      // QOC-07: order ref may be null on best-effort BC failure — still
+      // a success path; the local accept stuck.
+      setAcceptedOrderRef(res.body.data.quote.supplierOrderRef ?? null);
+    } finally {
+      setAccepting(false);
     }
   }
 
@@ -413,14 +450,45 @@ export function MobileQuoteBuilder({
           className="w-full max-w-md rounded-xl bg-emerald-50 border border-emerald-200 p-6 text-center"
           data-testid="quote-committed"
         >
-          <div className="text-emerald-700 font-medium text-lg">Quote sent</div>
+          <div className="text-emerald-700 font-medium text-lg">
+            {acceptedOrderRef ? 'Customer accepted' : 'Quote sent'}
+          </div>
           <div className="mt-2 text-3xl font-bold tracking-wide text-emerald-900">
             {committedRef}
           </div>
+          {acceptedOrderRef && (
+            <div
+              className="mt-2 text-base font-semibold text-emerald-800"
+              data-testid="order-ref-badge"
+            >
+              BC order: {acceptedOrderRef}
+            </div>
+          )}
           <div className="mt-1 text-sm text-emerald-700">
-            Shared with the supplier — ask the office to confirm.
+            {acceptedOrderRef
+              ? 'Order created in BC — fulfillment can pick it up.'
+              : 'Shared with the supplier — ask the office to confirm.'}
           </div>
+          {acceptError && (
+            <div
+              className="mt-3 text-sm text-rose-700"
+              data-testid="accept-error"
+            >
+              {acceptError}
+            </div>
+          )}
           <div className="mt-6 flex flex-col gap-2">
+            {!acceptedOrderRef && (
+              <button
+                type="button"
+                onClick={() => void accept()}
+                disabled={accepting}
+                className="block rounded-lg bg-emerald-700 text-white py-3 font-medium disabled:opacity-50"
+                data-testid="accept-quote"
+              >
+                {accepting ? 'Recording...' : 'Customer accepted'}
+              </button>
+            )}
             <a
               href={`/tech/jobs/${job.id}`}
               className="block rounded-lg bg-emerald-600 text-white py-3 font-medium"
