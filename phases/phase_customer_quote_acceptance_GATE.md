@@ -2,7 +2,9 @@
 
 **Written before build begins. Criteria here cannot be loosened mid-phase.**
 
-**STATUS: APPROVED 2026-05-20 (Joey). Open decisions resolved below; build proceeds per the task order.**
+**STATUS: SHIPPED 2026-05-20. CQA-01..07 all landed; api suite 734 + web suite 184 green. Detailed reference: `docs/api/customer-acceptance.md`.**
+
+**(Original: APPROVED 2026-05-20, Joey. Open decisions resolved below.)**
 
 Phase 17 — the customer-facing close. Today acceptance is recorded by a
 CSR/tech on the customer's verbal yes (QOC). This phase lets the homeowner

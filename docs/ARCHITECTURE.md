@@ -76,6 +76,21 @@ packages/ai / packages/db / packages/contracts / packages/ui → external deps o
 - `apps/voice` → `packages/db` — same
 - Any package → direct LLM SDK import — all LLM calls route through `packages/ai`
 
+**Public (token-gated) route groups.** Some API routes run **outside**
+RequestScope — there is no session for the caller. The auth is an
+unguessable token in the URL path. Today: `public-invoice-routes.ts` (pay a
+finalized invoice) and `public-quote-routes.ts` (CQA — accept a quote, fetch
+its PDF, pay a deposit). These select an explicit field whitelist (never
+`SELECT *`) so internal columns can't leak, and write with a synthetic scope
+so production RLS still fires. The web counterparts live outside the `(app)`
+group: `app/invoices/[token]/pay` and `app/quotes/[token]/accept`.
+
+CQA (migration 0019) adds customer-acceptance + deposit columns to `quotes`
+(`accept_token`, `accept_token_expires_at`, `accepted_channel`,
+`deposit_amount_cents`, `deposit_payment_intent_id`, `deposit_paid_at`) and a
+deposit policy to `corporate` (`deposit_pct`, `deposit_min_cents`,
+`deposit_max_cents`). See `docs/api/customer-acceptance.md`.
+
 ## 2b. Local vs. DO environment parity
 
 | Concern | Local (Docker Compose) | DO App Platform |

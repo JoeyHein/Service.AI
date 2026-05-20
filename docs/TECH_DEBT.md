@@ -74,17 +74,13 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: `apps/web/src/app/(app)/quotes/new/`, `apps/api/src/quote-routes.ts` (supplier resolution)
   - Resolution: Add `?supplierId=` URL param + a picker in the line item header when a second supplier is provisioned. Update the AI CSR tools to take an optional `supplierId` arg. Wait until a second supplier is real — premature picker UX would just clutter the live-quote surface.
 
-- [LOW] TD-SQB-P2 · phase_supplier_quote_bridge · Quote PDF rendering
-  - What: No PDF surface for a committed quote. Service.AI shows the SQ-XXXXXX number with a Copy button, but no downloadable PDF for the customer. Sales calls end with "I'll text you the quote number"; the customer can't see line items or totals on a document.
-  - Where: would land at `/api/v1/quotes/:id/pdf` (new) + a Puppeteer or BC AI Agent passthrough renderer.
-  - Resolution: Defer to the accept-link follow-up phase (TD-SQB-P4) — PDF + accept link + Stripe deposit collection ship together so the customer flow is coherent.
+- [CLOSED] TD-SQB-P2 · phase_supplier_quote_bridge · Quote PDF rendering → shipped in CQA-04
+  - Closed 2026-05-20. `apps/api/src/quote-pdf.ts` (`@react-pdf/renderer`, modeled on `receipt-pdf.ts`) serves a branded quote PDF at `GET /api/v1/quotes/:id/quote.pdf` (operator) and `GET /api/v1/public/quotes/:token/pdf` (customer, token-gated, field-leak-safe). See `phase_customer_quote_acceptance`.
 
 - [CLOSED] TD-SQB-P3 · phase_supplier_quote_bridge · Quote-to-order conversion → shipped as `phase_quote_order_conversion` (QOC-01..08, commit pending). `SupplierProvider.convertQuoteToOrder` + BC AI Agent's `POST /api/external/quotes/:id/convert-to-order` endpoint + `/accept` route wiring + UI badge all live. Closed 2026-05-18.
 
-- [LOW] TD-SQB-P4 · phase_supplier_quote_bridge · Customer-facing accept link
-  - What: No signed-URL surface lets a homeowner accept a committed quote without logging in. Today acceptance is recorded by a CSR / tech on the customer's verbal yes.
-  - Where: new public route under `/public/quotes/:token/accept`, mirroring `public-invoice-routes.ts`.
-  - Resolution: Ship together with PDF rendering (TD-SQB-P2) + Stripe deposit collection. Reuses the public-token-with-CSRF pattern proven for public invoices.
+- [CLOSED] TD-SQB-P4 · phase_supplier_quote_bridge · Customer-facing accept link → shipped as phase_customer_quote_acceptance (CQA)
+  - Closed 2026-05-20. `POST /quotes/:id/share` mints a signed token; public `app/quotes/[token]/accept` + `public-quote-routes.ts` let a homeowner accept (and pay a deposit via Stripe Elements) with no login. CSRF is Origin-allowlist + JSON-only (not cookie double-submit — there is no session cookie; the original "proven invoice CSRF pattern" never existed). See `docs/api/customer-acceptance.md`.
 
 - [LOW] TD-SQB-P5 · phase_supplier_quote_bridge · Configurator UX inside Service.AI
   - What: Service.AI consumes resolved SKUs (e.g. `AL976-9X7-…`) — it does not host the door configurator. The configurator stays on the OPENDC portal / widget; if a Service.AI user wants to build an aluminium door from scratch, they leave the app, configure, copy the SKU back. Friction is acceptable while a single product line is in scope.

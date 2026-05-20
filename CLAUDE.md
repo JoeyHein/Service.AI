@@ -15,6 +15,24 @@ Architecturally ERP-agnostic at the core, with supplier integration routed throu
 > **Phase 15 note (2026-05).** Phase 15 (`phase_supplier_quote_bridge`, SQB-01..13) added the live supplier quote bridge: `packages/suppliers` provider abstraction, `apps/api/src/quote-routes.ts` + `margin-engine.ts` + `quote-status-machine.ts`, `/corporate/settings/margins` + `/quotes/new` + tech PWA `/tech/jobs/:id/quote/new` UIs, AI CSR tools `quoteConfigurator` + `commitQuote`, and migration `0017_supplier_quote_bridge.sql`. Detailed reference: `docs/api/supplier-quote-bridge.md`.
 >
 > **Phase 16 note (2026-05).** Phase 16 (`phase_quote_order_conversion`, QOC-01..08) closes the SQB loop: a CSR/tech clicks "Customer accepted" → `POST /api/v1/quotes/:id/accept` transitions the quote to `accepted` and best-effort calls `provider.convertQuoteToOrder`, which hits BC AI Agent's new `POST /api/external/quotes/:id/convert-to-order` endpoint and stamps `SO-XXXXXX` onto the Service.AI quote row. Migration `0018_quote_order_conversion.sql` adds `supplier_order_ref`, `supplier_order_id`, `ordered_at` to `quotes`. Same idempotency key (`external_quote_id`) as commit; same per-key in-process lock at BC AI Agent.
+>
+> **Phase 17 note (2026-05).** Phase 17 (`phase_customer_quote_acceptance`, CQA-01..07) adds the customer-facing close: `POST /quotes/:id/share` mints a signed link; the public `quotes[token]/accept` page lets a homeowner accept and pay a deposit (Stripe Elements). Public token-gated routes in `apps/api/src/public-quote-routes.ts` run **outside RequestScope**; the operator + public accept paths share `runOrderConversion` so they can't drift. Migration `0019_customer_quote_acceptance.sql` adds accept-token + deposit columns to `quotes` and a deposit policy to `corporate`. Detailed reference: `docs/api/customer-acceptance.md`.
+
+## Customer-facing surfaces (CQA, load-bearing)
+
+Public, token-gated routes (the accept link, deposit, public PDF) live in
+`apps/api/src/public-quote-routes.ts` and are registered **outside**
+RequestScope — the 32-byte path token is the auth, there is no session.
+Rules:
+- **Never expose cost or margin** on a public surface. The public quote view
+  uses an explicit whitelist select (no `SELECT *`); a field-leak test
+  guards it. Same rule for the customer PDF.
+- CSRF on public POSTs = `Origin`/`Referer` allowlist (`WEB_ORIGIN`) +
+  JSON-only, NOT cookie double-submit (there is no cookie).
+- Customer-originated writes set `actor_user_id = NULL` (FK to `users`) and
+  record `customerRef` in `audit_log.metadata`.
+- Deposit amounts come from the server-frozen `quotes.deposit_amount_cents`,
+  never request input (same cost-trust rule as quote pricing).
 
 ## Tech stack
 
