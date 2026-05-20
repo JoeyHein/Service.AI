@@ -179,6 +179,12 @@ export const corporate = pgTable('corporate', {
   maxMarginPct: numeric('max_margin_pct', { precision: 6, scale: 2 })
     .notNull()
     .default('200.00'),
+  /** Deposit policy (CQA). deposit_pct = 0 → branch does not collect deposits. */
+  depositPct: numeric('deposit_pct', { precision: 5, scale: 2 })
+    .notNull()
+    .default('0.00'),
+  depositMinCents: integer('deposit_min_cents').notNull().default(0),
+  depositMaxCents: integer('deposit_max_cents'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
@@ -1444,9 +1450,18 @@ export const quotes = pgTable(
     notes: text('notes'),
     committedAt: timestamp('committed_at', { withTimezone: true }),
     acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    /** How acceptance was recorded (CQA). 'customer_link' for self-serve. */
+    acceptedChannel: text('accepted_channel'),
     /** When the BC sales order was created via convert_quote_to_order (QOC). */
     orderedAt: timestamp('ordered_at', { withTimezone: true }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
+    /** Signed share link (CQA): 32-byte base64url token, the customer's only auth. NULL until shared. */
+    acceptToken: text('accept_token'),
+    acceptTokenExpiresAt: timestamp('accept_token_expires_at', { withTimezone: true }),
+    /** Deposit asked for, frozen at share time. NULL = no deposit collected. */
+    depositAmountCents: integer('deposit_amount_cents'),
+    depositPaymentIntentId: text('deposit_payment_intent_id'),
+    depositPaidAt: timestamp('deposit_paid_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -1462,6 +1477,12 @@ export const quotes = pgTable(
     supplierOrderRefUnique: uniqueIndex('quotes_supplier_order_ref_unique')
       .on(t.supplierOrderRef)
       .where(sql`${t.supplierOrderRef} IS NOT NULL`),
+    acceptTokenUnique: uniqueIndex('quotes_accept_token_unique')
+      .on(t.acceptToken)
+      .where(sql`${t.acceptToken} IS NOT NULL`),
+    depositPaymentIntentIdx: index('quotes_deposit_payment_intent_idx')
+      .on(t.depositPaymentIntentId)
+      .where(sql`${t.depositPaymentIntentId} IS NOT NULL`),
   }),
 );
 

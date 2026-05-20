@@ -27,6 +27,7 @@ import { registerPricebookSuggestionsRoutes } from './pricebook-suggestions-rout
 import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerPublicInvoiceRoutes } from './public-invoice-routes.js';
+import { registerPublicQuoteRoutes } from './public-quote-routes.js';
 import {
   registerPhoneRoutes,
   stubPhoneProvisioner,
@@ -394,6 +395,7 @@ export function buildApp(opts: AppOptions = {}) {
     // for any job that transitions to 'canceled'. Needs to run AFTER
     // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle);
+    registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry });
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app

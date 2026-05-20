@@ -371,7 +371,10 @@ beforeEach(async () => {
     `UPDATE corporate
        SET default_margin_pct = '50.00',
            min_margin_pct = '10.00',
-           max_margin_pct = '200.00'`,
+           max_margin_pct = '200.00',
+           deposit_pct = '0.00',
+           deposit_min_cents = 0,
+           deposit_max_cents = NULL`,
   );
 });
 
@@ -902,6 +905,277 @@ async function commitQuoteHelper(user: string, id: string): Promise<void> {
     throw new Error(`commit failed: ${res.statusCode} ${res.body}`);
   }
 }
+
+describe('quote routes — share / customer accept link (CQA-02)', () => {
+  async function shareQuote(user: string, id: string) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': user, 'content-type': 'application/json' },
+      payload: {},
+    });
+  }
+
+  it('returns 401 when unauthenticated', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/quotes/00000000-0000-0000-0000-000000000001/share',
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('returns 400 on malformed UUID', async () => {
+    if (!reachable) return;
+    const res = await shareQuote(MANAGER_USER, 'not-a-uuid');
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("returns 404 on a different branch's quote (no cross-branch leakage)", async () => {
+    if (!reachable) return;
+    const otherId = await createDraftQuote(OTHER_MGR_USER, {
+      customerId: OTHER_CUSTOMER_ID,
+      supplierId: OTHER_SUPPLIER_ID,
+    });
+    await commitQuoteHelper(OTHER_MGR_USER, otherId);
+    const res = await shareQuote(MANAGER_USER, otherId);
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns 409 INVALID_STATE when the quote is not committed (still draft)', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    const res = await shareQuote(MANAGER_USER, id);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_STATE');
+  });
+
+  it('happy path mints a token + URL; deposit null when policy pct = 0', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const res = await shareQuote(MANAGER_USER, id);
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data as {
+      token: string;
+      url: string;
+      expiresAt: string;
+      depositAmountCents: number | null;
+    };
+    expect(data.token).toMatch(/^[A-Za-z0-9_-]{32,}$/);
+    expect(data.url).toContain(`/quotes/${data.token}/accept`);
+    expect(new Date(data.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(data.depositAmountCents).toBeNull();
+
+    // Token persisted on the row.
+    const { rows } = await pool.query<{ accept_token: string }>(
+      `SELECT accept_token FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]?.accept_token).toBe(data.token);
+  });
+
+  it('freezes the deposit amount from the corporate policy (25% of total)', async () => {
+    if (!reachable) return;
+    await pool.query(`UPDATE corporate SET deposit_pct = '25.00', deposit_min_cents = 0, deposit_max_cents = NULL`);
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id); // PART-A → total 15_000 cents
+    const res = await shareQuote(MANAGER_USER, id);
+    expect(res.statusCode).toBe(200);
+    // 25% of 15_000 = 3_750
+    expect(res.json().data.depositAmountCents).toBe(3_750);
+    const { rows } = await pool.query<{ deposit_amount_cents: number }>(
+      `SELECT deposit_amount_cents FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(Number(rows[0]?.deposit_amount_cents)).toBe(3_750);
+  });
+
+  it('clamps the deposit to the policy floor', async () => {
+    if (!reachable) return;
+    // 25% of 15_000 = 3_750, but floor is 5_000 → clamps up.
+    await pool.query(`UPDATE corporate SET deposit_pct = '25.00', deposit_min_cents = 5000, deposit_max_cents = NULL`);
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const res = await shareQuote(MANAGER_USER, id);
+    expect(res.json().data.depositAmountCents).toBe(5_000);
+  });
+
+  it('is idempotent — re-sharing returns the same live token', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const first = await shareQuote(MANAGER_USER, id);
+    const second = await shareQuote(MANAGER_USER, id);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data.token).toBe(first.json().data.token);
+  });
+});
+
+describe('public quote routes — customer accept link (CQA-03)', () => {
+  async function shareAndGetToken(user: string, id: string): Promise<string> {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': user, 'content-type': 'application/json' },
+      payload: {},
+    });
+    if (res.statusCode !== 200) throw new Error(`share failed: ${res.statusCode} ${res.body}`);
+    return res.json().data.token as string;
+  }
+
+  async function committedSharedQuote(): Promise<{ id: string; token: string }> {
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const token = await shareAndGetToken(MANAGER_USER, id);
+    return { id, token };
+  }
+
+  it('GET returns 400 on a bad token shape', async () => {
+    if (!reachable) return;
+    const res = await app.inject({ method: 'GET', url: '/api/v1/public/quotes/short' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('GET returns 404 on an unknown (well-formed) token', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/quotes/${'A'.repeat(43)}`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('GET happy path returns the whitelisted summary', async () => {
+    if (!reachable) return;
+    const { token } = await committedSharedQuote();
+    const res = await app.inject({ method: 'GET', url: `/api/v1/public/quotes/${token}` });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data;
+    expect(data.status).toBe('committed');
+    expect(data.supplierQuoteRef).toMatch(/^SQ-/);
+    expect(data.totalCents).toBe(15_000);
+    expect(data.customerName).toBeTruthy();
+    expect(Array.isArray(data.lineItems)).toBe(true);
+    expect(data.lineItems[0].unitPriceCents).toBe(15_000);
+  });
+
+  it('GET never leaks cost or margin fields (field-leak guard)', async () => {
+    if (!reachable) return;
+    const { token } = await committedSharedQuote();
+    const res = await app.inject({ method: 'GET', url: `/api/v1/public/quotes/${token}` });
+    const body = res.body; // raw JSON string
+    expect(body).not.toMatch(/margin/i);
+    expect(body).not.toMatch(/unitCost/i);
+    expect(body).not.toMatch(/supplier_unit_cost/i);
+    expect(body).not.toMatch(/appliedMargin/i);
+  });
+
+  it('POST accept rejects a non-JSON content-type with 403', async () => {
+    if (!reachable) return;
+    const { token } = await committedSharedQuote();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'text/plain' },
+      payload: 'x',
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('POST accept rejects a cross-origin request with 403 when WEB_ORIGIN is set', async () => {
+    if (!reachable) return;
+    const prev = process.env['WEB_ORIGIN'];
+    process.env['WEB_ORIGIN'] = 'https://app.elevateddoors.test';
+    try {
+      const { token } = await committedSharedQuote();
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/public/quotes/${token}/accept`,
+        headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+    } finally {
+      if (prev === undefined) delete process.env['WEB_ORIGIN'];
+      else process.env['WEB_ORIGIN'] = prev;
+    }
+  });
+
+  it('POST accept happy path transitions to accepted + stamps the BC order ref', async () => {
+    if (!reachable) return;
+    const { id, token } = await committedSharedQuote();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data;
+    expect(data.accepted).toBe(true);
+    expect(data.status).toBe('accepted');
+    expect(data.supplierOrderRef).toMatch(/^SO-/);
+
+    // Row persisted: accepted_channel customer_link + order ref.
+    const { rows } = await pool.query<{ status: string; accepted_channel: string; supplier_order_ref: string }>(
+      `SELECT status, accepted_channel, supplier_order_ref FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]?.status).toBe('accepted');
+    expect(rows[0]?.accepted_channel).toBe('customer_link');
+    expect(rows[0]?.supplier_order_ref).toMatch(/^SO-/);
+
+    // audit_log: actor is null (customer is not a Service.AI user) but the
+    // customer ref + channel are captured in metadata.
+    const { rows: audit } = await pool.query<{ actor_user_id: string | null; customer_ref: string; channel: string }>(
+      `SELECT actor_user_id, metadata->>'customerRef' AS customer_ref, metadata->>'acknowledgmentChannel' AS channel
+         FROM audit_log WHERE action = 'quote.accept' AND metadata->>'quoteId' = $1`,
+      [id],
+    );
+    expect(audit[0]?.actor_user_id).toBeNull();
+    expect(audit[0]?.customer_ref).toMatch(/^customer:/);
+    expect(audit[0]?.channel).toBe('customer_link');
+  });
+
+  it('POST accept on an already-accepted quote returns 409', async () => {
+    if (!reachable) return;
+    const { token } = await committedSharedQuote();
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(first.statusCode).toBe(200);
+    const second = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(second.statusCode).toBe(409);
+  });
+
+  it('POST accept on an expired token returns 410 GONE', async () => {
+    if (!reachable) return;
+    const { id, token } = await committedSharedQuote();
+    await pool.query(
+      `UPDATE quotes SET accept_token_expires_at = now() - interval '1 day' WHERE id = $1`,
+      [id],
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(410);
+  });
+});
 
 describe('quote routes — accept + quote-to-order conversion (QOC)', () => {
   it('happy path: accept stamps SO-XXXXXX on the quote row via mock provider', async () => {

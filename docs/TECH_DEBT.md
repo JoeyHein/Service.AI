@@ -12,6 +12,13 @@ Format:
 
 ---
 
+## phase_customer_quote_acceptance (CQA)
+
+- [LOW] TD-CQA-01 · phase_customer_quote_acceptance · DB-level RLS test for the corporate model
+  - What: `packages/db/src/__tests__/live-rls.test.ts` was deleted during CQA-01 — it tested the defunct franchise RLS model (franchisors→franchisees→locations, `franchisor_admin` role, `app.franchisor_id` GUC), all dropped by CHR-01, so it could only fail against a live post-CHR DB. Corporate RLS is covered at the route/scope level by `apps/api/src/__tests__/live-security-corporate.test.ts` (8 cases) and the policy creation by `chr-01-migration-roundtrip.test.ts`, but there is no longer a db-level test that connects as a NON-superuser and asserts the `<table>_corporate_admin` / `<table>_scoped` policies actually fire on raw SELECTs (the dev docker Postgres connects as superuser and bypasses RLS, so route tests don't exercise the policy directly).
+  - Where: new `packages/db/src/__tests__/live-rls-corporate.test.ts`
+  - Why deferred: out of scope for CQA-01 (which only added the deposit/accept columns). Worth adding so prod RLS — the real backstop on a non-superuser connection — has explicit coverage. Model on the deleted file's non-superuser `rlsPool` approach but seed `corporate` + `branches` + set `app.role`/`app.branch_id` and assert branch isolation + corporate-sees-all.
+
 ## phase_foundation
 
 - [CLOSED] TD-FND-01 · phase_foundation · Next.js ESLint plugin wired

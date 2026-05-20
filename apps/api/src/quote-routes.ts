@@ -22,9 +22,10 @@
  * corporate_admin sees all. Cross-branch probes return 404 (never 403)
  * per the project's defence-in-depth rule.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import {
   auditLog,
@@ -451,6 +452,144 @@ async function loadQuoteDetail(
     .orderBy(desc(quoteStatusLog.createdAt))
     .limit(10);
   return { quote: q, lineItems: lines, statusLog: log };
+}
+
+type LoadedQuoteDetail = Awaited<ReturnType<typeof loadQuoteDetail>>;
+
+/**
+ * Corporate deposit policy (CQA). Reads the singleton corporate row, same
+ * `.limit(1)` resolution as `loadMarginPolicy`. `pct = 0` means the branch
+ * does not collect deposits.
+ */
+interface DepositPolicy {
+  pct: number;
+  minCents: number;
+  maxCents: number | null;
+}
+
+async function loadDepositPolicy(tx: ScopedTx): Promise<DepositPolicy> {
+  const rows = await tx
+    .select({
+      pct: corporateTable.depositPct,
+      minCents: corporateTable.depositMinCents,
+      maxCents: corporateTable.depositMaxCents,
+    })
+    .from(corporateTable)
+    .limit(1);
+  const r = rows[0];
+  if (!r) return { pct: 0, minCents: 0, maxCents: null };
+  return {
+    pct: Number(r.pct),
+    minCents: r.minCents,
+    maxCents: r.maxCents ?? null,
+  };
+}
+
+/**
+ * Resolve the deposit amount frozen onto a quote at share time. Returns
+ * null when the branch does not collect deposits (`pct = 0`), else the
+ * percentage of the total clamped into `[minCents, maxCents]`. Computed
+ * server-side from the policy + the quote total — never from request input.
+ */
+export function resolveDepositCents(
+  totalCents: number,
+  policy: DepositPolicy,
+): number | null {
+  if (policy.pct <= 0) return null;
+  let cents = Math.round((totalCents * policy.pct) / 100);
+  if (cents < policy.minCents) cents = policy.minCents;
+  if (policy.maxCents !== null && cents > policy.maxCents) cents = policy.maxCents;
+  return cents;
+}
+
+/**
+ * Best-effort supplier quote→order conversion, shared by the operator
+ * `/accept` route and the public customer-link accept route (CQA) so the
+ * two cannot drift. Runs OUTSIDE any caller transaction: a provider
+ * failure is logged and swallowed — the local `accepted` state already
+ * committed, and the BC AI Agent endpoint is idempotent on
+ * `external_quote_id`, so a later retry re-attempts. Returns the refreshed
+ * quote detail on a successful conversion, otherwise the fallback detail
+ * the caller already loaded.
+ */
+export async function runOrderConversion(
+  deps: { db: Drizzle; registry: ProviderRegistry; log: FastifyBaseLogger },
+  args: {
+    scope: RequestScope;
+    // Null when the action originates from a customer (no Service.AI user);
+    // audit_log.actor_user_id is a nullable FK to users.id.
+    actorUserId: string | null;
+    quoteId: string;
+    branchId: string;
+    supplierId: string;
+    alreadyConverted: boolean;
+    requestId: string;
+    fallbackDetail: LoadedQuoteDetail;
+  },
+): Promise<LoadedQuoteDetail> {
+  const { db, registry, log } = deps;
+  if (args.alreadyConverted) return args.fallbackDetail;
+  let finalDetail = args.fallbackDetail;
+  try {
+    // TD-QOC-A5: read the supplier inside withScope for parity, even
+    // though `suppliers` is corporate-only and reads safely from any scope.
+    const sup = await withScope(db, args.scope, async (tx) => {
+      const supRows = await tx
+        .select()
+        .from(suppliers)
+        .where(eq(suppliers.id, args.supplierId))
+        .limit(1);
+      return supRows[0] ?? null;
+    });
+    if (!sup) return finalDetail;
+    const provider = bindProvider(registry, sup);
+    if (!provider.convertQuoteToOrder) return finalDetail;
+
+    const res = await provider.convertQuoteToOrder({
+      externalQuoteId: args.quoteId,
+      idempotencyKey: args.quoteId,
+      requestId: args.requestId,
+    });
+    if (!res.ok) {
+      log.warn(
+        { code: res.error.code, message: res.error.message },
+        'supplier convertQuoteToOrder returned an error; accepted state persists, order ref not stamped',
+      );
+      return finalDetail;
+    }
+    const orderedAt = new Date(res.data.orderedAt);
+    await withScope(db, args.scope, async (tx) => {
+      await tx
+        .update(quotes)
+        .set({
+          supplierOrderRef: res.data.supplierOrderRef,
+          supplierOrderId: res.data.supplierOrderId,
+          orderedAt,
+          updatedAt: orderedAt,
+        })
+        .where(eq(quotes.id, args.quoteId));
+      // TD-QOC-A4: the conversion is an event, not a status change — record
+      // it in audit_log (consistent with quote.accept), not a status_log
+      // self-loop.
+      await tx.insert(auditLog).values({
+        actorUserId: args.actorUserId,
+        targetBranchId: args.branchId,
+        action: 'quote.order_converted',
+        scopeType: args.scope.type,
+        scopeId: null,
+        metadata: {
+          quoteId: args.quoteId,
+          supplierOrderRef: res.data.supplierOrderRef,
+          supplierOrderId: res.data.supplierOrderId,
+        } as Record<string, unknown>,
+      });
+      const refreshed = await loadQuoteDetail(tx, args.quoteId, args.scope);
+      if (refreshed) finalDetail = refreshed;
+    });
+  } catch (err) {
+    log.warn({ err }, 'supplier convertQuoteToOrder threw; continuing');
+  }
+  return finalDetail;
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,90 +1158,130 @@ export function registerQuoteRoutes(
         });
       }
 
-      // QOC-05: best-effort supplier-side quote → order conversion.
-      // Same shape as the void path: a provider failure logs a warning
-      // and is swallowed; the local 'accepted' state already succeeded.
-      // Skips when the bound provider has no convertQuoteToOrder method
-      // (mock providers in older tests, future providers that don't
-      // expose the op). Skips when the quote was already converted
-      // (e.g., a retried /accept after a successful prior conversion).
-      let finalDetail = outcome.detail;
-      if (!outcome.alreadyConverted) {
-        try {
-          // TD-QOC-A5: read the supplier inside withScope for parity with
-          // the rest of the codebase, even though `suppliers` is corporate-
-          // only with `_scoped USING (false)` and reads safely from any
-          // scope today.
-          const sup = await withScope(db, scope, async (tx) => {
-            const supRows = await tx
-              .select()
-              .from(suppliers)
-              .where(eq(suppliers.id, outcome.supplierId))
-              .limit(1);
-            return supRows[0] ?? null;
-          });
-          if (sup) {
-            const provider = bindProvider(registry, sup);
-            if (provider.convertQuoteToOrder) {
-              const res = await provider.convertQuoteToOrder({
-                externalQuoteId: outcome.quoteId,
-                idempotencyKey: outcome.quoteId,
-                requestId: String(req.id),
-              });
-              if (res.ok) {
-                const orderedAt = new Date(res.data.orderedAt);
-                await withScope(db, scope, async (tx) => {
-                  await tx
-                    .update(quotes)
-                    .set({
-                      supplierOrderRef: res.data.supplierOrderRef,
-                      supplierOrderId: res.data.supplierOrderId,
-                      orderedAt,
-                      updatedAt: orderedAt,
-                    })
-                    .where(eq(quotes.id, outcome.quoteId));
-                  // TD-QOC-A4: the conversion is an event, not a status
-                  // change (status stays 'accepted'). Record it in
-                  // audit_log — consistent with the quote.accept row —
-                  // rather than a misleading accepted→accepted status_log
-                  // self-loop that a fromStatus!==toStatus consumer would
-                  // choke on.
-                  await tx.insert(auditLog).values({
-                    actorUserId: scope.userId,
-                    targetBranchId: outcome.branchId,
-                    action: 'quote.order_converted',
-                    scopeType: scope.type,
-                    scopeId: null,
-                    metadata: {
-                      quoteId: outcome.quoteId,
-                      supplierOrderRef: res.data.supplierOrderRef,
-                      supplierOrderId: res.data.supplierOrderId,
-                    } as Record<string, unknown>,
-                  });
-                  const refreshed = await loadQuoteDetail(
-                    tx,
-                    outcome.quoteId,
-                    scope,
-                  );
-                  if (refreshed) finalDetail = refreshed;
-                });
-              } else {
-                app.log.warn(
-                  { code: res.error.code, message: res.error.message },
-                  'supplier convertQuoteToOrder returned an error; accepted state persists, order ref not stamped',
-                );
-              }
-            }
-          }
-        } catch (err) {
-          app.log.warn(
-            { err },
-            'supplier convertQuoteToOrder threw; continuing',
-          );
-        }
-      }
+      // QOC-05: best-effort supplier-side quote → order conversion, shared
+      // with the public customer-link accept path (CQA) via runOrderConversion.
+      const finalDetail = await runOrderConversion(
+        { db, registry, log: app.log },
+        {
+          scope,
+          actorUserId: scope.userId,
+          quoteId: outcome.quoteId,
+          branchId: outcome.branchId,
+          supplierId: outcome.supplierId,
+          alreadyConverted: outcome.alreadyConverted,
+          requestId: String(req.id),
+          fallbackDetail: outcome.detail,
+        },
+      );
 
       return reply.code(200).send({ ok: true, data: finalDetail });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/quotes/:id/share — mint a customer accept link (CQA)
+  //
+  // Branch-scoped (any role) + corporate_admin. Only a committed quote can
+  // be shared. Mints a 32-byte accept token, sets the expiry to
+  // min(now+30d, valid_until), and freezes the deposit amount from the
+  // corporate policy onto the row. Idempotent: re-sharing returns the
+  // existing live token rather than rotating it (so a link already sent to
+  // a customer keeps working); an expired token is replaced.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/quotes/:id/share',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({
+          ok: false,
+          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+        });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
+        });
+      }
+      const scope = req.scope;
+
+      const outcome = await withScope(db, scope, async (tx) => {
+        const qRows = await tx
+          .select()
+          .from(quotes)
+          .where(eq(quotes.id, req.params.id))
+          .limit(1);
+        const q = qRows[0];
+        if (!q) return { kind: 'not_found' as const };
+        if (!inScope(scope, q.branchId)) return { kind: 'not_found' as const };
+        if (q.status !== 'committed') {
+          return { kind: 'bad_state' as const, status: q.status };
+        }
+
+        const now = new Date();
+        // Idempotent: a live, unexpired token is reused, not rotated.
+        if (
+          q.acceptToken &&
+          q.acceptTokenExpiresAt &&
+          q.acceptTokenExpiresAt > now
+        ) {
+          return {
+            kind: 'ok' as const,
+            token: q.acceptToken,
+            expiresAt: q.acceptTokenExpiresAt,
+            depositAmountCents: q.depositAmountCents ?? null,
+          };
+        }
+
+        // Mint a fresh token + freeze the deposit amount from the policy.
+        const token = randomBytes(32).toString('base64url');
+        const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+        const cap = new Date(now.getTime() + THIRTY_DAYS_MS);
+        const expiresAt =
+          q.validUntil && q.validUntil < cap ? q.validUntil : cap;
+        const policy = await loadDepositPolicy(tx);
+        const depositAmountCents = resolveDepositCents(q.totalCents, policy);
+
+        await tx
+          .update(quotes)
+          .set({
+            acceptToken: token,
+            acceptTokenExpiresAt: expiresAt,
+            depositAmountCents,
+            updatedAt: now,
+          })
+          .where(eq(quotes.id, q.id));
+
+        return { kind: 'ok' as const, token, expiresAt, depositAmountCents };
+      });
+
+      if (outcome.kind === 'not_found') {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Quote not found' },
+        });
+      }
+      if (outcome.kind === 'bad_state') {
+        return reply.code(409).send({
+          ok: false,
+          error: {
+            code: 'INVALID_STATE',
+            message: `cannot share a quote in status ${outcome.status}; must be committed`,
+          },
+        });
+      }
+
+      const webOrigin = process.env['WEB_ORIGIN'] ?? '';
+      const url = `${webOrigin}/quotes/${outcome.token}/accept`;
+      return reply.code(200).send({
+        ok: true,
+        data: {
+          token: outcome.token,
+          url,
+          expiresAt: outcome.expiresAt.toISOString(),
+          depositAmountCents: outcome.depositAmountCents,
+        },
+      });
     },
   );
 
