@@ -76,7 +76,9 @@ async function resolveTargetBranch(
   return { ok: true, branchId: queryBranchId };
 }
 
-// TODO(CHR-06): rewrite route segment as /api/v1/corporate/branches/:id/pricebook.
+// Route path kept as `/api/v1/pricebook` — CHR-06 deliberately left the
+// public surface unchanged; the pricebook is corporate-owned (single
+// shared catalog) so no per-branch segment is needed.
 export function registerPricebookRoutes(app: FastifyInstance, db: Drizzle): void {
   app.get('/api/v1/pricebook', async (req, reply) => {
     if (req.scope === null) {

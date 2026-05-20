@@ -54,13 +54,16 @@ function canAdminBranch(scope: RequestScope): boolean {
   return scope.type === 'corporate';
 }
 
-// TODO(CHR-06): rewrite route segment as /api/v1/corporate/branches/:id/phone.
+// Route path kept as `/api/v1/franchisees/:id/phone` — CHR-06 deliberately
+// did not rename the public surface (a path cut needs coordinated web +
+// .do health-probe changes). `:id` is a branch id under the corporate
+// model; only the segment string is legacy.
 export function registerPhoneRoutes(
   app: FastifyInstance,
   db: Drizzle,
   provisioner: PhoneProvisioner,
 ): void {
-  app.post<{ Params: { id: string } }>( // TODO(CHR-06): rename route segment
+  app.post<{ Params: { id: string } }>(
     '/api/v1/franchisees/:id/phone/provision',
     async (req, reply) => {
       if (req.scope === null) {
@@ -147,7 +150,7 @@ export function registerPhoneRoutes(
     },
   );
 
-  app.get<{ Params: { id: string } }>( // TODO(CHR-06): rename route segment
+  app.get<{ Params: { id: string } }>(
     '/api/v1/franchisees/:id/phone',
     async (req, reply) => {
       if (req.scope === null) {
@@ -195,7 +198,7 @@ export function registerPhoneRoutes(
     },
   );
 
-  app.patch('/api/v1/franchisees/:id/ai-guardrails', (_req, reply) => // TODO(CHR-06): rename route segment
+  app.patch('/api/v1/franchisees/:id/ai-guardrails', (_req, reply) =>
     reply.code(410).send({
       ok: false,
       error: {

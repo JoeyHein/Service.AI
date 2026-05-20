@@ -63,12 +63,12 @@ const TransitionSchema = z.object({
   reason: z.string().max(500).nullable().optional(),
 });
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
 
-function inScopeByFranchisee(scope: RequestScope, branchId: string): boolean {
+function inScopeByBranch(scope: RequestScope, branchId: string): boolean {
   if (scope.type === 'corporate') return true;
   return scope.branchId === branchId;
 }
@@ -93,7 +93,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
     }
     const scope = req.scope;
 
-    // Validate the customer belongs to a franchisee the caller can act in.
+    // Validate the customer belongs to a branch the caller can act in.
     const custRows = await db
       .select({
         id: customers.id,
@@ -168,7 +168,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
 
     const { rows, total } = await withScope(db, scope, async (tx) => {
       const conditions: unknown[] = [isNull(jobs.deletedAt)];
-      const scopeFe = scopedFranchiseeId(scope);
+      const scopeFe = scopedBranchId(scope);
       if (scopeFe) conditions.push(eq(jobs.branchId, scopeFe));
       if (status && status.success) conditions.push(eq(jobs.status, status.data));
       if (customerId) conditions.push(eq(jobs.customerId, customerId));
@@ -219,7 +219,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
         .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
       const r = rows[0];
       if (!r) return null;
-      const scopeFe = scopedFranchiseeId(scope);
+      const scopeFe = scopedBranchId(scope);
       if (scopeFe && r.branchId !== scopeFe) return null;
       // CHR-02: corporate sees every branch's jobs natively.
       return r;
@@ -264,7 +264,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
         .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
       const row = rows[0];
       if (!row) return null;
-      if (!inScopeByFranchisee(scope, row.branchId)) return null;
+      if (!inScopeByBranch(scope, row.branchId)) return null;
       const values: Record<string, unknown> = { updatedAt: new Date() };
       const d = parsed.data;
       if (d.title !== undefined) values.title = d.title;
@@ -324,7 +324,7 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
         const row = rows[0];
         if (!row) return { kind: 'not_found' as const };
-        if (!inScopeByFranchisee(scope, row.branchId)) {
+        if (!inScopeByBranch(scope, row.branchId)) {
           return { kind: 'not_found' as const };
         }
         const from = row.status as JobStatus;

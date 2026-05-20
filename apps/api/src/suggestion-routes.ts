@@ -43,7 +43,7 @@ function canDispatch(scope: RequestScope): boolean {
   return DISPATCH_ROLES.has(scope.role);
 }
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
@@ -117,7 +117,7 @@ export function registerSuggestionRoutes(
         error: { code: 'VALIDATION_ERROR', message: 'invalid status' },
       });
     }
-    const feScope = scopedFranchiseeId(scope);
+    const feScope = scopedBranchId(scope);
     const rows = await withScope(db, scope, (tx) => {
       const conditions: unknown[] = [];
       if (feScope) conditions.push(eq(aiSuggestions.branchId, feScope));
@@ -160,7 +160,7 @@ export function registerSuggestionRoutes(
         });
       }
       const userId = req.userId;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()
@@ -266,7 +266,7 @@ export function registerSuggestionRoutes(
         });
       }
       const userId = req.userId;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()

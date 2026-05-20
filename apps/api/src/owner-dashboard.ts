@@ -161,7 +161,7 @@ export async function computeOwnerDashboard(
 ): Promise<OwnerDashboard> {
   const { start, end } = resolvePeriod(input.period, input.now ?? new Date());
 
-  // Resolve the set of franchisees visible to this caller. CHR-02:
+  // Resolve the set of branches visible to this caller. CHR-02:
   // corporate sees every branch; branch sees only its own.
   const branchIds = await withScope(db, input.scope, async (tx) => {
     if (input.scope.type === 'branch') {

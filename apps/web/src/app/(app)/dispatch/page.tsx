@@ -32,11 +32,10 @@ export default async function DispatchPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const session = await getSession();
-  // The dispatch board operates inside one franchisee at a time.
-  // Franchisee-scoped callers see their own; platform / franchisor
-  // admins not currently impersonating would need to pick one — for
-  // v1 they hit notFound() and can use impersonation to enter a
-  // franchisee's context.
+  // The dispatch board operates inside one branch at a time. Branch-
+  // scoped callers see their own; corporate admins see every branch
+  // natively (no impersonation in the corporate-hub model) and have no
+  // single board to land on, so they hit notFound() here.
   if (!session || session.scope?.type !== 'branch') {
     notFound();
   }

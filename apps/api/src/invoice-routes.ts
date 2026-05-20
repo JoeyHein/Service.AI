@@ -72,7 +72,7 @@ interface ResolvedLine {
   lineTotal: number;
 }
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
@@ -211,7 +211,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
-        const feScope = scopedFranchiseeId(scope);
+        const feScope = scopedBranchId(scope);
         if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
 
@@ -311,7 +311,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
         .where(and(eq(invoices.id, req.params.id), isNull(invoices.deletedAt)));
       const inv = rows[0];
       if (!inv) return null;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       if (feScope && inv.branchId !== feScope) return null;
       // CHR-02: corporate sees every branch's invoice natively.
       const lines = await tx
@@ -364,7 +364,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(and(eq(invoices.id, req.params.id), isNull(invoices.deletedAt)));
         const inv = rows[0];
         if (!inv) return { kind: 'not_found' as const };
-        const feScope = scopedFranchiseeId(scope);
+        const feScope = scopedBranchId(scope);
         if (feScope && inv.branchId !== feScope)
           return { kind: 'not_found' as const };
         if (inv.status !== 'draft') return { kind: 'not_editable' as const };
@@ -501,7 +501,7 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
           .where(eq(invoices.id, req.params.id));
         const inv = rows[0];
         if (!inv) return { kind: 'not_found' as const };
-        const feScope = scopedFranchiseeId(scope);
+        const feScope = scopedBranchId(scope);
         if (feScope && inv.branchId !== feScope)
           return { kind: 'not_found' as const };
         if (inv.deletedAt !== null) return { kind: 'already' as const };

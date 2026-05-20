@@ -377,19 +377,111 @@ describe('BcAiAgentProvider network errors', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stubs (voidQuote / listCatalog)
+// voidQuote (TD-SQB-A8) + listCatalog stub
 // ---------------------------------------------------------------------------
 
-describe('BcAiAgentProvider unsupported operations', () => {
-  it('voidQuote returns structured UPSTREAM_ERROR (not implemented)', async () => {
-    const provider = new BcAiAgentProvider({ ...CONFIG });
-    const res = await provider.voidQuote('SQ-001391');
+describe('BcAiAgentProvider.voidQuote', () => {
+  it('POSTs to /api/external/quotes/:id/void and threads the body', async () => {
+    const { fetchImpl, calls } = makeFetch([
+      {
+        status: 200,
+        body: {
+          ok: true,
+          data: {
+            supplierQuoteRef: 'SQ-001391',
+            voidedAt: '2026-05-19T20:00:00.000Z',
+            cached: false,
+          },
+        },
+      },
+    ]);
+    const provider = new BcAiAgentProvider({ ...CONFIG, fetchImpl });
+    const res = await provider.voidQuote({
+      externalQuoteId: 'ext-quote-uuid-1',
+      supplierQuoteRef: 'SQ-001391',
+      reason: 'customer changed mind',
+      requestId: 'req-77',
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data.supplierQuoteRef).toBe('SQ-001391');
+    expect(res.data.voidedAt).toBe('2026-05-19T20:00:00.000Z');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      'https://portal.opendc.ca/api/external/quotes/ext-quote-uuid-1/void',
+    );
+    const headers = calls[0]!.init.headers as Record<string, string>;
+    expect(headers['X-Service-AI-Key']).toBe('sai_live_TESTKEY00000000000000000000');
+    expect(headers['X-Request-ID']).toBe('req-77');
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body.reason).toBe('customer changed mind');
+  });
+
+  it('omits reason when not provided', async () => {
+    const { fetchImpl, calls } = makeFetch([
+      {
+        status: 200,
+        body: {
+          ok: true,
+          data: {
+            supplierQuoteRef: 'SQ-001392',
+            voidedAt: '2026-05-19T20:01:00.000Z',
+            cached: true,
+          },
+        },
+      },
+    ]);
+    const provider = new BcAiAgentProvider({ ...CONFIG, fetchImpl });
+    const res = await provider.voidQuote({
+      externalQuoteId: 'ext-quote-uuid-2',
+      supplierQuoteRef: 'SQ-001392',
+    });
+    expect(res.ok).toBe(true);
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body).toEqual({});
+  });
+
+  it('maps a 502 UPSTREAM_ERROR into the SupplierResult envelope', async () => {
+    const { fetchImpl } = makeFetch([
+      {
+        status: 502,
+        body: {
+          ok: false,
+          error: {
+            code: 'UPSTREAM_ERROR',
+            message: 'BC delete_sales_quote failed',
+            retryable: true,
+          },
+        },
+      },
+      {
+        status: 502,
+        body: {
+          ok: false,
+          error: { code: 'UPSTREAM_ERROR', message: 'still failing', retryable: true },
+        },
+      },
+      {
+        status: 502,
+        body: {
+          ok: false,
+          error: { code: 'UPSTREAM_ERROR', message: 'still failing', retryable: true },
+        },
+      },
+    ]);
+    const provider = new BcAiAgentProvider({ ...CONFIG, fetchImpl, maxRetries: 0 });
+    const res = await provider.voidQuote({
+      externalQuoteId: 'ext-quote-uuid-3',
+      supplierQuoteRef: 'SQ-001393',
+    });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error.code).toBe('UPSTREAM_ERROR');
-    expect(res.error.message).toMatch(/not yet exposed/i);
   });
+});
 
+describe('BcAiAgentProvider unsupported operations', () => {
   it('listCatalog returns an empty array (Service.AI uses its own pricebook)', async () => {
     const provider = new BcAiAgentProvider({ ...CONFIG });
     const res = await provider.listCatalog();

@@ -17,7 +17,7 @@ describe('DB-01 / dispatch board files', () => {
     'src/app/(app)/dispatch/DispatchBoard.tsx',
   ])('%s exists', (p) => expect(exists(p)).toBe(true));
 
-  it('page gates to franchisee-scoped callers via notFound()', () => {
+  it('page gates to branch-scoped callers via notFound()', () => {
     const src = read('src/app/(app)/dispatch/page.tsx');
     expect(src).toMatch(/notFound\(\)/);
     expect(src).toMatch(/scope\?\.type !== 'branch'/);

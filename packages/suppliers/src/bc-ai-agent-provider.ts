@@ -42,6 +42,8 @@ import type {
   SupplierLinePrice,
   SupplierProvider,
   SupplierResult,
+  VoidQuoteRequest,
+  VoidQuoteResponse,
 } from './types.js';
 import type {
   SupplierConfig,
@@ -112,6 +114,12 @@ interface BcConvertData {
   supplierOrderRef: string;
   supplierOrderId: string;
   orderedAt: string;
+  cached: boolean;
+}
+
+interface BcVoidData {
+  supplierQuoteRef: string;
+  voidedAt: string;
   cached: boolean;
 }
 
@@ -230,17 +238,28 @@ export class BcAiAgentProvider implements SupplierProvider {
   }
 
   /**
-   * Optional `voidQuote` + `listCatalog` — not yet exposed by BC AI
-   * Agent's external API (SQB scope only). Stub returns the
-   * not-implemented error envelope so callers get a structured signal.
+   * TD-SQB-A8. Void a previously-committed BC quote. Idempotent on
+   * `externalQuoteId`; BC AI Agent persists `voided_at` on the same
+   * `external_quote_commits` row and short-circuits subsequent calls.
+   * Path: POST /api/external/quotes/{external_quote_id}/void
    */
-  async voidQuote(_supplierQuoteRef: string): Promise<SupplierResult<void>> {
+  async voidQuote(
+    req: VoidQuoteRequest,
+  ): Promise<SupplierResult<VoidQuoteResponse>> {
+    const safeId = encodeURIComponent(req.externalQuoteId);
+    const body = req.reason ? { reason: req.reason } : {};
+    const raw = await this.callWithRetry<BcVoidData>(
+      'voidQuote',
+      `/api/external/quotes/${safeId}/void`,
+      body,
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
     return {
-      ok: false,
-      error: {
-        code: 'UPSTREAM_ERROR',
-        message: 'voidQuote is not yet exposed by BC AI Agent',
-        retryable: false,
+      ok: true,
+      data: {
+        supplierQuoteRef: raw.data.supplierQuoteRef,
+        voidedAt: raw.data.voidedAt,
       },
     };
   }
@@ -263,6 +282,7 @@ export class BcAiAgentProvider implements SupplierProvider {
       `/api/external/quotes/${safeId}/convert-to-order`,
       {},
       req.requestId,
+      req.idempotencyKey,
     );
     if (!raw.ok) return raw;
     return {
@@ -290,10 +310,11 @@ export class BcAiAgentProvider implements SupplierProvider {
     path: string,
     body: unknown,
     requestId?: string,
+    idempotencyKey?: string,
   ): Promise<SupplierResult<T>> {
     let lastError: SupplierError | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
-      const result = await this.doFetch<T>(path, body, requestId);
+      const result = await this.doFetch<T>(path, body, requestId, idempotencyKey);
       if (result.ok) return result;
       lastError = result.error;
       this.onError?.({ operation, error: result.error, attempt });
@@ -311,6 +332,7 @@ export class BcAiAgentProvider implements SupplierProvider {
     path: string,
     body: unknown,
     requestId?: string,
+    idempotencyKey?: string,
   ): Promise<SupplierResult<T>> {
     const url = `${this.endpointUrl}${path}`;
     const controller = new AbortController();
@@ -326,6 +348,7 @@ export class BcAiAgentProvider implements SupplierProvider {
         'X-Service-AI-Key': this.apiKey,
       };
       if (requestId) headers['X-Request-ID'] = requestId;
+      if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
 
       const resp = await this.fetchImpl(url, {
         method: 'POST',

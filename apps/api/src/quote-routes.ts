@@ -45,6 +45,7 @@ import {
   type SupplierProvider,
   type SupplierLineRequest,
   type SupplierLinePrice,
+  type SupplierError,
 } from '@service-ai/suppliers';
 import {
   resolveSellingPrice,
@@ -56,7 +57,11 @@ import {
   canTransition,
   type QuoteStatus,
 } from './quote-status-machine.js';
-import { onQuoteCommitted, reverseQuoteCommitted } from './commission-engine.js';
+import {
+  onQuoteCommitted,
+  previewQuoteCommission,
+  reverseQuoteCommitted,
+} from './commission-engine.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -66,45 +71,86 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-const CreateQuoteSchema = z.object({
-  customerId: z.string().uuid(),
-  jobId: z.string().uuid().nullable().optional(),
-  supplierId: z.string().uuid(),
-  currency: z.enum(['CAD', 'USD']).optional(),
-});
+// All quote-route schemas use `.strict()` so an unknown body field is a
+// 400 VALIDATION_ERROR, not a silent drop. This is load-bearing for the
+// cost-forgery guarantee: a future contributor who adds `unitCostCents`
+// to a line body for a legit reason can't silently re-open client-cost
+// trust — the strict parse rejects the smuggled field first.
+const CreateQuoteSchema = z
+  .object({
+    customerId: z.string().uuid(),
+    jobId: z.string().uuid().nullable().optional(),
+    supplierId: z.string().uuid(),
+    currency: z.enum(['CAD', 'USD']).optional(),
+  })
+  .strict();
 
-const LineItemSchema = z.object({
-  sku: z.string().min(1),
-  description: z.string().optional(),
-  quantity: z.number().positive(),
-  itemCategory: z.string().nullable().optional(),
-  marginOverridePct: z.number().nullable().optional(),
-  marginOverrideReason: z.string().nullable().optional(),
-});
+const LineItemSchema = z
+  .object({
+    sku: z.string().min(1),
+    description: z.string().optional(),
+    quantity: z.number().positive(),
+    itemCategory: z.string().nullable().optional(),
+    marginOverridePct: z.number().nullable().optional(),
+    marginOverrideReason: z.string().nullable().optional(),
+  })
+  .strict();
 type LineItemInput = z.infer<typeof LineItemSchema>;
 
-const PriceQuoteSchema = z.object({
-  lineItems: z.array(LineItemSchema).optional(),
-});
+const PriceQuoteSchema = z
+  .object({
+    lineItems: z.array(LineItemSchema).optional(),
+  })
+  .strict();
 
-const CommitQuoteSchema = z.object({
-  idempotencyKey: z.string().min(1).optional(),
-});
+const CommitQuoteSchema = z
+  .object({
+    idempotencyKey: z.string().min(1).optional(),
+  })
+  .strict();
 
-const VoidQuoteSchema = z.object({
-  reason: z.string().max(500).nullable().optional(),
-});
+const VoidQuoteSchema = z
+  .object({
+    reason: z.string().max(500).nullable().optional(),
+  })
+  .strict();
 
-const AcceptQuoteSchema = z.object({
-  acknowledgmentChannel: z
-    .enum(['verbal_phone', 'verbal_inperson', 'signed_pdf', 'other'])
-    .optional(),
-  notes: z.string().max(500).nullable().optional(),
-});
+const AcceptQuoteSchema = z
+  .object({
+    acknowledgmentChannel: z
+      .enum(['verbal_phone', 'verbal_inperson', 'signed_pdf', 'other'])
+      .optional(),
+    notes: z.string().max(500).nullable().optional(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Map a `SupplierError['code']` to the HTTP status the route should
+ * return. Single source of truth shared by the /price and /commit
+ * handlers so a new error code added to `SupplierError` can't be
+ * silently 502'd in one path but mapped in the other. Anything not
+ * listed falls through to 502 (a genuine upstream failure).
+ */
+function providerErrorStatus(code: SupplierError['code']): number {
+  switch (code) {
+    case 'INVALID_REQUEST':
+      return 400;
+    case 'UNAUTHORIZED':
+      return 401;
+    case 'NOT_FOUND':
+      return 404;
+    case 'IDEMPOTENCY_CONFLICT':
+      return 409;
+    case 'RATE_LIMITED':
+      return 429;
+    default:
+      return 502;
+  }
+}
 
 function inScope(scope: RequestScope, branchId: string): boolean {
   if (scope.type === 'corporate') return true;
@@ -290,15 +336,9 @@ async function resolveLines(
   });
   if (!priceRes.ok) {
     const code = priceRes.error.code;
-    let status = 502;
-    if (code === 'INVALID_REQUEST') status = 400;
-    else if (code === 'UNAUTHORIZED') status = 401;
-    else if (code === 'NOT_FOUND') status = 404;
-    else if (code === 'RATE_LIMITED') status = 429;
-    else if (code === 'IDEMPOTENCY_CONFLICT') status = 409;
     return {
       ok: false,
-      error: { code, status, message: priceRes.error.message },
+      error: { code, status: providerErrorStatus(code), message: priceRes.error.message },
     };
   }
 
@@ -663,7 +703,16 @@ export function registerQuoteRoutes(
         }
 
         const detail = await loadQuoteDetail(tx, q.id, scope);
-        return { kind: 'ok' as const, detail };
+        // Commission preview for the would-be closer (the user currently
+        // viewing the quote). Resolved off the active comp plan so the
+        // manager-facing footer reflects real comp, not a 4% placeholder.
+        // Null when the user has no active plan (e.g. corporate_admin
+        // without a personal assignment).
+        const commissionPreview =
+          detail && totals.totalCents > 0
+            ? await previewQuoteCommission(tx, scope.userId, totals.totalCents)
+            : null;
+        return { kind: 'ok' as const, detail, commissionPreview };
       });
 
       if (outcome.kind === 'not_found') {
@@ -699,7 +748,10 @@ export function registerQuoteRoutes(
           error: { code: outcome.error.code, message: outcome.error.message },
         });
       }
-      return reply.code(200).send({ ok: true, data: outcome.detail });
+      return reply.code(200).send({
+        ok: true,
+        data: { ...outcome.detail, commissionPreview: outcome.commissionPreview },
+      });
     },
   );
 
@@ -806,15 +858,19 @@ export function registerQuoteRoutes(
           metadata: { supplierQuoteRef: commitRes.data.supplierQuoteRef },
         });
 
-        if (scope.type === 'branch') {
-          await onQuoteCommitted(tx, {
-            quoteId: q.id,
-            branchId: q.branchId,
-            closerUserId: scope.userId,
-            totalCents: q.totalCents,
-            committedAt,
-          });
-        }
+        // TD-SQB-A2: credit the closer regardless of scope type.
+        // `onQuoteCommitted` resolves the comp plan by closerUserId and
+        // no-ops when the user has no active plan, so a corporate_admin
+        // closing on behalf of a branch is credited iff they carry a
+        // personal comp assignment — no silent skip for the branch
+        // manager's comp when corporate commits.
+        await onQuoteCommitted(tx, {
+          quoteId: q.id,
+          branchId: q.branchId,
+          closerUserId: scope.userId,
+          totalCents: q.totalCents,
+          committedAt,
+        });
 
         const detail = await loadQuoteDetail(tx, q.id, scope);
         return { kind: 'ok' as const, detail };
@@ -843,13 +899,7 @@ export function registerQuoteRoutes(
       }
       if (outcome.kind === 'commit_failed') {
         const e = outcome.error;
-        let status = 502;
-        if (e.code === 'IDEMPOTENCY_CONFLICT') status = 409;
-        else if (e.code === 'INVALID_REQUEST') status = 400;
-        else if (e.code === 'UNAUTHORIZED') status = 401;
-        else if (e.code === 'NOT_FOUND') status = 404;
-        else if (e.code === 'RATE_LIMITED') status = 429;
-        return reply.code(status).send({
+        return reply.code(providerErrorStatus(e.code)).send({
           ok: false,
           error: { code: e.code, message: e.message },
         });
@@ -979,17 +1029,24 @@ export function registerQuoteRoutes(
       let finalDetail = outcome.detail;
       if (!outcome.alreadyConverted) {
         try {
-          const supRows = await db
-            .select()
-            .from(suppliers)
-            .where(eq(suppliers.id, outcome.supplierId))
-            .limit(1);
-          const sup = supRows[0];
+          // TD-QOC-A5: read the supplier inside withScope for parity with
+          // the rest of the codebase, even though `suppliers` is corporate-
+          // only with `_scoped USING (false)` and reads safely from any
+          // scope today.
+          const sup = await withScope(db, scope, async (tx) => {
+            const supRows = await tx
+              .select()
+              .from(suppliers)
+              .where(eq(suppliers.id, outcome.supplierId))
+              .limit(1);
+            return supRows[0] ?? null;
+          });
           if (sup) {
             const provider = bindProvider(registry, sup);
             if (provider.convertQuoteToOrder) {
               const res = await provider.convertQuoteToOrder({
                 externalQuoteId: outcome.quoteId,
+                idempotencyKey: outcome.quoteId,
                 requestId: String(req.id),
               });
               if (res.ok) {
@@ -1004,16 +1061,23 @@ export function registerQuoteRoutes(
                       updatedAt: orderedAt,
                     })
                     .where(eq(quotes.id, outcome.quoteId));
-                  await tx.insert(quoteStatusLog).values({
-                    quoteId: outcome.quoteId,
-                    branchId: outcome.branchId,
-                    fromStatus: 'accepted',
-                    toStatus: 'accepted',
+                  // TD-QOC-A4: the conversion is an event, not a status
+                  // change (status stays 'accepted'). Record it in
+                  // audit_log — consistent with the quote.accept row —
+                  // rather than a misleading accepted→accepted status_log
+                  // self-loop that a fromStatus!==toStatus consumer would
+                  // choke on.
+                  await tx.insert(auditLog).values({
                     actorUserId: scope.userId,
-                    reason: 'order_converted',
+                    targetBranchId: outcome.branchId,
+                    action: 'quote.order_converted',
+                    scopeType: scope.type,
+                    scopeId: null,
                     metadata: {
+                      quoteId: outcome.quoteId,
                       supplierOrderRef: res.data.supplierOrderRef,
-                    },
+                      supplierOrderId: res.data.supplierOrderId,
+                    } as Record<string, unknown>,
                   });
                   const refreshed = await loadQuoteDetail(
                     tx,
@@ -1141,16 +1205,25 @@ export function registerQuoteRoutes(
       // would make the client think the whole call failed.
       if (outcome.supplierRef) {
         try {
-          const supRows = await db
-            .select()
-            .from(suppliers)
-            .where(eq(suppliers.id, outcome.supplierId))
-            .limit(1);
-          const sup = supRows[0];
+          // TD-QOC-A5: read inside withScope for parity (suppliers is
+          // corporate-only; safe from any scope today).
+          const sup = await withScope(db, scope, async (tx) => {
+            const supRows = await tx
+              .select()
+              .from(suppliers)
+              .where(eq(suppliers.id, outcome.supplierId))
+              .limit(1);
+            return supRows[0] ?? null;
+          });
           if (sup) {
             const provider = bindProvider(registry, sup);
             if (provider.voidQuote) {
-              const res = await provider.voidQuote(outcome.supplierRef);
+              const res = await provider.voidQuote({
+                externalQuoteId: req.params.id,
+                supplierQuoteRef: outcome.supplierRef,
+                reason: reason ?? undefined,
+                requestId: String(req.id),
+              });
               if (!res.ok) {
                 app.log.warn(
                   { code: res.error.code, message: res.error.message },

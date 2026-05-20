@@ -89,6 +89,30 @@ export interface CommitQuoteResponse {
   currency: 'CAD' | 'USD';
 }
 
+export interface VoidQuoteRequest {
+  /**
+   * The SAME `externalQuoteId` used at commit. Drives BC AI Agent's
+   * idempotency lookup on `external_quote_commits.external_quote_id`.
+   */
+  externalQuoteId: string;
+  /**
+   * The supplier-side quote ref (e.g. BC's `SQ-XXXXXX`). Currently
+   * unused by `BcAiAgentProvider.voidQuote` (BC AI Agent looks up the
+   * quote via `externalQuoteId`), but kept on the request for logs +
+   * for providers that don't store an external-id mapping.
+   */
+  supplierQuoteRef: string;
+  /** Optional human-readable reason persisted alongside `voided_at`. */
+  reason?: string;
+  /** Forwarded to the supplier as `X-Request-ID` for tracing. */
+  requestId?: string;
+}
+
+export interface VoidQuoteResponse {
+  supplierQuoteRef: string;
+  voidedAt: string;
+}
+
 export interface ConvertQuoteToOrderRequest {
   /**
    * The SAME `externalQuoteId` that was used at commit time. The provider
@@ -97,6 +121,13 @@ export interface ConvertQuoteToOrderRequest {
    * the same id returns the cached order ref.
    */
   externalQuoteId: string;
+  /**
+   * TD-QOC-A7. Optional HTTP `Idempotency-Key` value forwarded to the
+   * supplier. The BC AI Agent endpoint already keys idempotency off the
+   * URL path's `external_quote_id`, so this is belt-and-suspenders for
+   * reverse-proxy debugging + any future generic replay middleware.
+   */
+  idempotencyKey?: string;
   /** SQB-11 request-ID propagation; see PriceItemsRequest.requestId. */
   requestId?: string;
 }
@@ -169,10 +200,13 @@ export interface SupplierProvider {
   commitQuote(req: CommitQuoteRequest): Promise<SupplierResult<CommitQuoteResponse>>;
 
   /**
-   * Best-effort void of a previously-committed quote. Returns ok even
-   * when the supplier-side document was already voided (idempotent).
+   * Best-effort void of a previously-committed quote. Idempotent on
+   * `externalQuoteId` — the same id used at commit; a repeat call
+   * returns ok without re-deleting the supplier-side document. Optional
+   * on the interface so providers without a void surface can omit it;
+   * callers must null-check.
    */
-  voidQuote?(supplierQuoteRef: string): Promise<SupplierResult<void>>;
+  voidQuote?(req: VoidQuoteRequest): Promise<SupplierResult<VoidQuoteResponse>>;
 
   /**
    * QOC-02. Convert a committed supplier quote into a supplier order.

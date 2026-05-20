@@ -78,14 +78,6 @@ export function mountAuth(app: FastifyInstance, auth: Auth): void {
       data: {
         user: { id: req.userId },
         scope: req.scope,
-        // Impersonation removed in CHR-02 (corporate hub model). Field kept
-        // for response-shape compatibility — CHR-06 web surface no longer
-        // reads it, but the legacy MeResponse type in apps/web still
-        // declares the field. Dropping it requires a coordinated cut over
-        // the web type + every server-side getSession() consumer.
-        // TODO(CHR-06 follow-up): drop the `impersonating` field once the
-        // web MeResponse declaration is updated.
-        impersonating: null,
       },
     });
   });

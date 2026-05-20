@@ -262,6 +262,13 @@ inherits; later versions can override per branch.
     BC quote is also voided via provider; the
     `commission_ledger` row is reversed by a balancing
     negative row with `source_kind = 'manual_adjustment'`)
+  - `accepted → void` (TD-SQB-A1: refund / cancel after the
+    customer already accepted — manager-only path. Reverses
+    the commission row the same way `committed → void` does.
+    This is a deliberate stricter-than-original extension: a
+    legitimate refund-after-acceptance must be representable,
+    so the matrix in `quote-status-machine.ts` permits it and
+    its docstring documents it.)
 - [ ] Illegal moves return `409 INVALID_TRANSITION` with
   `{ from, to }`.
 - [ ] Status update + log row run in one `withScope` tx.

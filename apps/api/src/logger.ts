@@ -61,8 +61,22 @@ export const logger = pino({
       // SQB-11: BC AI Agent provider auth header. Must never reach
       // Axiom — the key grants commit-quote access for a whole BC
       // customer account.
+      //
+      // TD-SQB-A7: pino's fast-redact has no recursive `**` wildcard, so
+      // cover the realistic nesting depths explicitly (e.g. a logged
+      // `{ supplier: { config: { 'x-service-ai-key': ... } } }`). Depth
+      // 1-3 for the bracket-keyed header, plus the camelCase + apiKey
+      // shapes the provider sometimes stamps onto config objects.
       '*["x-service-ai-key"]',
+      '*.*["x-service-ai-key"]',
+      '*.*.*["x-service-ai-key"]',
       '*.xServiceAiKey',
+      '*.*.xServiceAiKey',
+      '*.*.*.xServiceAiKey',
+      '*.*.apiKey',
+      '*.*.*.apiKey',
+      '*.*.api_key',
+      '*.*.*.api_key',
     ],
     censor: '[REDACTED]',
   },

@@ -38,7 +38,7 @@ const AssignSchema = z.object({
   scheduledEnd: z.string().datetime().nullable().optional(),
 });
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
@@ -78,15 +78,15 @@ export function registerAssignmentRoutes(
           .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
-        const feScope = scopedFranchiseeId(scope);
+        const feScope = scopedBranchId(scope);
         if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
         // CHR-02: no franchisor tier — corporate sees every branch natively.
 
-        // Validate the tech belongs to this job's franchisee and has the
+        // Validate the tech belongs to this job's branch and has the
         // 'tech' role. Check against the memberships table rather than
         // users because a user can have multiple memberships, and we
-        // only care about the one in this franchisee.
+        // only care about the one in this branch.
         const techRows = await tx
           .select({
             userId: memberships.userId,
@@ -206,7 +206,7 @@ export function registerAssignmentRoutes(
           .where(and(eq(jobs.id, req.params.id), isNull(jobs.deletedAt)));
         const job = jobRows[0];
         if (!job) return { kind: 'not_found' as const };
-        const feScope = scopedFranchiseeId(scope);
+        const feScope = scopedBranchId(scope);
         if (feScope && job.branchId !== feScope)
           return { kind: 'not_found' as const };
         // CHR-02: no franchisor tier — corporate sees every branch natively.

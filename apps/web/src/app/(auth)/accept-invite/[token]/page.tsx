@@ -6,7 +6,8 @@ import { AcceptInviteForm } from './AcceptInviteForm';
 interface InviteMetadata {
   email: string;
   role: string;
-  scopeType: 'franchisor' | 'franchisee' | 'location';
+  // Corporate-hub model: invites are always branch-scoped (CHR-06).
+  scopeType: 'branch';
   expiresAt: string;
 }
 

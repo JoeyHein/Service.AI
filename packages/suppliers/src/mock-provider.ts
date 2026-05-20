@@ -28,6 +28,8 @@ import type {
   SupplierLinePrice,
   SupplierProvider,
   SupplierResult,
+  VoidQuoteRequest,
+  VoidQuoteResponse,
 } from './types.js';
 
 export interface MockCatalogEntry extends SupplierCatalogEntry {
@@ -209,11 +211,22 @@ export class MockSupplierProvider implements SupplierProvider {
     return { ok: true, data: response };
   }
 
-  async voidQuote(supplierQuoteRef: string): Promise<SupplierResult<void>> {
+  async voidQuote(
+    req: VoidQuoteRequest,
+  ): Promise<SupplierResult<VoidQuoteResponse>> {
     if (this.latencyMs > 0) await sleep(this.latencyMs);
-    // Idempotent: voiding a never-committed or already-voided ref is OK.
-    this.voidedRefs.add(supplierQuoteRef);
-    return { ok: true, data: undefined };
+    // Idempotent: voiding a never-committed or already-voided id is OK.
+    // Track BOTH the external id and the supplier ref so callers using
+    // either accessor see a consistent void state.
+    this.voidedRefs.add(req.externalQuoteId);
+    if (req.supplierQuoteRef) this.voidedRefs.add(req.supplierQuoteRef);
+    return {
+      ok: true,
+      data: {
+        supplierQuoteRef: req.supplierQuoteRef,
+        voidedAt: new Date().toISOString(),
+      },
+    };
   }
 
   async convertQuoteToOrder(

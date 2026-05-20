@@ -11,20 +11,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import pkg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import * as schema from '@service-ai/db';
 import {
   callSessions,
   jobs,
-  branches,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
 
-// Legacy alias retained so the rest of this test file compiles without
-// per-call renames. The franchisees table itself was renamed to `branches`
-// in migration 0016.
-const franchisees = branches;
 import { runReset, runSeed } from '../seed/index.js';
 import {
   buildCsrToolSet,
@@ -210,7 +205,7 @@ describe('CV-07 / synthesized call happy path', () => {
       'logCallSummary',
     ]);
 
-    // Job appears in the denver franchisee's jobs.
+    // Job appears in the denver branch's jobs.
     const denverJobs = await withScope(db, denverScope(), (tx) =>
       tx.select().from(jobs).where(eq(jobs.branchId, ids.denverId)),
     );
@@ -295,6 +290,3 @@ describe('CV-07 / adversarial', () => {
   });
 });
 
-// Minimal touch to keep the unused-import eliminator happy.
-void franchisees;
-void and;

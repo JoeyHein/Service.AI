@@ -221,16 +221,25 @@ describe('MockSupplierProvider.commitQuote', () => {
 describe('MockSupplierProvider.voidQuote', () => {
   it('is idempotent', async () => {
     const p = makeProvider();
-    const a = await p.voidQuote('SQ-000123');
-    const b = await p.voidQuote('SQ-000123');
+    const req = { externalQuoteId: 'ext-123', supplierQuoteRef: 'SQ-000123' };
+    const a = await p.voidQuote(req);
+    const b = await p.voidQuote(req);
     expect(a.ok && b.ok).toBe(true);
+    if (a.ok) {
+      expect(a.data.supplierQuoteRef).toBe('SQ-000123');
+      expect(typeof a.data.voidedAt).toBe('string');
+    }
   });
 
   it('tracks the voided ref via isVoided', async () => {
     const p = makeProvider();
     expect(p.isVoided('SQ-000999')).toBe(false);
-    await p.voidQuote('SQ-000999');
+    await p.voidQuote({
+      externalQuoteId: 'ext-999',
+      supplierQuoteRef: 'SQ-000999',
+    });
     expect(p.isVoided('SQ-000999')).toBe(true);
+    expect(p.isVoided('ext-999')).toBe(true);
   });
 });
 

@@ -467,6 +467,38 @@ async function writeReversals(
   return written;
 }
 
+/**
+ * Read-only preview of the commission a user would accrue if a quote with
+ * `totalCents` were committed by them right now. Resolves the active comp
+ * plan + applies `flat_percent_of_quote_committed` rules without touching
+ * `commission_ledger`. Returns null when the user has no active plan, or
+ * `{ commissionCents, percentEffective }` otherwise — both zero when a
+ * plan exists but no quote-commit rule fires.
+ *
+ * `percentEffective` is computed from the actual cents to avoid showing
+ * a rule percent that won't match the displayed dollar amount (e.g. when
+ * future tiered rules are added).
+ */
+export async function previewQuoteCommission(
+  tx: ScopedTx,
+  userId: string,
+  totalCents: number,
+  asOf: Date = new Date(),
+): Promise<{ commissionCents: number; percentEffective: number } | null> {
+  const plan = await findActivePlan(tx, userId, asOf);
+  if (!plan) return null;
+  if (totalCents <= 0) {
+    return { commissionCents: 0, percentEffective: 0 };
+  }
+  const expanded = expandRulesForQuote(plan.rules, totalCents);
+  const commissionCents = expanded.reduce((sum, row) => sum + row.amountCents, 0);
+  const percentEffective =
+    totalCents > 0
+      ? Math.round((commissionCents / totalCents) * 10000) / 100
+      : 0;
+  return { commissionCents, percentEffective };
+}
+
 export async function reverseInvoicePaid(
   tx: ScopedTx,
   invoiceId: string,

@@ -53,7 +53,7 @@ function canCollect(scope: RequestScope): boolean {
   return COLLECTIONS_ROLES.has(scope.role);
 }
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
@@ -139,7 +139,7 @@ export function registerCollectionsRoutes(
         error: { code: 'VALIDATION_ERROR', message: 'invalid status' },
       });
     }
-    const feScope = scopedFranchiseeId(scope);
+    const feScope = scopedBranchId(scope);
     const rows = await withScope(db, scope, (tx) => {
       const conditions: unknown[] = [];
       if (feScope)
@@ -183,7 +183,7 @@ export function registerCollectionsRoutes(
         });
       }
       const userId = req.userId;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
 
       type Outcome =
         | { kind: 'not_found' }
@@ -335,7 +335,7 @@ export function registerCollectionsRoutes(
         });
       }
       const userId = req.userId;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()
@@ -411,7 +411,7 @@ export function registerCollectionsRoutes(
         });
       }
       const userId = req.userId;
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       const outcome = await withScope(db, scope, async (tx) => {
         const rows = await tx
           .select()
@@ -507,7 +507,7 @@ export function registerCollectionsRoutes(
           error: { code: 'FORBIDDEN', message: 'Collections permission required' },
         });
       }
-      const feScope = scopedFranchiseeId(scope);
+      const feScope = scopedBranchId(scope);
       type Outcome =
         | { kind: 'not_found' }
         | { kind: 'bad_state'; status: string }

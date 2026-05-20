@@ -124,9 +124,10 @@ export function registerCatalogRoutes(app: FastifyInstance, db: Drizzle): void {
         .from(serviceCatalogTemplates)
         .where(isNull(serviceCatalogTemplates.deletedAt))
         .orderBy(desc(serviceCatalogTemplates.createdAt));
-      // CHR-02: corporate sees every franchisor's catalog templates; branch
-      // users see them too (templates flow through to pricebook resolution).
-      // TODO(CHR-06): replace per-franchisor scoping with a corporate catalog table.
+      // Corporate sees every catalog template; branch users see them too
+      // (templates flow through to pricebook resolution). The catalog
+      // stays per-template (corporate-owned) in v1 — no per-corporate
+      // catalog table was needed, so the CHR-02 scoping is the final shape.
       return base;
     });
     return reply.code(200).send({ ok: true, data: rows });

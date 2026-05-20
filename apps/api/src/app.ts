@@ -328,7 +328,7 @@ export function buildApp(opts: AppOptions = {}) {
     });
   }
 
-  // Mount franchisee list + audit log when a Drizzle handle is wired.
+  // Mount branch list + audit log when a Drizzle handle is wired.
   // Needs the scope plugin already registered — buildApp orders that above.
   if (opts.drizzle) {
     registerCorporateRoutes(app, { drizzle: opts.drizzle });

@@ -45,6 +45,11 @@ interface PricedLine {
   appliedMarginSource: string;
 }
 
+interface CommissionPreviewData {
+  commissionCents: number;
+  percentEffective: number;
+}
+
 interface QuoteDetail {
   quote: {
     id: string;
@@ -68,6 +73,7 @@ interface QuoteDetail {
     appliedMarginPct: string;
     appliedMarginSource: string;
   }>;
+  commissionPreview?: CommissionPreviewData | null;
 }
 
 const MARGIN_SOURCE_BADGE: Record<string, string> = {
@@ -126,6 +132,8 @@ export function QuoteBuilder({
   const [lines, setLines] = useState<LocalLine[]>([newBlankLine()]);
   const [quoteId, setQuoteId] = useState<string | null>(null);
   const [priced, setPriced] = useState<Map<number, PricedLine>>(new Map());
+  const [commissionPreview, setCommissionPreview] =
+    useState<CommissionPreviewData | null>(null);
   const [pricing, setPricing] = useState(false);
   const [pricingError, setPricingError] = useState<string | null>(null);
   const [createApiError, setCreateApiError] = useState<string | null>(null);
@@ -226,6 +234,7 @@ export function QuoteBuilder({
           currencyCode: prev.currencyCode,
         }));
         setPriced(new Map());
+        setCommissionPreview(null);
         return;
       }
       void doPrice(ready);
@@ -316,6 +325,7 @@ export function QuoteBuilder({
       });
     }
     setPriced(next);
+    setCommissionPreview(detail.commissionPreview ?? null);
   }
 
   async function commit(): Promise<void> {
@@ -371,14 +381,13 @@ export function QuoteBuilder({
     void doPrice(lines.filter((l) => l.sku.trim() !== ''));
   }
 
-  // Commission preview for managers.
-  // TODO(SQB-bridge): swap this naive 4% placeholder for a real
-  // `/api/v1/quotes/:id/commission-preview` endpoint that pulls the
-  // manager's active comp plan. Until then this is best-effort and
-  // hidden from non-managers.
-  const commissionCents = isManager
-    ? Math.round(totals.totalCents * 0.04)
-    : null;
+  // Commission preview: resolved server-side off the user's active
+  // comp plan and threaded through the /price response. Hidden from
+  // non-managers and from any user without an active plan.
+  const commissionCents =
+    isManager && commissionPreview ? commissionPreview.commissionCents : null;
+  const commissionPercent =
+    isManager && commissionPreview ? commissionPreview.percentEffective : null;
 
   const canCommit = !!quoteId && totals.subtotalCents > 0 && !pricing && !committedQuoteId;
 

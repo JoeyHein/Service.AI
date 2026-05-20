@@ -46,7 +46,7 @@ const FinaliseSchema = z.object({
   label: z.string().max(50).nullable().optional(),
 });
 
-function scopedFranchiseeId(scope: RequestScope): string | null {
+function scopedBranchId(scope: RequestScope): string | null {
   if (scope.type === 'corporate') return null;
   return scope.branchId;
 }
@@ -62,7 +62,7 @@ async function loadJobInScope(
     .where(eq(jobs.id, jobId));
   const row = rows[0];
   if (!row || row.deletedAt !== null) return null;
-  const fe = scopedFranchiseeId(scope);
+  const fe = scopedBranchId(scope);
   if (fe && row.branchId !== fe) return null;
   // CHR-02: corporate sees every branch's jobs natively.
   return { id: row.id, branchId: row.branchId };

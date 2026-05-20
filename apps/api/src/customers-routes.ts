@@ -10,7 +10,7 @@
  * Every endpoint requires an active scope. Queries run inside
  * `withScope()` so RLS fires on a non-superuser DB connection, and an
  * explicit app-layer WHERE keeps the dev superuser path identical.
- * franchisee_id is always taken from `request.scope`, never from the
+ * branch_id is always taken from `request.scope`, never from the
  * request body — protected by the same hazard that bit us in TEN-10.
  */
 import type { FastifyInstance } from 'fastify';

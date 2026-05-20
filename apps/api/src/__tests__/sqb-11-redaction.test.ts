@@ -27,6 +27,7 @@ function makeLogger(sink: Writable): ReturnType<typeof pino> {
     {
       level: 'info',
       redact: {
+        // Keep in sync with apps/api/src/logger.ts.
         paths: [
           'req.headers.authorization',
           'req.headers.cookie',
@@ -37,7 +38,15 @@ function makeLogger(sink: Writable): ReturnType<typeof pino> {
           '*.apiKey',
           '*.api_key',
           '*["x-service-ai-key"]',
+          '*.*["x-service-ai-key"]',
+          '*.*.*["x-service-ai-key"]',
           '*.xServiceAiKey',
+          '*.*.xServiceAiKey',
+          '*.*.*.xServiceAiKey',
+          '*.*.apiKey',
+          '*.*.*.apiKey',
+          '*.*.api_key',
+          '*.*.*.api_key',
         ],
         censor: '[REDACTED]',
       },
@@ -113,6 +122,31 @@ describe('SQB-11 pino redaction', () => {
         outbound: { 'x-service-ai-key': SECRET },
       },
       'arbitrary parent',
+    );
+    expect(output()).not.toContain(SECRET);
+  });
+
+  it('redacts the header when deeply nested (TD-SQB-A7)', () => {
+    const { sink, output } = captureOutput();
+    const log = makeLogger(sink);
+    // The realistic leak path the single-star glob missed:
+    // a logged provider config object two levels deep.
+    log.info(
+      { supplier: { config: { 'x-service-ai-key': SECRET } } },
+      'nested provider config',
+    );
+    expect(output()).not.toContain(SECRET);
+  });
+
+  it('redacts xServiceAiKey + apiKey when deeply nested (TD-SQB-A7)', () => {
+    const { sink, output } = captureOutput();
+    const log = makeLogger(sink);
+    log.info(
+      {
+        ctx: { supplier: { xServiceAiKey: SECRET } },
+        other: { provider: { apiKey: SECRET } },
+      },
+      'nested camelCase + apiKey',
     );
     expect(output()).not.toContain(SECRET);
   });

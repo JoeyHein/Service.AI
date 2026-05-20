@@ -360,6 +360,19 @@ beforeEach(async () => {
   ]);
   await pool.query(`DELETE FROM margin_overrides WHERE item_category LIKE 'QR-%'`);
   await pool.query(`DELETE FROM audit_log WHERE action = 'quote.margin_override'`);
+  // Re-assert the corporate margin policy each test. Multiple corporate
+  // rows exist across the full suite (this file, live-margin-routes, the
+  // demo seed) and the price handler resolves "the corporate" with an
+  // unordered LIMIT 1 — so it may pick a row another file left at 55%.
+  // Update EVERY row (matching live-margin-routes' beforeEach) so PART-A
+  // ($100 cost) deterministically prices at $150 regardless of which row
+  // the handler picks or what order the files ran in.
+  await pool.query(
+    `UPDATE corporate
+       SET default_margin_pct = '50.00',
+           min_margin_pct = '10.00',
+           max_margin_pct = '200.00'`,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -564,10 +577,12 @@ describe('quote routes — role gating', () => {
 // ---------------------------------------------------------------------------
 
 describe('quote routes — cost forgery', () => {
-  it('ignores client-supplied unitCostCents; supplier value wins', async () => {
+  it('rejects a smuggled unitCostCents field with 400 (TD-SQB-A3 .strict())', async () => {
     if (!reachable) return;
     const id = await createDraftQuote(MANAGER_USER);
-    // Force a wildly inflated body that the route should NOT honor.
+    // The line schema is .strict(): an unknown field is a hard 400, not
+    // a silent strip. This is the load-bearing guard against a future
+    // contributor accidentally re-opening client-supplied cost trust.
     const res = await app.inject({
       method: 'POST',
       url: `/api/v1/quotes/${id}/price`,
@@ -577,14 +592,23 @@ describe('quote routes — cost forgery', () => {
           {
             sku: 'PART-A',
             quantity: 1,
-            // The field below is intentionally not in the schema; Zod
-            // strips it. The point is that even a future schema that
-            // accepted it would be a footgun — the integration check
-            // is on the resulting DB row.
             unitCostCents: 99_999_999,
           },
         ],
       },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('cost comes from the supplier, never the client (clean path)', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/price`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { lineItems: [{ sku: 'PART-A', quantity: 1 }] },
     });
     expect(res.statusCode).toBe(200);
     const { rows } = await pool.query<{ supplier_unit_cost_cents: string }>(
@@ -714,6 +738,44 @@ describe('quote routes — status machine', () => {
 // Commission integration
 // ---------------------------------------------------------------------------
 
+describe('quote routes — commission preview (TD-SQB-A5)', () => {
+  it('/price returns commissionPreview computed off the closer’s active comp plan', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    // Default 50% margin: PART-A at $100 cost → $150 selling price.
+    // MANAGER_USER's seeded plan has a 2% flat_percent_of_quote_committed
+    // rule (same one /commit credits), so the preview should match.
+    const res = await priceQuote(MANAGER_USER, id, [
+      { sku: 'PART-A', quantity: 1 },
+    ]);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      data: {
+        quote: { totalCents: number };
+        commissionPreview: { commissionCents: number; percentEffective: number } | null;
+      };
+    };
+    expect(body.data.quote.totalCents).toBe(15_000);
+    expect(body.data.commissionPreview).not.toBeNull();
+    expect(body.data.commissionPreview?.commissionCents).toBe(300);
+    expect(body.data.commissionPreview?.percentEffective).toBe(2);
+  });
+
+  it('/price returns commissionPreview=null when the user has no active comp plan', async () => {
+    if (!reachable) return;
+    // CSR_USER (csr role) is not assigned a comp plan in the test seed.
+    const id = await createDraftQuote(CSR_USER);
+    const res = await priceQuote(CSR_USER, id, [
+      { sku: 'PART-A', quantity: 1 },
+    ]);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      data: { commissionPreview: unknown };
+    };
+    expect(body.data.commissionPreview).toBeNull();
+  });
+});
+
 describe('quote routes — commission ledger', () => {
   it('writes a ledger row on commit for the closer (manager)', async () => {
     if (!reachable) return;
@@ -775,6 +837,47 @@ describe('quote routes — void reversal', () => {
     expect(rows[1]!.source_kind).toBe('manual_adjustment');
     expect(Number(rows[1]!.amount_cents)).toBe(-300);
   });
+
+  it('reverses commission when an ACCEPTED quote is voided (TD-SQB-A6)', async () => {
+    if (!reachable) return;
+    // The accepted→void branch became reachable once /accept landed
+    // (SQB M2). Exercise it: commit (credits +300), accept (no ledger
+    // change), then void (must write the balancing -300).
+    const id = await createDraftQuote(MANAGER_USER);
+    await priceQuote(MANAGER_USER, id, [{ sku: 'PART-A', quantity: 1 }]);
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/commit`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    const aRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { acknowledgmentChannel: 'verbal_phone' },
+    });
+    expect(aRes.statusCode).toBe(200);
+
+    const vRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/void`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { reason: 'refund after acceptance' },
+    });
+    expect(vRes.statusCode).toBe(200);
+
+    const { rows } = await pool.query<{ amount_cents: string; source_kind: string }>(
+      `SELECT amount_cents, source_kind FROM commission_ledger
+        WHERE user_id = $1 AND source_id LIKE $2
+        ORDER BY created_at`,
+      [MANAGER_USER, `%${id}%`],
+    );
+    // One credit + one balancing reversal → nets to zero.
+    const net = rows.reduce((s, r) => s + Number(r.amount_cents), 0);
+    expect(net).toBe(0);
+    expect(rows.some((r) => r.source_kind === 'manual_adjustment' && Number(r.amount_cents) === -300)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -828,6 +931,49 @@ describe('quote routes — accept + quote-to-order conversion (QOC)', () => {
     expect(body.data.quote.supplierOrderId).toBeTruthy();
     expect(body.data.quote.orderedAt).toBeTruthy();
     expect(mockProvider.isConverted(id)).toBe(true);
+
+    // TD-QOC-A10: assert the columns actually persisted on the row, not
+    // just that the response (built from loadQuoteDetail) carried them.
+    const { rows: quoteRows } = await pool.query<{
+      supplier_order_ref: string | null;
+      supplier_order_id: string | null;
+      ordered_at: string | null;
+    }>(
+      `SELECT supplier_order_ref, supplier_order_id, ordered_at FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(quoteRows[0]?.supplier_order_ref).toMatch(/^SO-\d{6}$/);
+    expect(quoteRows[0]?.supplier_order_id).toBeTruthy();
+    expect(quoteRows[0]?.ordered_at).toBeTruthy();
+
+    // TD-QOC-A2: assert the quote.accept audit_log row landed with the
+    // expected actor + quoteId metadata. A future refactor that drops
+    // the audit insert would be caught here, not silently.
+    const { rows: acceptAudit } = await pool.query<{
+      actor_user_id: string;
+    }>(
+      `SELECT actor_user_id FROM audit_log
+        WHERE action = 'quote.accept' AND metadata->>'quoteId' = $1`,
+      [id],
+    );
+    expect(acceptAudit.length).toBe(1);
+    expect(acceptAudit[0]?.actor_user_id).toBe(MANAGER_USER);
+
+    // TD-QOC-A4: the conversion event is now an audit_log row, not a
+    // status_log self-loop. Assert it landed and that NO accepted→accepted
+    // status_log row was written.
+    const { rows: convAudit } = await pool.query(
+      `SELECT 1 FROM audit_log
+        WHERE action = 'quote.order_converted' AND metadata->>'quoteId' = $1`,
+      [id],
+    );
+    expect(convAudit.length).toBe(1);
+    const { rows: selfLoop } = await pool.query(
+      `SELECT 1 FROM quote_status_log
+        WHERE quote_id = $1 AND from_status = 'accepted' AND to_status = 'accepted'`,
+      [id],
+    );
+    expect(selfLoop.length).toBe(0);
   });
 
   it('returns 401 when unauthenticated', async () => {

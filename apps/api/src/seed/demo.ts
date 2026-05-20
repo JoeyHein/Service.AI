@@ -346,7 +346,8 @@ async function runDemoSeed(): Promise<void> {
             stripePaymentIntentId: `pi_demo_${j.id.slice(0, 8)}`,
             stripeChargeId: `ch_demo_${j.id.slice(0, 8)}`,
             amount: String(total),
-            applicationFeeAmount: String(Math.round(total * 0.029 * 100) / 100),
+            // TD-CHR-03: no per-branch application fee in the corporate-hub
+            // model (single Stripe account). Let the column default to '0'.
             status: 'succeeded',
             createdAt: finalized,
           });

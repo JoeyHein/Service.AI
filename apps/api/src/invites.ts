@@ -48,9 +48,8 @@ export interface InviteRoutesOptions {
   acceptUrlBase: string;
 }
 
-// TODO(CHR-06): rename body field branchId/scopeType for the new corporate
-// route shape (/corporate/branches/:id/invites). Until then this endpoint
-// accepts the existing body keys.
+// The invite body shape is already correct under the corporate model —
+// CHR-06 confirmed no field rename was needed.
 const CreateInviteSchema = z.object({
   email: z.string().email(),
   role: z.enum(['manager', 'dispatcher', 'tech', 'csr']),
