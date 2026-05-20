@@ -63,6 +63,7 @@ import {
   previewQuoteCommission,
   reverseQuoteCommitted,
 } from './commission-engine.js';
+import { renderQuotePdf } from './quote-pdf.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -1282,6 +1283,86 @@ export function registerQuoteRoutes(
           depositAmountCents: outcome.depositAmountCents,
         },
       });
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/quotes/:id/quote.pdf — operator-facing quote PDF (CQA-04)
+  // -------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/quotes/:id/quote.pdf',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({
+          ok: false,
+          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+        });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
+        });
+      }
+      const scope = req.scope;
+
+      const data = await withScope(db, scope, async (tx) => {
+        const rows = await tx
+          .select({
+            quote: quotes,
+            branchName: schema.branches.legalEntityName,
+            branchDisplayName: schema.branches.name,
+            customerName: schema.customers.name,
+          })
+          .from(quotes)
+          .innerJoin(schema.branches, eq(schema.branches.id, quotes.branchId))
+          .innerJoin(schema.customers, eq(schema.customers.id, quotes.customerId))
+          .where(eq(quotes.id, req.params.id))
+          .limit(1);
+        const row = rows[0];
+        if (!row) return null;
+        if (!inScope(scope, row.quote.branchId)) return null;
+        const lines = await tx
+          .select({
+            sku: quoteLineItems.supplierSku,
+            description: quoteLineItems.description,
+            quantity: quoteLineItems.quantity,
+            unitPriceCents: quoteLineItems.unitPriceCents,
+            lineTotalCents: quoteLineItems.lineTotalCents,
+          })
+          .from(quoteLineItems)
+          .where(eq(quoteLineItems.quoteId, row.quote.id))
+          .orderBy(quoteLineItems.position);
+        return { row, lines };
+      });
+
+      if (!data) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Quote not found' },
+        });
+      }
+
+      const q = data.row.quote;
+      const pdf = await renderQuotePdf({
+        branchName: data.row.branchName ?? data.row.branchDisplayName,
+        customerName: data.row.customerName,
+        supplierQuoteRef: q.supplierQuoteRef,
+        currencyCode: q.currencyCode,
+        lines: data.lines,
+        subtotalCents: q.subtotalCents,
+        taxCents: q.taxCents,
+        totalCents: q.totalCents,
+        validUntil: q.validUntil,
+        depositAmountCents: q.depositAmountCents ?? null,
+      });
+      return reply
+        .header('content-type', 'application/pdf')
+        .header(
+          'content-disposition',
+          `inline; filename="quote-${q.supplierQuoteRef ?? 'draft'}.pdf"`,
+        )
+        .send(pdf);
     },
   );
 

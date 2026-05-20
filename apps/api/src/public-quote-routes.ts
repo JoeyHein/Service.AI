@@ -36,6 +36,8 @@ import * as schema from '@service-ai/db';
 import type { ProviderRegistry } from '@service-ai/suppliers';
 import { canTransition, type QuoteStatus } from './quote-status-machine.js';
 import { runOrderConversion } from './quote-routes.js';
+import { renderQuotePdf } from './quote-pdf.js';
+import type { StripeClient } from './stripe.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -44,6 +46,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{32,}$/;
 export interface PublicQuoteRoutesDeps {
   drizzle: Drizzle;
   providerRegistry: ProviderRegistry;
+  stripe: StripeClient;
 }
 
 /** A line item as the customer sees it — selling price only, no cost/margin. */
@@ -159,7 +162,7 @@ export function registerPublicQuoteRoutes(
   app: FastifyInstance,
   deps: PublicQuoteRoutesDeps,
 ): void {
-  const { drizzle: db, providerRegistry: registry } = deps;
+  const { drizzle: db, providerRegistry: registry, stripe } = deps;
   // Read WEB_ORIGIN per-request rather than caching at registration, so the
   // allowlist tracks runtime config (and is testable without rebuilding app).
   const currentOrigin = (): string => process.env['WEB_ORIGIN'] ?? '';
@@ -187,6 +190,45 @@ export function registerPublicQuoteRoutes(
         ok: true,
         data: { ...loaded.view, lineItems: loaded.lines },
       });
+    },
+  );
+
+  // ----- GET /api/v1/public/quotes/:token/pdf (no auth) ---------------------
+  app.get<{ Params: { token: string } }>(
+    '/api/v1/public/quotes/:token/pdf',
+    async (req, reply) => {
+      if (!TOKEN_RE.test(req.params.token)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'bad token shape' },
+        });
+      }
+      const loaded = await loadPublicView(db, req.params.token);
+      if (!loaded || isExpired(loaded.raw.acceptTokenExpiresAt)) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Quote not found' },
+        });
+      }
+      const pdf = await renderQuotePdf({
+        branchName: loaded.view.branchName ?? 'Quote',
+        customerName: loaded.view.customerName,
+        supplierQuoteRef: loaded.view.supplierQuoteRef,
+        currencyCode: loaded.view.currencyCode,
+        lines: loaded.lines,
+        subtotalCents: loaded.view.subtotalCents,
+        taxCents: loaded.view.taxCents,
+        totalCents: loaded.view.totalCents,
+        validUntil: loaded.raw.validUntil,
+        depositAmountCents: loaded.view.depositAmountCents,
+      });
+      return reply
+        .header('content-type', 'application/pdf')
+        .header(
+          'content-disposition',
+          `inline; filename="quote-${loaded.view.supplierQuoteRef ?? 'draft'}.pdf"`,
+        )
+        .send(pdf);
     },
   );
 
@@ -299,6 +341,94 @@ export function registerPublicQuoteRoutes(
         data: after
           ? { ...after.view, lineItems: after.lines }
           : { ...loaded.view, lineItems: loaded.lines, accepted: true },
+      });
+    },
+  );
+
+  // ----- POST /api/v1/public/quotes/:token/deposit-intent (no auth) ---------
+  // Creates (or re-issues) the Stripe PaymentIntent for the quote's deposit.
+  // Only valid AFTER the customer has accepted, when a deposit is configured
+  // and not yet paid. Idempotent on the quote's stored
+  // deposit_payment_intent_id — a repeat request retrieves the same intent's
+  // clientSecret, never a second PI. The amount is the server-frozen
+  // deposit_amount_cents, never request input (cost-trust rule).
+  app.post<{ Params: { token: string } }>(
+    '/api/v1/public/quotes/:token/deposit-intent',
+    async (req, reply) => {
+      if (!originAllowed(req, currentOrigin())) {
+        return reply.code(403).send({
+          ok: false,
+          error: { code: 'FORBIDDEN', message: 'cross-origin or non-JSON request rejected' },
+        });
+      }
+      if (!TOKEN_RE.test(req.params.token)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'bad token shape' },
+        });
+      }
+      const loaded = await loadPublicView(db, req.params.token);
+      if (!loaded) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Quote not found' },
+        });
+      }
+      if (isExpired(loaded.raw.acceptTokenExpiresAt)) {
+        return reply.code(410).send({
+          ok: false,
+          error: { code: 'GONE', message: 'This quote link has expired' },
+        });
+      }
+      const q = loaded.raw;
+      if (q.status !== 'accepted') {
+        return reply.code(409).send({
+          ok: false,
+          error: { code: 'INVALID_STATE', message: 'accept the quote before paying a deposit' },
+        });
+      }
+      if (q.depositAmountCents == null || q.depositAmountCents <= 0) {
+        return reply.code(409).send({
+          ok: false,
+          error: { code: 'NO_DEPOSIT', message: 'this quote has no deposit due' },
+        });
+      }
+      if (q.depositPaidAt) {
+        return reply.code(409).send({
+          ok: false,
+          error: { code: 'ALREADY_PAID', message: 'deposit already paid' },
+        });
+      }
+
+      // Idempotent: re-issue the clientSecret for an existing intent.
+      if (q.depositPaymentIntentId) {
+        const existing = await stripe.retrievePaymentIntent(q.depositPaymentIntentId);
+        return reply.code(200).send({
+          ok: true,
+          data: { clientSecret: existing.clientSecret, amountCents: q.depositAmountCents },
+        });
+      }
+
+      const pi = await stripe.createPaymentIntent({
+        amount: q.depositAmountCents,
+        currency: q.currencyCode.toLowerCase(),
+        metadata: { quoteId: q.id, kind: 'quote_deposit' },
+      });
+      const scope: RequestScope = {
+        type: 'branch',
+        userId: `customer:${req.params.token.slice(0, 8)}`,
+        role: 'csr',
+        branchId: q.branchId,
+      };
+      await withScope(db, scope, async (tx) => {
+        await tx
+          .update(quotes)
+          .set({ depositPaymentIntentId: pi.id, updatedAt: new Date() })
+          .where(eq(quotes.id, q.id));
+      });
+      return reply.code(200).send({
+        ok: true,
+        data: { clientSecret: pi.clientSecret, amountCents: q.depositAmountCents },
       });
     },
   );

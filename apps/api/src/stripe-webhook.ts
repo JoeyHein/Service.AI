@@ -30,6 +30,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   invoices,
   payments,
+  quotes,
   refunds,
   stripeEvents,
   withScope,
@@ -104,7 +105,29 @@ async function handlePaymentIntentSucceeded(
     .where(eq(invoices.stripePaymentIntentId, pi.id));
   const invoice = rows[0];
   if (!invoice) {
-    logger.warn({ paymentIntentId: pi.id }, 'payment_intent.succeeded has no matching invoice');
+    // CQA-05: not an invoice PI — it may be a quote deposit. Match the
+    // quote that owns this PI and stamp deposit_paid_at. Idempotent: the
+    // stripe_events dedup prevents reprocessing; the `depositPaidAt` guard
+    // is belt-and-suspenders against concurrent delivery.
+    const qRows = await db
+      .select()
+      .from(quotes)
+      .where(eq(quotes.depositPaymentIntentId, pi.id));
+    const quote = qRows[0];
+    if (!quote) {
+      logger.warn(
+        { paymentIntentId: pi.id },
+        'payment_intent.succeeded matched neither an invoice nor a quote deposit',
+      );
+      return;
+    }
+    if (quote.depositPaidAt) return;
+    await withScope(db, WEBHOOK_SCOPE, async (tx) => {
+      await tx
+        .update(quotes)
+        .set({ depositPaidAt: new Date(), updatedAt: new Date() })
+        .where(eq(quotes.id, quote.id));
+    });
     return;
   }
   const chargeId =

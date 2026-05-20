@@ -1177,6 +1177,225 @@ describe('public quote routes — customer accept link (CQA-03)', () => {
   });
 });
 
+describe('quote PDF — operator + public (CQA-04)', () => {
+  async function committedSharedQuote(): Promise<{ id: string; token: string }> {
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    return { id, token: res.json().data.token as string };
+  }
+
+  it('operator GET /quotes/:id/quote.pdf returns a PDF', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/quotes/${id}/quote.pdf`,
+      headers: { 'x-test-user': MANAGER_USER },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.rawPayload.subarray(0, 4).toString('latin1')).toBe('%PDF');
+  });
+
+  it('operator quote.pdf is 401 unauthenticated', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/quotes/00000000-0000-0000-0000-000000000001/quote.pdf',
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("operator quote.pdf is 404 on another branch's quote", async () => {
+    if (!reachable) return;
+    const otherId = await createDraftQuote(OTHER_MGR_USER, {
+      customerId: OTHER_CUSTOMER_ID,
+      supplierId: OTHER_SUPPLIER_ID,
+    });
+    await commitQuoteHelper(OTHER_MGR_USER, otherId);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/quotes/${otherId}/quote.pdf`,
+      headers: { 'x-test-user': MANAGER_USER },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('public GET /public/quotes/:token/pdf returns a PDF', async () => {
+    if (!reachable) return;
+    const { token } = await committedSharedQuote();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/quotes/${token}/pdf`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.rawPayload.subarray(0, 4).toString('latin1')).toBe('%PDF');
+  });
+
+  it('public quote pdf is 404 on an unknown token', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/quotes/${'B'.repeat(43)}/pdf`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
+describe('quote deposit — Stripe intent + webhook (CQA-05)', () => {
+  async function acceptedQuoteWithDeposit(pct = '25.00'): Promise<{ id: string; token: string }> {
+    await pool.query(
+      `UPDATE corporate SET deposit_pct = $1, deposit_min_cents = 0, deposit_max_cents = NULL`,
+      [pct],
+    );
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const share = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    const token = share.json().data.token as string;
+    const accept = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    if (accept.statusCode !== 200) throw new Error(`accept failed: ${accept.statusCode} ${accept.body}`);
+    return { id, token };
+  }
+
+  function depositIntent(token: string) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/deposit-intent`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+  }
+
+  it('deposit-intent before accept returns 409', async () => {
+    if (!reachable) return;
+    await pool.query(`UPDATE corporate SET deposit_pct = '25.00'`);
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const share = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    const token = share.json().data.token as string;
+    const res = await depositIntent(token); // not accepted yet
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('INVALID_STATE');
+  });
+
+  it('deposit-intent happy path returns a clientSecret + amount and stores the PI id', async () => {
+    if (!reachable) return;
+    const { id, token } = await acceptedQuoteWithDeposit();
+    const res = await depositIntent(token);
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data as { clientSecret: string; amountCents: number };
+    expect(data.clientSecret).toContain('_secret_stub');
+    expect(data.amountCents).toBe(3_750); // 25% of 15_000
+
+    const { rows } = await pool.query<{ deposit_payment_intent_id: string }>(
+      `SELECT deposit_payment_intent_id FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]?.deposit_payment_intent_id).toMatch(/^pi_stub_/);
+  });
+
+  it('deposit-intent is idempotent — same clientSecret, no second PI', async () => {
+    if (!reachable) return;
+    const { id, token } = await acceptedQuoteWithDeposit();
+    const first = await depositIntent(token);
+    const { rows: afterFirst } = await pool.query<{ deposit_payment_intent_id: string }>(
+      `SELECT deposit_payment_intent_id FROM quotes WHERE id = $1`,
+      [id],
+    );
+    const second = await depositIntent(token);
+    const { rows: afterSecond } = await pool.query<{ deposit_payment_intent_id: string }>(
+      `SELECT deposit_payment_intent_id FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(second.json().data.clientSecret).toBe(first.json().data.clientSecret);
+    expect(afterSecond[0]?.deposit_payment_intent_id).toBe(afterFirst[0]?.deposit_payment_intent_id);
+  });
+
+  it('deposit-intent returns 409 NO_DEPOSIT when the policy collects nothing', async () => {
+    if (!reachable) return;
+    // pct 0 → no deposit frozen at share → deposit_amount_cents null.
+    const { token } = await acceptedQuoteWithDeposit('0.00');
+    const res = await depositIntent(token);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('NO_DEPOSIT');
+  });
+
+  it('webhook payment_intent.succeeded stamps deposit_paid_at (idempotent on redelivery)', async () => {
+    if (!reachable) return;
+    const { id, token } = await acceptedQuoteWithDeposit();
+    await depositIntent(token);
+    const { rows } = await pool.query<{ deposit_payment_intent_id: string }>(
+      `SELECT deposit_payment_intent_id FROM quotes WHERE id = $1`,
+      [id],
+    );
+    const piId = rows[0]!.deposit_payment_intent_id;
+
+    const event = {
+      id: `evt_dep_${piId}`,
+      type: 'payment_intent.succeeded',
+      data: { object: { id: piId, amount: 3_750, currency: 'cad', status: 'succeeded' } },
+    };
+    const post = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/webhooks/stripe',
+        headers: { 'content-type': 'application/json', 'stripe-signature': 'sig-ignored-by-stub' },
+        payload: JSON.stringify(event),
+      });
+
+    const first = await post();
+    expect(first.statusCode).toBe(200);
+    const { rows: paid1 } = await pool.query<{ deposit_paid_at: string | null }>(
+      `SELECT deposit_paid_at FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(paid1[0]?.deposit_paid_at).not.toBeNull();
+
+    // Redelivery of the SAME event id → replay short-circuit, still stamped once.
+    const second = await post();
+    expect(second.statusCode).toBe(200);
+    expect(second.json().data.replay).toBe(true);
+  });
+
+  it('webhook with an unmatched PI is a no-op 200', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/webhooks/stripe',
+      headers: { 'content-type': 'application/json', 'stripe-signature': 'sig-ignored-by-stub' },
+      payload: JSON.stringify({
+        id: 'evt_unmatched_pi_1',
+        type: 'payment_intent.succeeded',
+        data: { object: { id: 'pi_does_not_exist', amount: 100, currency: 'cad', status: 'succeeded' } },
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
 describe('quote routes — accept + quote-to-order conversion (QOC)', () => {
   it('happy path: accept stamps SO-XXXXXX on the quote row via mock provider', async () => {
     if (!reachable) return;

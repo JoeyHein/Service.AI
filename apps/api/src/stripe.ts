@@ -70,6 +70,8 @@ export interface CreateRefundInput {
 
 export interface StripeClient {
   createPaymentIntent(input: CreatePaymentIntentInput): Promise<StripePaymentIntentSummary>;
+  /** Re-fetch an existing PaymentIntent (used to re-issue a clientSecret idempotently). */
+  retrievePaymentIntent(id: string): Promise<StripePaymentIntentSummary>;
   createRefund(input: CreateRefundInput): Promise<StripeRefundSummary>;
   /**
    * Verify the signature on a raw webhook body, then parse it.
@@ -106,6 +108,17 @@ export const stubStripeClient: StripeClient = {
       status: 'requires_payment_method',
       amount,
       currency,
+    };
+  },
+  async retrievePaymentIntent(id) {
+    // Deterministic: the same client_secret shape createPaymentIntent
+    // returned for this id, so an idempotent re-issue is stable in tests.
+    return {
+      id,
+      clientSecret: `${id}_secret_stub`,
+      status: 'requires_payment_method',
+      amount: 0,
+      currency: 'cad',
     };
   },
   async createRefund({ paymentIntentId, amount }) {
@@ -176,6 +189,10 @@ export function realStripeClient(
         metadata,
         automatic_payment_methods: { enabled: true },
       });
+      return paymentIntentSummary(pi);
+    },
+    async retrievePaymentIntent(id) {
+      const pi = await stripe.paymentIntents.retrieve(id);
       return paymentIntentSummary(pi);
     },
     async createRefund({ paymentIntentId, amount, reason, metadata }) {

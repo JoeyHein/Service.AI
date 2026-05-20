@@ -395,7 +395,7 @@ export function buildApp(opts: AppOptions = {}) {
     // for any job that transitions to 'canceled'. Needs to run AFTER
     // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle);
-    registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry });
+    registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry, stripe });
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app
