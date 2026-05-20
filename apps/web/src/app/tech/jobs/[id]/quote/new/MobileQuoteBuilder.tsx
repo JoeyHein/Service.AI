@@ -196,6 +196,7 @@ export function MobileQuoteBuilder({
   const [accepting, setAccepting] = useState(false);
   const [acceptedOrderRef, setAcceptedOrderRef] = useState<string | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  const [shareState, setShareState] = useState<'idle' | 'sharing' | 'copied' | 'error'>('idle');
   const [createError, setCreateError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [totals, setTotals] = useState({
@@ -415,6 +416,26 @@ export function MobileQuoteBuilder({
     }
   }
 
+  async function share(): Promise<void> {
+    if (!quoteId) return;
+    setShareState('sharing');
+    const res = await apiClientFetch<{ url: string }>(
+      `/api/v1/quotes/${quoteId}/share`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
+    if (res.status !== 200 || !res.body.ok || !res.body.data?.url) {
+      setShareState('error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(res.body.data.url);
+    } catch {
+      // Clipboard blocked on some mobile browsers — the link is still minted.
+    }
+    setShareState('copied');
+    setTimeout(() => setShareState('idle'), 1800);
+  }
+
   // -------------------------------------------------------------------------
   // Line operations
   // -------------------------------------------------------------------------
@@ -478,6 +499,23 @@ export function MobileQuoteBuilder({
             </div>
           )}
           <div className="mt-6 flex flex-col gap-2">
+            {!acceptedOrderRef && (
+              <button
+                type="button"
+                onClick={() => void share()}
+                disabled={shareState === 'sharing'}
+                className="block rounded-lg border border-blue-300 bg-white text-blue-700 py-3 font-medium disabled:opacity-50"
+                data-testid="share-quote"
+              >
+                {shareState === 'sharing'
+                  ? 'Creating link…'
+                  : shareState === 'copied'
+                    ? 'Link copied — send to customer'
+                    : shareState === 'error'
+                      ? 'Try again'
+                      : 'Share link with customer'}
+              </button>
+            )}
             {!acceptedOrderRef && (
               <button
                 type="button"

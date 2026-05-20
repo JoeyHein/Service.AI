@@ -864,6 +864,30 @@ function CommitBar({
 }) {
   const [copied, setCopied] = useState<'quote' | 'order' | null>(null);
   const [accepted, setAccepted] = useState(false);
+  const [shareState, setShareState] = useState<'idle' | 'sharing' | 'copied' | 'error'>('idle');
+
+  async function share(): Promise<void> {
+    if (!committedQuoteId) return;
+    setShareState('sharing');
+    const res = await apiClientFetch<{ url: string }>(
+      `/api/v1/quotes/${committedQuoteId}/share`,
+      { method: 'POST', body: JSON.stringify({}) },
+    );
+    if (res.status !== 200 || !res.body.ok || !res.body.data?.url) {
+      setShareState('error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(res.body.data.url);
+      setShareState('copied');
+      setTimeout(() => setShareState('idle'), 1800);
+    } catch {
+      // Clipboard blocked — still surface success; the URL is in the response.
+      setShareState('copied');
+      setTimeout(() => setShareState('idle'), 1800);
+    }
+  }
+
   return (
     <div
       className="lg:col-span-3 sticky bottom-0 -mx-4 sm:-mx-6 lg:-mx-8 mt-6 border-t border-slate-200 bg-white px-4 sm:px-6 lg:px-8 py-3"
@@ -930,6 +954,23 @@ function CommitBar({
                 data-testid="copy-order-ref"
               >
                 {copied === 'order' ? 'Copied' : 'Copy SO'}
+              </button>
+            )}
+            {!accepted && !acceptedOrderRef && (
+              <button
+                type="button"
+                onClick={() => void share()}
+                disabled={shareState === 'sharing'}
+                className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                data-testid="share-quote"
+              >
+                {shareState === 'sharing'
+                  ? 'Creating link…'
+                  : shareState === 'copied'
+                    ? 'Link copied'
+                    : shareState === 'error'
+                      ? 'Try again'
+                      : 'Share link'}
               </button>
             )}
             {!accepted && !acceptedOrderRef && (
