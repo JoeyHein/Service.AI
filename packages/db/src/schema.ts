@@ -20,6 +20,7 @@ import {
   text,
   timestamp,
   boolean,
+  bigint,
   integer,
   jsonb,
   numeric,
@@ -447,6 +448,88 @@ export const customerNotes = pgTable(
       t.source,
       t.sourceRef,
     ),
+  }),
+);
+
+export const inventoryItems = pgTable(
+  'inventory_items',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    sku: text('sku').notNull(),
+    name: text('name').notNull(),
+    category: text('category'),
+    unit: text('unit').notNull().default('each'),
+    unitCostCents: bigint('unit_cost_cents', { mode: 'number' }).notNull().default(0),
+    qtyOnHand: numeric('qty_on_hand', { precision: 14, scale: 3 }).notNull().default('0'),
+    qtyReserved: numeric('qty_reserved', { precision: 14, scale: 3 }).notNull().default('0'),
+    reorderPoint: numeric('reorder_point', { precision: 14, scale: 3 }).notNull().default('0'),
+    reorderQty: numeric('reorder_qty', { precision: 14, scale: 3 }).notNull().default('0'),
+    bin: text('bin'),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchSkuUnique: uniqueIndex('inventory_items_branch_sku_unique').on(t.branchId, t.sku),
+    branchIdx: index('inventory_items_branch_idx').on(t.branchId),
+    categoryIdx: index('inventory_items_category_idx').on(t.category),
+  }),
+);
+
+export const inventoryMovements = pgTable(
+  'inventory_movements',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => inventoryItems.id, { onDelete: 'cascade' }),
+    deltaQty: numeric('delta_qty', { precision: 14, scale: 3 }).notNull(),
+    reason: text('reason').notNull(),
+    refType: text('ref_type'),
+    refId: text('ref_id'),
+    unitCostCents: bigint('unit_cost_cents', { mode: 'number' }),
+    note: text('note'),
+    actorUserId: text('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index('inventory_movements_branch_idx').on(t.branchId),
+    itemIdx: index('inventory_movements_item_idx').on(t.itemId),
+    branchCreatedIdx: index('inventory_movements_branch_created_idx').on(
+      t.branchId,
+      t.createdAt,
+    ),
+  }),
+);
+
+export const inventoryConsumptionExceptions = pgTable(
+  'inventory_consumption_exceptions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    jobId: uuid('job_id').references((): AnyPgColumn => jobs.id, { onDelete: 'set null' }),
+    quoteId: uuid('quote_id').references((): AnyPgColumn => quotes.id, { onDelete: 'set null' }),
+    sku: text('sku').notNull(),
+    description: text('description'),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    status: text('status').notNull().default('pending'),
+    resolvedItemId: uuid('resolved_item_id').references(() => inventoryItems.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  },
+  (t) => ({
+    branchIdx: index('inventory_exc_branch_idx').on(t.branchId),
+    branchStatusIdx: index('inventory_exc_branch_status_idx').on(t.branchId, t.status),
   }),
 );
 
