@@ -138,6 +138,29 @@ async function clean(): Promise<void> {
     BRANCH_ID,
     OTHER_BRANCH_ID,
   ]);
+  // INV-03: completing a quote-linked job auto-consumes inventory and may
+  // write consumption_exceptions; PO tables also reference branches/suppliers.
+  // Tear these down before suppliers + branches (RESTRICT FKs).
+  await pool.query(`DELETE FROM inventory_consumption_exceptions WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM purchase_order_lines WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM purchase_orders WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM inventory_movements WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM inventory_items WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
   await pool.query(`DELETE FROM suppliers WHERE id IN ($1, $2)`, [
     SUPPLIER_ID,
     OTHER_SUPPLIER_ID,

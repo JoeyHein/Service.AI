@@ -1,6 +1,6 @@
 # Phase Gate: phase_purchase_orders
 
-**STATUS: APPROVED 2026-05-21 (Joey). Internal purchase-order management — replenish branch inventory; receiving feeds the INV ledger. Local-only.**
+**STATUS: SHIPPED 2026-05-21. PO-01..05 landed. Ref: `docs/api/purchase-orders.md`. Local-only.**
 
 Phase 25 — closes the inventory loop. INV-03 handles *consumption* (jobs use
 parts); this handles *replenishment* (order parts from a supplier, receive them,
@@ -19,7 +19,7 @@ state for v1.
 
 ## Must Pass
 
-- [ ] **PO-01** — schema (migration `0024_purchase_orders.sql` + `.down` +
+- [x] **PO-01** — schema (migration `0024_purchase_orders.sql` + `.down` +
   Drizzle + round-trip test `po-01`). Two branch-scoped tables + a PO-number
   sequence; two-policy RLS; append to `db:migrate`:
   - `purchase_orders`: `id, branch_id (NOT NULL→branches restrict), supplier_id
@@ -33,7 +33,7 @@ state for v1.
     quantity numeric(14,3), unit_cost_cents bigint, received_qty numeric default
     0, item_id (nullable→inventory_items set null), created_at, updated_at`.
     Unique `(po_id, position)`. Indexes: po_id, branch_id.
-- [ ] **PO-02** — PO API (`apps/api/src/purchase-order-routes.ts`), branch-scoped
+- [x] **PO-02** — PO API (`apps/api/src/purchase-order-routes.ts`), branch-scoped
   (`requireScope`/`withScope`/cross-tenant 404; writes manager+/corporate_admin):
   - `POST /api/v1/purchase-orders` — create draft `{ supplierId, expectedDate?,
     notes?, lines: [{ sku, description?, quantity, unitCostCents, itemId? }] }`.
@@ -50,7 +50,7 @@ state for v1.
   - `POST /api/v1/purchase-orders/:id/cancel` — → canceled (not if `received`).
   - Tests: 401/403, create + number, from-low-stock, list/filter, cross-tenant
     404, submit/cancel transitions, invalid transition 409.
-- [ ] **PO-03** — receiving (`POST /api/v1/purchase-orders/:id/receive`,
+- [x] **PO-03** — receiving (`POST /api/v1/purchase-orders/:id/receive`,
   `{ lines: [{ lineId, receiveQty }] }`). In one `withScope` tx, per line:
   bump `received_qty` (reject over-receive beyond ordered → 422); upsert the
   branch inventory item by `(branch_id, sku)` — exists → on-hand += received (+
@@ -60,12 +60,12 @@ state for v1.
   Must be valid only from `submitted|partial`. Tests: receive full → received +
   on-hand up + movement; partial → partial; receive into a new SKU creates the
   item; over-receive 422; receive on a draft 409.
-- [ ] **PO-04** — web UI (`(app)/purchase-orders`): list (status badges,
+- [x] **PO-04** — web UI (`(app)/purchase-orders`): list (status badges,
   supplier, total, expected date) + "New PO" + "From low stock"; detail (lines
   with ordered/received progress, submit/cancel, a receive form per line); new-PO
   form (supplier select + line rows). "Purchase Orders" nav link. Verified via
   `next build`.
-- [ ] **PO-05** — docs (`docs/api/purchase-orders.md`) + TD (TD-PO-01 send-to-BC,
+- [x] **PO-05** — docs (`docs/api/purchase-orders.md`) + TD (TD-PO-01 send-to-BC,
   others) + gate SHIPPED + memory.
 
 ## Security / tenancy rules

@@ -246,3 +246,20 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - What: `unit_cost_cents` is stored per item + per receipt movement, but there's no valuation rollup (on-hand value per branch/category) or COGS-from-consumption report.
   - Where: a new `GET /api/v1/inventory/valuation` aggregate + a dashboard tile.
   - Resolution: Sum `qty_on_hand * unit_cost_cents` by branch/category; optionally moving-average cost from receipt movements.
+
+### Purchase order follow-ups (PO) — phase 25
+
+- [MED] TD-PO-01 · phase_purchase_orders · Send the PO to the supplier / BC
+  - What: `submit` only flips an internal status; the PO is never transmitted to the supplier. BC AI Agent can create a real BC purchase order (`bc_client.create_purchase_order` + `add_purchase_order_line`), but there's no external endpoint and no SupplierProvider op.
+  - Where: `packages/suppliers` (SupplierProvider), bc-ai-agent `external_*` + `bc/client.py`.
+  - Resolution: Add `POST /api/external/purchase-orders` to BC AI Agent (wraps create_purchase_order + lines), a `createPurchaseOrder` op on SupplierProvider + BcAiAgentProvider, and call it on submit (best-effort, stamp `bc_po_ref` on the PO). Pairs with TD-INV-01 (BC availability) as a "BC purchasing bridge" phase.
+
+- [LOW] TD-PO-02 · phase_purchase_orders · No demand-signal acknowledge workflow
+  - What: `from-low-stock` reads the live low-stock report directly. BC AI Agent had a `demand_signals` table with severity + acknowledge gating before PO generation; Service.AI has no equivalent persistence/triage.
+  - Where: `inventory-routes.ts` (low-stock), `purchase-order-routes.ts` (from-low-stock).
+  - Resolution: If managers want to review/snooze reorder suggestions before ordering, add a lightweight reorder-suggestion table + an acknowledge step. Not needed while the live report suffices.
+
+- [LOW] TD-PO-03 · phase_purchase_orders · No vendor invoice / over-receipt / line edits
+  - What: Receiving caps at the ordered quantity (no over-receipt). There's no vendor-invoice / 3-way match, and PO lines can't be edited after creation (recreate the PO instead).
+  - Where: `purchase-order-routes.ts`.
+  - Resolution: Allow over-receipt with a flag if real-world receiving needs it; add a draft-line PATCH; add an invoices arm if AP reconciliation is wanted.
