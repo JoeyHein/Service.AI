@@ -1,6 +1,6 @@
 # Phase Gate: phase_crm
 
-**STATUS: APPROVED 2026-05-21 (Joey). Customer 360 + interaction timeline + AI/Donna note ingest. Local-only.**
+**STATUS: SHIPPED 2026-05-21. CRM-01..06 landed. Ref: `docs/api/crm.md`. Local-only.**
 
 Phase 23 — third "harvest existing assets" phase. Ports the CRM shape proven
 in the BC AI Agent portal (`CustomerNote` interaction log + a Customer 360
@@ -28,7 +28,7 @@ business-valuable data Joey wants on each client.
 
 ## Must Pass
 
-- [ ] **CRM-01** — `customer_notes` table (migration `0022_crm_customer_notes.sql`
+- [x] **CRM-01** — `customer_notes` table (migration `0022_crm_customer_notes.sql`
   + `.down.sql` + Drizzle schema + round-trip test `crm-01`). Columns:
   `id, branch_id (NOT NULL → branches restrict), customer_id (nullable →
   customers SET NULL — null = unmatched, awaiting triage), note_type
@@ -40,7 +40,7 @@ business-valuable data Joey wants on each client.
   `(branch_id, occurred_at desc)`, `match_key`. RLS two-policy template
   (`_corporate_admin` + `_scoped` on `branch_id`). Append 0022 to `db:migrate`
   + `db:migrate:down`.
-- [ ] **CRM-02** — notes API (`apps/api/src/crm-routes.ts`):
+- [x] **CRM-02** — notes API (`apps/api/src/crm-routes.ts`):
   - `GET /api/v1/customers/:id/notes` — per-customer timeline, paginated,
     `type` filter. Branch-scoped, cross-tenant 404.
   - `POST /api/v1/customers/:id/notes` — staff manual note (`author_user_id =
@@ -57,22 +57,22 @@ business-valuable data Joey wants on each client.
     customer (sets `customer_id` + `branch_id`). Staff-auth (`requireScope`).
   - Tests: 401/403/400, per-customer list + cross-tenant 404, manual create,
     ingest match + ingest-unmatched + ingest dedup, feed filters, link triage.
-- [ ] **CRM-03** — customer metrics (`GET /api/v1/customers/:id/metrics`). One
+- [x] **CRM-03** — customer metrics (`GET /api/v1/customers/:id/metrics`). One
   aggregation pass (no N+1): `lifetimeRevenueCents` (sum paid invoices),
   `outstandingCents` (unpaid/overdue invoice totals), `jobsByStatus`,
   `quotesByStatus` + `conversionRate`, `avgOrderValueCents`, `firstJobAt`,
   `lastJobAt`, `lastContactAt` (max note `occurred_at`), `openJobs`,
   `openQuotes`. Cross-tenant 404. Tests incl. a query-count assertion.
-- [ ] **CRM-04** — Customer 360 web page (`(app)/customers/[id]`). Rebuild the
+- [x] **CRM-04** — Customer 360 web page (`(app)/customers/[id]`). Rebuild the
   detail into: profile header (contact + address), KPI cards row (the four
   groups), a **unified activity timeline** with type filters, and an inline
   "Add note" form. Keep edit reachable (move the edit form to a panel or
   `[id]/edit`). Server-fetch metrics + first timeline page; client "Add note"
   + filter.
-- [ ] **CRM-05** — triage UI (`(app)/crm/notes`): the notes feed with type +
+- [x] **CRM-05** — triage UI (`(app)/crm/notes`): the notes feed with type +
   matched/unmatched filters and a "Link to customer" action for unmatched
   notes. Add a `CRM` / `Inbox` nav link.
-- [ ] **CRM-06** — docs (`docs/api/crm.md`) + TD follow-ups + gate SHIPPED.
+- [x] **CRM-06** — docs (`docs/api/crm.md`) + TD follow-ups + gate SHIPPED.
 
 ## Tenancy + security rules (load-bearing)
 - Notes are branch-scoped; every staff read/write goes through

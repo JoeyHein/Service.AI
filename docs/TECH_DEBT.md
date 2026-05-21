@@ -202,3 +202,25 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - What: A homeowner who submits the designer twice for the same email gets one customer but two draft lead quotes. The gate allowed either behavior for v1; we create a fresh draft each time.
   - Where: `apps/api/src/public-widget-routes.ts`.
   - Resolution: If lead spam becomes a problem, de-dupe to one open draft per (email, config-hash) within a short window, or collapse onto the most recent open draft for that customer.
+
+### CRM follow-ups (CRM) — phase 23
+
+- [MED] TD-CRM-01 · phase_crm · External BC metrics overlay on the Customer 360
+  - What: The Customer 360 KPIs are computed from Service.AI's own jobs/quotes/invoices. The BC AI Agent portal also surfaced BC-OData numbers (sales YTD vs prior year, credit limit + utilization, on-time delivery %, recent shipments, monthly sales chart) that Service.AI does not have.
+  - Where: `apps/api/src/crm-routes.ts` (metrics), `bc_metrics_service.get_customer_metrics` in bc-ai-agent.
+  - Resolution: Add a `customerMetrics` op to `SupplierProvider` + a BC AI Agent `GET /api/external/customers/:account/metrics` endpoint, and render a "Business Central" overlay section on the 360 when the customer is BC-linked. Needs the supplier_account_code ↔ customer mapping.
+
+- [LOW] TD-CRM-02 · phase_crm · Payments not a distinct timeline stream
+  - What: The unified timeline UNIONs notes + jobs + quotes + invoices. Individual payments/refunds are reflected via the invoice's status (paid/void) rather than as their own events.
+  - Where: `apps/api/src/crm-routes.ts::/timeline`.
+  - Resolution: Add a `payments` (and `refunds`) arm to the UNION (amount + created_at + invoice ref) if a payment-level history is wanted on the 360.
+
+- [LOW] TD-CRM-03 · phase_crm · Ingest key is a single shared secret
+  - What: `POST /api/v1/crm/notes` authenticates with one `CRM_INGEST_KEY` shared by all callers (Donna PA, AI CSR). No per-caller key, rotation, or rate limit; when the env is unset (dev) the endpoint is open.
+  - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
+  - Resolution: Mint per-caller ingest keys (mirror the SQB `external-keys` bcrypt-hashed pattern) and add a rate limit. Until then, keep `CRM_INGEST_KEY` set in every non-dev environment.
+
+- [LOW] TD-CRM-04 · phase_crm · Phone/email match is exact, single-customer
+  - What: Ingest matches a customer by exact `email` (ilike) or exact `phone` string, picking the most-recently-created on a tie. Phone-format variance (e.g. `+1` prefix, dashes) and shared household contacts can mis-match or fall through to unmatched.
+  - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
+  - Resolution: Normalize phone to E.164 before matching (store a normalized column), and surface near-matches in the triage UI rather than only exact hits.
