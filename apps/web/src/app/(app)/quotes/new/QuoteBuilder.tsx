@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClientFetch } from '../../../../lib/api.js';
-import { DesignDoorModal } from './DesignDoorModal.js';
+import { DesignDoorModal } from './DesignDoorModal';
 
 export interface CatalogItem {
   sku: string;
