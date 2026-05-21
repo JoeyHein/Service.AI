@@ -29,9 +29,48 @@ export interface ObjectStore {
    * re-fetch on demand.
    */
   getDownloadUrl(key: string): Promise<string>;
+  /**
+   * Server-side upload of bytes already held by the API (e.g. a base64
+   * door image POSTed by the door-designer widget). Returns the storage
+   * key. Prefer presigned `getUploadUrl` for browser-direct uploads;
+   * this is for payloads that arrive at the server.
+   */
+  putObject(key: string, body: Uint8Array, contentType: string): Promise<string>;
 }
 
 const DEFAULT_EXPIRY_SECONDS = 15 * 60;
+
+const DATA_URL_RE = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i;
+const MAX_IMAGE_BYTES = 5_000_000;
+
+/**
+ * Decode a door-designer image (a `data:image/...;base64,...` URL, or a bare
+ * base64 PNG) and store it server-side. Returns the storage key, or null when
+ * the input is missing/oversized/unparseable — image capture is best-effort,
+ * never blocks lead intake.
+ */
+export async function storeDoorImage(
+  store: ObjectStore,
+  key: string,
+  doorImage: string | undefined,
+): Promise<string | null> {
+  if (!doorImage) return null;
+  const m = DATA_URL_RE.exec(doorImage);
+  const contentType = m ? m[1]! : 'image/png';
+  const base64 = m ? m[2]! : doorImage;
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64, 'base64');
+  } catch {
+    return null;
+  }
+  if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return null;
+  try {
+    return await store.putObject(key, bytes, contentType);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * In-memory dev stub. Records issued keys so tests can assert, but
@@ -50,6 +89,10 @@ export function stubObjectStore(): ObjectStore {
     },
     async getDownloadUrl(key) {
       return `stub://download/${encodeURIComponent(key)}`;
+    },
+    async putObject(key) {
+      // No socket in dev/test — echo the key back so callers can persist it.
+      return key;
     },
   };
 }
@@ -102,6 +145,17 @@ export async function s3ObjectStore(cfg: S3Config): Promise<ObjectStore> {
     async getDownloadUrl(key) {
       const cmd = new GetObjectCommand({ Bucket: cfg.bucket, Key: key });
       return getSignedUrl(client, cmd, { expiresIn });
+    },
+    async putObject(key, body, contentType) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: cfg.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+      return key;
     },
   };
 }

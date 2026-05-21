@@ -1745,6 +1745,7 @@ describe('public widget quote-request (WI-01)', () => {
     const res = await postWidget({
       contact: { name: 'Jane Homeowner', email, phone: '555-1212', postalCode: 'T2X1A1' },
       doorConfig: { family: 'Panorama', size: "16' x 7'", design: 'Flush', color: 'Black', windows: 'Top row' },
+      doorImage: 'data:image/png;base64,iVBORw0KGgo=',
       source: 'website',
     });
     expect(res.statusCode).toBe(201);
@@ -1758,6 +1759,7 @@ describe('public widget quote-request (WI-01)', () => {
     expect(qrows[0]!.branch_id).toBe(BRANCH_ID);
     expect(qrows[0]!.notes).toContain('Door designer lead');
     expect(qrows[0]!.notes).toContain('Panorama');
+    expect(qrows[0]!.notes).toContain(`Image: widget-leads/${quoteId}.png`);
 
     const { rows: crows } = await pool.query(
       `SELECT id FROM customers WHERE email = $1 AND branch_id = $2`,

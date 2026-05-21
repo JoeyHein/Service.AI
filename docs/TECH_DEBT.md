@@ -185,3 +185,20 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 - [CLOSED] TD-QOC-A10 · phase_quote_order_conversion · Live happy-path test now queries the `quotes` row directly
   - Closed 2026-05-20. Added a `pool.query` after the response assertion reading `supplier_order_ref`, `supplier_order_id`, `ordered_at` straight from the `quotes` row, so a regression that keeps the response shape but drops the write would be caught.
+
+### Widget integration follow-ups (WI) — phase 22
+
+- [HIGH] TD-WI-01 · phase_widget_integration · Auto-SKU resolution for door-designer leads
+  - What: The door-designer widget emits a human-readable `doorConfig` (family/size/design/color/windows), not resolved BC SKUs. v1 captures the config on a draft quote's notes and a manager prices it by hand. This is the deliberate v1 scope line, but it leaves a manual step on every widget lead.
+  - Where: `apps/api/src/public-widget-routes.ts` (lead intake), `apps/api/src/quote-routes.ts::/design-config` (in-app). Resolution lives behind a NEW BC AI Agent external endpoint wrapping `part_number_service`.
+  - Resolution: Add `POST /api/external/door-config/resolve-parts` to BC AI Agent that maps a `doorConfig` → `[{ sku, quantity }]` (it already does this internally for `get_parts_for_door_config`). Add a `resolveDoorConfig` op to `SupplierProvider` + `BcAiAgentProvider`; on widget intake, resolve → seed priced quote lines instead of (or in addition to) the notes block. Then the lead arrives priced.
+
+- [LOW] TD-WI-02 · phase_widget_integration · In-app design image not stored
+  - What: The in-app "Design a door" path (`/quotes/:id/design-config`) captures the config to notes but does not store the door image. Only the public lead path stores the image. Rationale: the in-app manager just saw the design on screen.
+  - Where: `apps/api/src/quote-routes.ts::/design-config`.
+  - Resolution: If managers later want the rendered image attached to the in-app quote, thread `objectStore` into `QuoteRoutesDeps` and reuse `storeDoorImage` keyed by quote id (same as the public path).
+
+- [LOW] TD-WI-03 · phase_widget_integration · Widget lead dedupe is per-email, not per-config
+  - What: A homeowner who submits the designer twice for the same email gets one customer but two draft lead quotes. The gate allowed either behavior for v1; we create a fresh draft each time.
+  - Where: `apps/api/src/public-widget-routes.ts`.
+  - Resolution: If lead spam becomes a problem, de-dupe to one open draft per (email, config-hash) within a short window, or collapse onto the most recent open draft for that customer.

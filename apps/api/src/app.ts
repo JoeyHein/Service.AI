@@ -339,11 +339,8 @@ export function buildApp(opts: AppOptions = {}) {
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
-    registerJobPhotoRoutes(
-      app,
-      opts.drizzle,
-      opts.objectStore ?? stubObjectStore(),
-    );
+    const objectStore = opts.objectStore ?? stubObjectStore();
+    registerJobPhotoRoutes(app, opts.drizzle, objectStore);
     registerCatalogRoutes(app, opts.drizzle);
     registerPricebookRoutes(app, opts.drizzle);
     registerPricebookSuggestionsRoutes(app, opts.drizzle);
@@ -398,7 +395,7 @@ export function buildApp(opts: AppOptions = {}) {
     // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle, stripe);
     registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry, stripe });
-    registerPublicWidgetRoutes(app, opts.drizzle);
+    registerPublicWidgetRoutes(app, opts.drizzle, objectStore);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app

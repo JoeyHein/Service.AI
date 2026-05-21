@@ -27,6 +27,7 @@ import {
   type RequestScope,
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
+import { storeDoorImage, type ObjectStore } from './object-store.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -56,7 +57,11 @@ function summarizeConfig(cfg: Record<string, unknown>): string {
   return parts + windows;
 }
 
-export function registerPublicWidgetRoutes(app: FastifyInstance, db: Drizzle): void {
+export function registerPublicWidgetRoutes(
+  app: FastifyInstance,
+  db: Drizzle,
+  objectStore: ObjectStore,
+): void {
   app.post('/api/v1/public/widget/quote-request', async (req, reply) => {
     if ((req.headers['content-type'] ?? '').includes('application/json') === false) {
       return reply.code(415).send({
@@ -71,7 +76,7 @@ export function registerPublicWidgetRoutes(app: FastifyInstance, db: Drizzle): v
         error: { code: 'VALIDATION_ERROR', message: parsed.error.message },
       });
     }
-    const { contact, doorConfig, source } = parsed.data;
+    const { contact, doorConfig, doorImage, source } = parsed.data;
 
     // Resolve the intake branch (single-branch pilot: LEAD_INTAKE_BRANCH_SLUG
     // or the first branch) and the corporate default supplier.
@@ -152,7 +157,22 @@ export function registerPublicWidgetRoutes(app: FastifyInstance, db: Drizzle): v
           createdByUserId: null,
         })
         .returning({ id: quotes.id });
-      return { quoteId: q[0]!.id, customerId };
+      const quoteId = q[0]!.id;
+
+      // Best-effort: store the configured-door image and stamp its key on
+      // the notes so a manager can see what was designed. Never blocks intake.
+      const imageKey = await storeDoorImage(
+        objectStore,
+        `widget-leads/${quoteId}.png`,
+        doorImage,
+      );
+      if (imageKey) {
+        await tx
+          .update(quotes)
+          .set({ notes: `${quoteNotes}\nImage: ${imageKey}` })
+          .where(eq(quotes.id, quoteId));
+      }
+      return { quoteId, customerId };
     });
 
     return reply.code(201).send({ ok: true, data: result });
