@@ -533,6 +533,63 @@ export const inventoryConsumptionExceptions = pgTable(
   }),
 );
 
+export const purchaseOrders = pgTable(
+  'purchase_orders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    supplierId: uuid('supplier_id')
+      .notNull()
+      .references(() => suppliers.id, { onDelete: 'restrict' }),
+    poNumber: text('po_number'),
+    status: text('status').notNull().default('draft'),
+    currencyCode: text('currency_code').notNull().default('CAD'),
+    subtotalCents: bigint('subtotal_cents', { mode: 'number' }).notNull().default(0),
+    notes: text('notes'),
+    expectedDate: timestamp('expected_date', { withTimezone: true }),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    createdByUserId: text('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index('purchase_orders_branch_idx').on(t.branchId),
+    supplierIdx: index('purchase_orders_supplier_idx').on(t.supplierId),
+    statusIdx: index('purchase_orders_status_idx').on(t.status),
+    poNumberUnique: uniqueIndex('purchase_orders_po_number_unique').on(t.poNumber),
+  }),
+);
+
+export const purchaseOrderLines = pgTable(
+  'purchase_order_lines',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    poId: uuid('po_id')
+      .notNull()
+      .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    sku: text('sku').notNull(),
+    description: text('description'),
+    quantity: numeric('quantity', { precision: 14, scale: 3 }).notNull(),
+    unitCostCents: bigint('unit_cost_cents', { mode: 'number' }).notNull().default(0),
+    receivedQty: numeric('received_qty', { precision: 14, scale: 3 }).notNull().default('0'),
+    itemId: uuid('item_id').references(() => inventoryItems.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    poIdx: index('purchase_order_lines_po_idx').on(t.poId),
+    branchIdx: index('purchase_order_lines_branch_idx').on(t.branchId),
+    positionUnique: uniqueIndex('purchase_order_lines_position_unique').on(t.poId, t.position),
+  }),
+);
+
 export const jobs = pgTable(
   'jobs',
   {
