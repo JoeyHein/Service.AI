@@ -1661,6 +1661,58 @@ describe('completion → balance invoice (QF-03)', () => {
   });
 });
 
+describe('in-app door-designer config attach (WI-02)', () => {
+  function designConfig(user: string | null, quoteId: string, body: unknown) {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (user) headers['x-test-user'] = user;
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${quoteId}/design-config`,
+      headers,
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it('401 without a session', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    const res = await designConfig(null, id, { doorConfig: {} });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('400 on a malformed quote id', async () => {
+    if (!reachable) return;
+    const res = await designConfig(MANAGER_USER, 'not-a-uuid', { doorConfig: {} });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('404 for a quote in another branch', async () => {
+    if (!reachable) return;
+    const otherId = await createDraftQuote(OTHER_MGR_USER, {
+      customerId: OTHER_CUSTOMER_ID,
+      supplierId: OTHER_SUPPLIER_ID,
+    });
+    const res = await designConfig(MANAGER_USER, otherId, { doorConfig: {} });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('appends the door config to the quote notes', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    const res = await designConfig(MANAGER_USER, id, {
+      doorConfig: { family: 'Panorama', size: "16' x 7'", design: 'Flush', color: 'Black' },
+      doorImage: 'data:image/png;base64,AAAA',
+    });
+    expect(res.statusCode).toBe(200);
+    const { rows } = await pool.query<{ notes: string }>(
+      `SELECT notes FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.notes).toContain('Designed door');
+    expect(rows[0]!.notes).toContain('Panorama');
+  });
+});
+
 describe('public widget quote-request (WI-01)', () => {
   let prevSlug: string | undefined;
   beforeAll(() => {

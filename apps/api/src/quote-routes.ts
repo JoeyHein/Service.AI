@@ -88,6 +88,17 @@ const CreateQuoteSchema = z
   })
   .strict();
 
+const DesignConfigSchema = z
+  .object({
+    // The widget's doorConfig is an evolving open object; accept it as-is.
+    doorConfig: z.record(z.string(), z.unknown()).default({}),
+    doorImage: z.string().optional(),
+    contact: z.record(z.string(), z.unknown()).optional(),
+    source: z.string().max(50).optional(),
+    timestamp: z.string().optional(),
+  })
+  .strict();
+
 const LineItemSchema = z
   .object({
     sku: z.string().min(1),
@@ -750,6 +761,70 @@ export function registerQuoteRoutes(
       data: { ...outcome.quote, lineItems: [] },
     });
   });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/quotes/:id/design-config — attach a door-designer config
+  //
+  // WI-02 in-app embed. The OPENDC door-designer widget runs in a modal on
+  // the quote builder and POSTs its `{ contact, doorConfig, doorImage }`
+  // payload here (same-origin → session cookie flows). v1 = lead capture:
+  // we append a human-readable config summary to `quotes.notes` so a manager
+  // can price it. Auto-SKU resolution is the deferred TD follow-up.
+  // -------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/quotes/:id/design-config',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({
+          ok: false,
+          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+        });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
+        });
+      }
+      const parsed = DesignConfigSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: parsed.error.message },
+        });
+      }
+      const scope = req.scope;
+
+      const outcome = await withScope(db, scope, async (tx) => {
+        const qRows = await tx
+          .select({ id: quotes.id, branchId: quotes.branchId, notes: quotes.notes })
+          .from(quotes)
+          .where(eq(quotes.id, req.params.id))
+          .limit(1);
+        const q = qRows[0];
+        if (!q) return { kind: 'not_found' as const };
+        if (!inScope(scope, q.branchId)) return { kind: 'not_found' as const };
+
+        const cfg = parsed.data.doorConfig;
+        const summary = [cfg['family'], cfg['size'], cfg['design'], cfg['color']]
+          .filter((v) => typeof v === 'string' && v)
+          .join(' · ');
+        const block =
+          `Designed door — ${summary}\nConfig: ${JSON.stringify(cfg)}`;
+        const nextNotes = q.notes ? `${q.notes}\n${block}` : block;
+        await tx.update(quotes).set({ notes: nextNotes }).where(eq(quotes.id, q.id));
+        return { kind: 'ok' as const };
+      });
+
+      if (outcome.kind === 'not_found') {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Quote not found' },
+        });
+      }
+      return reply.code(200).send({ ok: true, data: { quoteId: req.params.id } });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /api/v1/quotes/:id/price — replace lines + re-price

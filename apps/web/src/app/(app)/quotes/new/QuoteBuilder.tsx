@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiClientFetch } from '../../../../lib/api.js';
+import { DesignDoorModal } from './DesignDoorModal.js';
 
 export interface CatalogItem {
   sku: string;
@@ -140,6 +141,8 @@ export function QuoteBuilder({
   const [committing, setCommitting] = useState(false);
   const [committedRef, setCommittedRef] = useState<string | null>(null);
   const [committedQuoteId, setCommittedQuoteId] = useState<string | null>(null);
+  const [designOpen, setDesignOpen] = useState(false);
+  const [designCaptured, setDesignCaptured] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [acceptedOrderRef, setAcceptedOrderRef] = useState<string | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
@@ -413,7 +416,7 @@ export function QuoteBuilder({
           onRemove={removeLine}
           pricing={pricing}
         />
-        <div className="flex">
+        <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={addLine}
@@ -422,6 +425,21 @@ export function QuoteBuilder({
           >
             Add line
           </button>
+          {quoteId && (
+            <button
+              type="button"
+              onClick={() => setDesignOpen(true)}
+              className="rounded-md border border-blue-300 bg-white px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50"
+              data-testid="design-a-door"
+            >
+              Design a door
+            </button>
+          )}
+          {designCaptured && (
+            <span className="text-xs text-emerald-700" data-testid="design-captured">
+              Design captured to this quote&apos;s notes.
+            </span>
+          )}
         </div>
       </div>
       <div className="space-y-4">
@@ -451,6 +469,16 @@ export function QuoteBuilder({
         acceptError={acceptError}
         onAccept={accept}
       />
+
+      {designOpen && quoteId && (
+        <DesignDoorModal
+          quoteId={quoteId}
+          onClose={() => {
+            setDesignOpen(false);
+            setDesignCaptured(true);
+          }}
+        />
+      )}
     </div>
   );
 }
