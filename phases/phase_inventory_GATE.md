@@ -1,6 +1,6 @@
 # Phase Gate: phase_inventory
 
-**STATUS: APPROVED 2026-05-21 (Joey). Branch-level service-parts inventory with auto-consumption on job completion. Local-only.**
+**STATUS: SHIPPED 2026-05-21. INV-01..05 landed. Ref: `docs/api/inventory.md`. Local-only.**
 
 Phase 24 — first genuinely-new (non-harvest) feature. Service.AI has **zero**
 inventory today. This builds the ServiceTitan-style branch stock model
@@ -30,7 +30,7 @@ self-describing (sku/name/category/unit live on the branch's item row).
 
 ## Must Pass
 
-- [ ] **INV-01** — schema (migration `0023_inventory_management.sql` + `.down` +
+- [x] **INV-01** — schema (migration `0023_inventory_management.sql` + `.down` +
   Drizzle + round-trip test `inv-01`). Three branch-scoped tables, two-policy
   RLS, append to `db:migrate`:
   - `inventory_items`: `id, branch_id (NOT NULL→branches restrict), sku, name,
@@ -49,7 +49,7 @@ self-describing (sku/name/category/unit live on the branch's item row).
     description, quantity numeric, status (pending|resolved|ignored CHECK),
     resolved_item_id (nullable→inventory_items set null), created_at,
     resolved_at`. Indexes: branch_id, (branch_id, status).
-- [ ] **INV-02** — inventory API (`apps/api/src/inventory-routes.ts`), all
+- [x] **INV-02** — inventory API (`apps/api/src/inventory-routes.ts`), all
   branch-scoped (`requireScope`/`withScope`/cross-tenant 404):
   - `POST /api/v1/inventory/items` (manager+/corporate_admin), `GET` list
     (search sku/name, `category`, `lowStock=true`, pagination), `GET /:id`
@@ -64,7 +64,7 @@ self-describing (sku/name/category/unit live on the branch's item row).
     mgmt later).
   - Tests: 401/403 (csr/tech cannot create), 400, list/search/lowStock filter,
     cross-tenant 404, adjust receipt + adjust below-zero guard.
-- [ ] **INV-03** — auto-consumption + reconciliation. On `job → completed`
+- [x] **INV-03** — auto-consumption + reconciliation. On `job → completed`
   (in `jobs-routes.ts`, same tx as the balance invoice): for the linked quote's
   lines, match `supplier_sku → inventory_items(branch_id, sku, active)`; matched
   → decrement on-hand + `consumption` movement (`ref_type='job'`,
@@ -75,12 +75,12 @@ self-describing (sku/name/category/unit live on the branch's item row).
   (`{ itemId }` → links + consumes, or `{ create: {...} }` → makes a stocked item
   then consumes), `POST .../ignore`. Tests: matched decrement + movement,
   unmatched → exception, idempotent re-complete, resolve creates+consumes.
-- [ ] **INV-04** — web UI (`(app)/inventory`): item list with low-stock badges +
+- [x] **INV-04** — web UI (`(app)/inventory`): item list with low-stock badges +
   search/category/low-stock filter; item detail (levels, available =
   on_hand−reserved, reorder, recent movements, an Adjust/Receive form);
   reconciliation inbox for pending exceptions (link/create/ignore). "Inventory"
   nav link. Server-fetch lists; client forms.
-- [ ] **INV-05** — docs (`docs/api/inventory.md`) + TD (TD-INV-01 BC availability
+- [x] **INV-05** — docs (`docs/api/inventory.md`) + TD (TD-INV-01 BC availability
   overlay, TD-INV-02 reservation-on-accept, others) + gate SHIPPED + memory.
 
 ## Security / tenancy rules

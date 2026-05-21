@@ -224,3 +224,25 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - What: Ingest matches a customer by exact `email` (ilike) or exact `phone` string, picking the most-recently-created on a tie. Phone-format variance (e.g. `+1` prefix, dashes) and shared household contacts can mis-match or fall through to unmatched.
   - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
   - Resolution: Normalize phone to E.164 before matching (store a normalized column), and surface near-matches in the triage UI rather than only exact hits.
+
+### Inventory follow-ups (INV) — phase 24
+
+- [MED] TD-INV-01 · phase_inventory · BC supplier-availability overlay
+  - What: Inventory tracks Service.AI's own branch stock. There's no view of the manufacturer's (BC) availability — "can Elevated Doors' BC fulfill this door/part, and in what lead time?" BC AI Agent already computes this (`bc_inventory_service.check_availability`, `get_inventory_levels`, `get_item_movements`) but exposes no external endpoint.
+  - Where: `packages/suppliers` (SupplierProvider), bc-ai-agent `backend/app/api/external_pricing.py` + `bc_inventory_service.py`.
+  - Resolution: Add `POST /api/external/check-availability` to BC AI Agent (wraps `check_availability`), a `checkAvailability` op on `SupplierProvider` + `BcAiAgentProvider`, and an availability badge in the quote builder. Small cross-repo bridge phase.
+
+- [MED] TD-INV-02 · phase_inventory · Auto-reserve stock on quote accept
+  - What: `inventory_items.qty_reserved` exists and `available = on_hand - reserved` is computed everywhere, but nothing populates `qty_reserved`. Reserving stock when a quote is accepted (before the job consumes it) would make `available` and low-stock truthful for in-flight work.
+  - Where: the quote accept path (`runOrderConversion`/`ensureJobForAcceptedQuote`) + `inventory-consume.ts` (release reserved when consumed).
+  - Resolution: On accept, write `reserve` movements + bump `qty_reserved` for matched lines; on completion, `release` then `consume`. Mirror the auto-consume matching logic.
+
+- [LOW] TD-INV-03 · phase_inventory · No multi-location/bin or branch transfers
+  - What: Stock is a single on-hand number per (branch, sku). The `transfer_in`/`transfer_out` movement reasons exist but there's no transfer workflow, and no bin-level detail (the `bin` column is a free-text label only).
+  - Where: `inventory-routes.ts`, schema.
+  - Resolution: Add a transfer endpoint (paired out/in movements across two branches in one tx) and, if needed, a bin sub-location model.
+
+- [LOW] TD-INV-04 · phase_inventory · No inventory valuation / COGS reporting
+  - What: `unit_cost_cents` is stored per item + per receipt movement, but there's no valuation rollup (on-hand value per branch/category) or COGS-from-consumption report.
+  - Where: a new `GET /api/v1/inventory/valuation` aggregate + a dashboard tile.
+  - Resolution: Sum `qty_on_hand * unit_cost_cents` by branch/category; optionally moving-average cost from receipt movements.
