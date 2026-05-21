@@ -31,10 +31,15 @@
  *   network → NETWORK_ERROR
  */
 import type {
+  AvailabilityLine,
+  CheckAvailabilityRequest,
+  CheckAvailabilityResponse,
   CommitQuoteRequest,
   CommitQuoteResponse,
   ConvertQuoteToOrderRequest,
   ConvertQuoteToOrderResponse,
+  CreatePurchaseOrderRequest,
+  CreatePurchaseOrderResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -59,7 +64,7 @@ export interface BcAiAgentProviderOptions extends SupplierConfig {
   timeoutMs?: number;
   /** Optional Sentry-style hook for instrumentation. */
   onError?: (ctx: {
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder';
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder';
     error: SupplierError;
     attempt: number;
   }) => void;
@@ -120,6 +125,18 @@ interface BcConvertData {
 interface BcVoidData {
   supplierQuoteRef: string;
   voidedAt: string;
+  cached: boolean;
+}
+
+interface BcAvailabilityData {
+  allAvailable: boolean;
+  items: AvailabilityLine[];
+}
+
+interface BcPurchaseOrderData {
+  supplierPoRef: string;
+  supplierPoId: string;
+  createdAt: string;
   cached: boolean;
 }
 
@@ -295,6 +312,65 @@ export class BcAiAgentProvider implements SupplierProvider {
     };
   }
 
+  /**
+   * TD-INV-01. Read supplier-side stock availability for a basket.
+   * Path: POST /api/external/check-availability (BCB-02).
+   */
+  async checkAvailability(
+    req: CheckAvailabilityRequest,
+  ): Promise<SupplierResult<CheckAvailabilityResponse>> {
+    const body = {
+      supplierAccountCode: req.supplierAccountCode || this.defaultAccountCode,
+      items: req.items.map((i) => ({ sku: i.sku, quantity: i.quantity })),
+    };
+    const raw = await this.callWithRetry<BcAvailabilityData>(
+      'checkAvailability',
+      '/api/external/check-availability',
+      body,
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
+    return { ok: true, data: { allAvailable: raw.data.allAvailable, items: raw.data.items } };
+  }
+
+  /**
+   * TD-PO-01. Create a real BC purchase order. Idempotent on `externalPoId`
+   * (BC AI Agent persists it on `external_purchase_orders`; a replay returns
+   * the cached BC PO number).
+   * Path: POST /api/external/purchase-orders (BCB-02).
+   */
+  async createPurchaseOrder(
+    req: CreatePurchaseOrderRequest,
+  ): Promise<SupplierResult<CreatePurchaseOrderResponse>> {
+    const body = {
+      supplierAccountCode: req.supplierAccountCode || this.defaultAccountCode,
+      externalPoId: req.externalPoId,
+      poNumber: req.poNumber,
+      lines: req.lines.map((l) => ({
+        sku: l.sku,
+        quantity: l.quantity,
+        unitCostCents: l.unitCostCents,
+        description: l.description,
+      })),
+    };
+    const raw = await this.callWithRetry<BcPurchaseOrderData>(
+      'createPurchaseOrder',
+      '/api/external/purchase-orders',
+      body,
+      req.requestId,
+      req.idempotencyKey ?? req.externalPoId,
+    );
+    if (!raw.ok) return raw;
+    return {
+      ok: true,
+      data: {
+        supplierPoRef: raw.data.supplierPoRef,
+        supplierPoId: raw.data.supplierPoId,
+        createdAt: raw.data.createdAt,
+      },
+    };
+  }
+
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
     // Not exposed externally; consumers should use Service.AI's own
     // pricebook for the autocomplete catalog.
@@ -306,7 +382,7 @@ export class BcAiAgentProvider implements SupplierProvider {
   // ---------------------------------------------------------------------------
 
   private async callWithRetry<T>(
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder',
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder',
     path: string,
     body: unknown,
     requestId?: string,

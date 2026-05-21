@@ -141,6 +141,65 @@ export interface ConvertQuoteToOrderResponse {
   orderedAt: string;
 }
 
+export interface CheckAvailabilityRequest {
+  supplierAccountCode: string;
+  items: SupplierLineRequest[];
+  /** SQB-11 request-ID propagation; see PriceItemsRequest.requestId. */
+  requestId?: string;
+}
+
+export interface AvailabilityLine {
+  sku: string;
+  /** Supplier on-hand quantity. */
+  onHand: number;
+  /** On-hand minus already-committed (what we could actually get). */
+  available: number;
+  /** How much short of the requested quantity (0 if fully available). */
+  shortfall: number;
+  status: 'available' | 'partial' | 'unavailable';
+  /** Estimated lead time to make up a shortfall. */
+  leadTimeDays: number;
+}
+
+export interface CheckAvailabilityResponse {
+  /** True when every line is fully available. */
+  allAvailable: boolean;
+  items: AvailabilityLine[];
+}
+
+export interface CreatePurchaseOrderLine {
+  sku: string;
+  quantity: number;
+  unitCostCents: number;
+  description?: string;
+}
+
+export interface CreatePurchaseOrderRequest {
+  supplierAccountCode: string;
+  /**
+   * Service.AI-side PO UUID. Used as the supplier's idempotency key — a
+   * repeat call with the same id returns the same `supplierPoRef` instead of
+   * creating a second BC purchase order.
+   */
+  externalPoId: string;
+  /** Service.AI's human PO number (e.g. 'PO-000123'), for the BC note. */
+  poNumber?: string;
+  lines: CreatePurchaseOrderLine[];
+  /** SQB-11 request-ID propagation. */
+  requestId?: string;
+  /** Optional HTTP `Idempotency-Key`; defaults to `externalPoId`. */
+  idempotencyKey?: string;
+}
+
+export interface CreatePurchaseOrderResponse {
+  /** Human-facing BC purchase order number (e.g. 'PO-104821'). */
+  supplierPoRef: string;
+  /** Provider-native UUID for the BC purchase order document. */
+  supplierPoId: string;
+  /** ISO timestamp — when the supplier created the PO. */
+  createdAt: string;
+}
+
 /**
  * Catalog row used by the live-quote autocomplete. Optional helper —
  * providers that don't expose a browsable catalog can return [].
@@ -220,6 +279,23 @@ export interface SupplierProvider {
   convertQuoteToOrder?(
     req: ConvertQuoteToOrderRequest,
   ): Promise<SupplierResult<ConvertQuoteToOrderResponse>>;
+
+  /**
+   * TD-INV-01. Read supplier-side stock availability for a basket. No side
+   * effects. Optional — providers without an availability surface omit it.
+   */
+  checkAvailability?(
+    req: CheckAvailabilityRequest,
+  ): Promise<SupplierResult<CheckAvailabilityResponse>>;
+
+  /**
+   * TD-PO-01. Create a real supplier-side purchase order. MUST be idempotent
+   * on `externalPoId`: a repeat call returns the same `supplierPoRef` without
+   * creating a second supplier document. Optional — callers null-check.
+   */
+  createPurchaseOrder?(
+    req: CreatePurchaseOrderRequest,
+  ): Promise<SupplierResult<CreatePurchaseOrderResponse>>;
 
   /**
    * Optional catalog browse — used by the live-quote autocomplete.

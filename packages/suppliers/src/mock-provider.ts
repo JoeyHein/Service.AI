@@ -17,10 +17,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import type {
+  CheckAvailabilityRequest,
+  CheckAvailabilityResponse,
   CommitQuoteRequest,
   CommitQuoteResponse,
   ConvertQuoteToOrderRequest,
   ConvertQuoteToOrderResponse,
+  CreatePurchaseOrderRequest,
+  CreatePurchaseOrderResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -56,7 +60,7 @@ export interface MockProviderOptions {
  * Cleared after a single use so tests don't have to remember to reset.
  */
 interface InjectedFailure {
-  op: 'price' | 'commit' | 'convertToOrder';
+  op: 'price' | 'commit' | 'convertToOrder' | 'createPurchaseOrder';
   error: SupplierError;
   /** When true, the failure fires on every call until cleared. */
   sticky: boolean;
@@ -69,8 +73,10 @@ export class MockSupplierProvider implements SupplierProvider {
   private catalog = new Map<string, MockCatalogEntry>();
   private commits = new Map<string, CommitQuoteResponse>();
   private conversions = new Map<string, ConvertQuoteToOrderResponse>();
+  private purchaseOrders = new Map<string, CreatePurchaseOrderResponse>();
   private nextRefSerial = 100_000;
   private nextOrderSerial = 200_000;
+  private nextPoSerial = 300_000;
   private readonly latencyMs: number;
   private readonly currency: 'CAD' | 'USD';
   private readonly validityDays: number;
@@ -102,13 +108,15 @@ export class MockSupplierProvider implements SupplierProvider {
     this.commits.clear();
     this.conversions.clear();
     this.voidedRefs.clear();
+    this.purchaseOrders.clear();
     this.nextRefSerial = 100_000;
     this.nextOrderSerial = 200_000;
+    this.nextPoSerial = 300_000;
   }
 
   /** Make the next priceItems / commitQuote / convertQuoteToOrder call fail. */
   injectFailure(
-    op: 'price' | 'commit' | 'convertToOrder',
+    op: 'price' | 'commit' | 'convertToOrder' | 'createPurchaseOrder',
     error: SupplierError,
     sticky = false,
   ): void {
@@ -267,6 +275,41 @@ export class MockSupplierProvider implements SupplierProvider {
     return this.conversions.has(externalQuoteId);
   }
 
+  async checkAvailability(
+    req: CheckAvailabilityRequest,
+  ): Promise<SupplierResult<CheckAvailabilityResponse>> {
+    if (this.latencyMs > 0) await sleep(this.latencyMs);
+    // Deterministic: a catalog SKU has 100 on-hand; an unknown SKU has 0.
+    const items = req.items.map((i) => {
+      const onHand = this.catalog.has(i.sku) ? 100 : 0;
+      const available = onHand;
+      const shortfall = Math.max(0, i.quantity - available);
+      const status: CheckAvailabilityResponse['items'][number]['status'] =
+        shortfall === 0 ? 'available' : available > 0 ? 'partial' : 'unavailable';
+      return { sku: i.sku, onHand, available, shortfall, status, leadTimeDays: shortfall > 0 ? 7 : 0 };
+    });
+    return { ok: true, data: { allAvailable: items.every((i) => i.shortfall === 0), items } };
+  }
+
+  async createPurchaseOrder(
+    req: CreatePurchaseOrderRequest,
+  ): Promise<SupplierResult<CreatePurchaseOrderResponse>> {
+    if (this.latencyMs > 0) await sleep(this.latencyMs);
+    const fail = this.takeFailure('createPurchaseOrder');
+    if (fail) return { ok: false, error: fail };
+    // Idempotency: same externalPoId → same supplierPoRef.
+    const existing = this.purchaseOrders.get(req.externalPoId);
+    if (existing) return { ok: true, data: existing };
+    this.nextPoSerial += 1;
+    const response: CreatePurchaseOrderResponse = {
+      supplierPoRef: `BCPO-${String(this.nextPoSerial).padStart(6, '0')}`,
+      supplierPoId: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+    this.purchaseOrders.set(req.externalPoId, response);
+    return { ok: true, data: response };
+  }
+
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
     return {
       ok: true,
@@ -285,7 +328,7 @@ export class MockSupplierProvider implements SupplierProvider {
   }
 
   private takeFailure(
-    op: 'price' | 'commit' | 'convertToOrder',
+    op: 'price' | 'commit' | 'convertToOrder' | 'createPurchaseOrder',
   ): SupplierError | null {
     if (!this.injectedFailure || this.injectedFailure.op !== op) return null;
     const err = this.injectedFailure.error;
