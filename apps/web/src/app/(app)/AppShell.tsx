@@ -90,6 +90,13 @@ export function AppShell({
             >
               Inventory
             </Link>
+            <Link
+              href="/purchase-orders"
+              className="text-sm text-blue-700 hover:underline"
+              data-testid="nav-purchase-orders"
+            >
+              POs
+            </Link>
             {isManager && (
               <Link
                 href="/branch"

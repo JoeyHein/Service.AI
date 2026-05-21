@@ -93,6 +93,18 @@ async function supplierExists(db: Drizzle, supplierId: string): Promise<boolean>
 }
 
 export function registerPurchaseOrderRoutes(app: FastifyInstance, db: Drizzle): void {
+  // GET /api/v1/suppliers — corporate-shared vendor list (any authenticated
+  // user; read under a corporate scope since `suppliers` RLS denies branches).
+  app.get('/api/v1/suppliers', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    const rows = await withScope(db, CORP_SCOPE, async (tx) =>
+      tx.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).orderBy(suppliers.name),
+    );
+    return reply.code(200).send({ ok: true, data: { rows } });
+  });
+
   // POST /api/v1/purchase-orders
   app.post('/api/v1/purchase-orders', async (req, reply) => {
     if (req.scope === null) {
