@@ -363,6 +363,52 @@ describe('CRM-02 / customer notes', () => {
     expect(d.lastContactAt).not.toBeNull();
   });
 
+  it('timeline: unifies notes, jobs, quotes, invoices and filters by type', async () => {
+    const { rows: br } = await pool.query<{ id: string }>(
+      `SELECT id FROM branches WHERE slug = 'denver'`,
+    );
+    const branchId = br[0]!.id;
+    const custId = await createCustomer(cookies.denverManager, { name: 'Timeline Co' });
+    const { rows: sup } = await pool.query<{ id: string }>(
+      `INSERT INTO suppliers (name, provider_kind, endpoint_url, api_key_secret_ref, supplier_account_code)
+       VALUES ('TL Supplier', 'bc_ai_agent', 'http://x', 'ref', 'TL') RETURNING id`,
+    );
+    const { rows: jj } = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, status, title) VALUES ($1,$2,'completed','Install') RETURNING id`,
+      [branchId, custId],
+    );
+    await pool.query(
+      `INSERT INTO quotes (branch_id, customer_id, supplier_id, status, total_cents) VALUES ($1,$2,$3,'accepted',250000)`,
+      [branchId, custId, sup[0]!.id],
+    );
+    await pool.query(
+      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total) VALUES ($1,$2,$3,'paid','2500.00')`,
+      [branchId, jj[0]!.id, custId],
+    );
+    await pool.query(
+      `INSERT INTO customer_notes (branch_id, customer_id, note_type, body, source) VALUES ($1,$2,'call','rang','manual')`,
+      [branchId, custId],
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/customers/${custId}/timeline`,
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(res.statusCode).toBe(200);
+    const kindsSeen = new Set((res.json().data.rows as Array<{ kind: string }>).map((r) => r.kind));
+    expect(kindsSeen).toEqual(new Set(['note', 'job', 'quote', 'invoice']));
+    expect(res.json().data.total).toBe(4);
+
+    const onlyQuotes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/customers/${custId}/timeline?type=quote`,
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(onlyQuotes.json().data.total).toBe(1);
+    expect(onlyQuotes.json().data.rows[0].kind).toBe('quote');
+  });
+
   it('metrics: cross-tenant 404', async () => {
     const custId = await createCustomer(cookies.denverManager, { name: 'Metrics Private' });
     const res = await app.inject({

@@ -202,6 +202,93 @@ export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
   );
 
   // ---------------------------------------------------------------------------
+  // GET /api/v1/customers/:id/timeline — unified activity feed
+  //
+  // One UNION ALL across notes + jobs + quotes + invoices, ordered by event
+  // time. `type` filters to one kind. Paginated. RLS (via withScope) keeps it
+  // to the customer's branch.
+  // ---------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/customers/:id/timeline',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({
+          ok: false,
+          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+        });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
+        });
+      }
+      const scope = req.scope;
+      const id = req.params.id;
+      const q = req.query as Record<string, string | undefined>;
+      const kinds = ['note', 'job', 'quote', 'invoice'] as const;
+      const kindFilter = kinds.includes(q['type'] as never) ? q['type']! : null;
+      const limit = Math.min(Math.max(parseInt(q['limit'] ?? '50', 10) || 50, 1), 200);
+      const offset = Math.max(parseInt(q['offset'] ?? '0', 10) || 0, 0);
+
+      const result = await withScope(db, scope, async (tx) => {
+        const custRows = await tx
+          .select({ id: customers.id, branchId: customers.branchId })
+          .from(customers)
+          .where(and(eq(customers.id, id), isNull(customers.deletedAt)));
+        const cust = custRows[0];
+        if (!cust) return null;
+        const scopeBranch = branchIdFromScope(scope);
+        if (scopeBranch && cust.branchId !== scopeBranch) return null;
+
+        const union = sql`
+          SELECT id::text AS id, 'note' AS kind, occurred_at AS ts, note_type AS subtype,
+                 COALESCE(subject, left(body, 80)) AS title, body AS detail,
+                 NULL::text AS status, NULL::bigint AS amount_cents, source AS ref
+            FROM customer_notes WHERE customer_id = ${id}
+          UNION ALL
+          SELECT id::text, 'job', created_at, status::text,
+                 title, description, status::text, NULL::bigint, NULL::text
+            FROM jobs WHERE customer_id = ${id} AND deleted_at IS NULL
+          UNION ALL
+          SELECT id::text, 'quote', COALESCE(committed_at, created_at), status::text,
+                 COALESCE(supplier_quote_ref, 'Quote'), notes, status::text,
+                 total_cents, supplier_quote_ref
+            FROM quotes WHERE customer_id = ${id}
+          UNION ALL
+          SELECT id::text, 'invoice', COALESCE(paid_at, finalized_at, created_at), status::text,
+                 'Invoice', notes, status::text, round(total * 100)::bigint, NULL::text
+            FROM invoices WHERE customer_id = ${id} AND deleted_at IS NULL
+        `;
+        const filtered = kindFilter
+          ? sql`SELECT * FROM (${union}) t WHERE kind = ${kindFilter}`
+          : sql`SELECT * FROM (${union}) t`;
+        const rowsRes = await tx.execute(
+          sql`${filtered} ORDER BY ts DESC LIMIT ${limit} OFFSET ${offset}`,
+        );
+        const countRes = await tx.execute(
+          sql`SELECT count(*)::int AS c FROM (${filtered}) c`,
+        );
+        return {
+          rows: rowsRes.rows,
+          total: Number((countRes.rows[0] as { c: number } | undefined)?.c ?? 0),
+        };
+      });
+
+      if (!result) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Customer not found' },
+        });
+      }
+      return reply.code(200).send({
+        ok: true,
+        data: { rows: result.rows, total: result.total, limit, offset },
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------------------
   // GET /api/v1/customers/:id/notes — per-customer timeline
   // ---------------------------------------------------------------------------
   app.get<{ Params: { id: string } }>(
