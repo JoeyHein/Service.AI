@@ -83,6 +83,13 @@ export function AppShell({
             >
               CRM Inbox
             </Link>
+            <Link
+              href="/inventory"
+              className="text-sm text-blue-700 hover:underline"
+              data-testid="nav-inventory"
+            >
+              Inventory
+            </Link>
             {isManager && (
               <Link
                 href="/branch"
