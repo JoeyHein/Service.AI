@@ -22,7 +22,7 @@
  *   - subtotal + tax + total re-derived on every write.
  */
 import type { FastifyInstance } from 'fastify';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import {
@@ -54,6 +54,16 @@ const CreateSchema = z.object({
   notes: z.string().max(2000).nullable().optional(),
   taxRate: z.number().min(0).max(1).optional(),
 });
+
+const ListQuerySchema = z
+  .object({
+    status: z.enum(['draft', 'finalized', 'sent', 'paid', 'void']).optional(),
+    jobId: z.string().uuid().optional(),
+    quoteId: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+  })
+  .strict();
 
 const PatchSchema = z.object({
   lines: z.array(LineInputSchema).optional(),
@@ -290,6 +300,56 @@ export function registerInvoiceRoutes(app: FastifyInstance, db: Drizzle): void {
   );
 
   // GET /api/v1/invoices/:id
+  // GET /api/v1/invoices — branch-scoped list (OI-01)
+  app.get('/api/v1/invoices', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+      });
+    }
+    const parsed = ListQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        ok: false,
+        error: { code: 'VALIDATION_ERROR', message: parsed.error.message },
+      });
+    }
+    const scope = req.scope;
+    const q = parsed.data;
+    const rows = await withScope(db, scope, async (tx) => {
+      const conds = [isNull(invoices.deletedAt)];
+      const fe = scopedBranchId(scope);
+      if (fe) conds.push(eq(invoices.branchId, fe));
+      if (q.status) conds.push(eq(invoices.status, q.status));
+      if (q.jobId) conds.push(eq(invoices.jobId, q.jobId));
+      if (q.quoteId) conds.push(eq(invoices.quoteId, q.quoteId));
+      return tx
+        .select({
+          id: invoices.id,
+          status: invoices.status,
+          total: invoices.total,
+          quoteId: invoices.quoteId,
+          jobId: invoices.jobId,
+          customerName: customers.name,
+          jobTitle: jobs.title,
+          finalizedAt: invoices.finalizedAt,
+          sentAt: invoices.sentAt,
+          paidAt: invoices.paidAt,
+          paymentLinkToken: invoices.paymentLinkToken,
+          createdAt: invoices.createdAt,
+        })
+        .from(invoices)
+        .innerJoin(customers, eq(customers.id, invoices.customerId))
+        .innerJoin(jobs, eq(jobs.id, invoices.jobId))
+        .where(and(...conds))
+        .orderBy(desc(invoices.createdAt))
+        .limit(q.limit)
+        .offset(q.offset);
+    });
+    return reply.code(200).send({ ok: true, data: rows });
+  });
+
   app.get<{ Params: { id: string } }>('/api/v1/invoices/:id', async (req, reply) => {
     if (req.scope === null) {
       return reply.code(401).send({

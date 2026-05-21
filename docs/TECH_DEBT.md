@@ -24,10 +24,8 @@ Format:
   - Where: `balance-invoice.ts` + the invoice PATCH flow.
   - Resolution: A reconciliation surface (quoted vs. installed) when materials tracking exists. Fine to defer — the office can edit the draft today.
 
-- [LOW] TD-QF-03 · phase_quote_fulfillment · No office invoice view to link the balance invoice
-  - What: QF-06 surfaces a "balance invoice drafted" banner on the completed job, but there's no office-facing invoice detail page to link to (only the public pay page + the tech invoice editor). The office finds the invoice via... no dedicated route.
-  - Where: `apps/web/src/app/(app)/` — a new `invoices/[id]` office view.
-  - Resolution: Add an office invoice detail/finalize page; link the QF-06 banner to it.
+- [CLOSED] TD-QF-03 · phase_quote_fulfillment · Office invoice console shipped (phase_office_invoicing)
+  - Closed 2026-05-20. Phase 19 (OI-01..05): `GET /api/v1/invoices` list + `(app)/invoices` list + `(app)/invoices/[id]` detail (finalize/send/copy-link, reusing the existing endpoints) + Invoices nav + job-page invoice list. The QF-06 banner links to the detail page. See `docs/api/office-invoicing.md`.
 
 ## phase_customer_quote_acceptance (CQA)
 

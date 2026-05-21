@@ -42,6 +42,13 @@ export default async function JobDetailPage({
   const photos =
     photosRes.status === 200 && photosRes.body.data ? photosRes.body.data : [];
 
+  // OI-04: this job's invoices (balance or plain).
+  const invoicesRes = await apiServerFetch<
+    Array<{ id: string; status: string; total: string; quoteId: string | null }>
+  >(`/api/v1/invoices?jobId=${encodeURIComponent(id)}`);
+  const invoices =
+    invoicesRes.status === 200 && invoicesRes.body.data ? invoicesRes.body.data : [];
+
   // Fetch the customer for address + lat/lng → static map. Silent-fail
   // to null so an RLS glitch or missing customer doesn't blank the
   // whole page; the map component renders a placeholder in that case.
@@ -129,6 +136,23 @@ export default async function JobDetailPage({
       <div className="mt-6">
         <JobTransitionPanel jobId={job.id} status={job.status} />
       </div>
+
+      {invoices.length > 0 && (
+        <div className="mt-6 bg-white rounded-lg border border-slate-200 p-4" data-testid="job-invoices">
+          <h2 className="text-sm font-medium text-slate-700">Invoices</h2>
+          <ul className="mt-2 space-y-1 text-sm">
+            {invoices.map((inv) => (
+              <li key={inv.id} className="flex items-center justify-between">
+                <Link href={`/invoices/${inv.id}`} className="text-blue-700 hover:underline">
+                  {inv.quoteId ? 'Balance invoice' : 'Invoice'} ·{' '}
+                  {Number(inv.total).toLocaleString('en-US', { style: 'currency', currency: 'CAD' })}
+                </Link>
+                <span className="font-mono text-xs text-slate-500">{inv.status}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-8">
         <h2 className="text-sm font-medium text-slate-700">Location</h2>

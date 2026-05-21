@@ -69,6 +69,13 @@ export function AppShell({
             >
               Jobs
             </Link>
+            <Link
+              href="/invoices"
+              className="text-sm text-blue-700 hover:underline"
+              data-testid="nav-invoices"
+            >
+              Invoices
+            </Link>
             {isManager && (
               <Link
                 href="/branch"

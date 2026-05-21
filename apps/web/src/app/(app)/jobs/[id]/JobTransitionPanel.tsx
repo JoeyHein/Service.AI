@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { apiClientFetch } from '../../../../lib/api.js';
@@ -32,7 +33,7 @@ export function JobTransitionPanel({
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
-  const [balanceInvoiced, setBalanceInvoiced] = useState(false);
+  const [balanceInvoiceId, setBalanceInvoiceId] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const validTargets = MATRIX[status as Status] ?? [];
 
@@ -48,7 +49,9 @@ export function JobTransitionPanel({
         return;
       }
       // QF-06: completing a quote-linked job drafts the balance invoice.
-      if (res.body.data?.balanceInvoiceId) setBalanceInvoiced(true);
+      if (res.body.data?.balanceInvoiceId) {
+        setBalanceInvoiceId(res.body.data.balanceInvoiceId);
+      }
       router.refresh();
     });
   }
@@ -59,13 +62,20 @@ export function JobTransitionPanel({
         <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-500">
           This job is {status}. No further transitions.
         </div>
-        {balanceInvoiced && (
+        {balanceInvoiceId && (
           <div
             className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
             data-testid="balance-invoice-banner"
           >
-            Balance invoice drafted — the customer&apos;s deposit is credited.
-            Review and finalize it under Invoices to send the balance.
+            Balance invoice drafted — the customer&apos;s deposit is credited.{' '}
+            <Link
+              href={`/invoices/${balanceInvoiceId}`}
+              className="font-medium underline"
+              data-testid="balance-invoice-link"
+            >
+              Review &amp; finalize it
+            </Link>{' '}
+            to send the balance.
           </div>
         )}
       </div>

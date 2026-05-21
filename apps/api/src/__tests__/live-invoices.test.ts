@@ -382,3 +382,52 @@ describe('TM-05a / invoice drafts', () => {
     expect(res.json().error.code).toBe('INVOICE_NOT_EDITABLE');
   });
 });
+
+describe('OI-01 / invoice list', () => {
+  async function createInvoice(cookie: string, jobId: string): Promise<string> {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/jobs/${jobId}/invoices`,
+      headers: { cookie, 'content-type': 'application/json' },
+      payload: JSON.stringify({ lines: [{ serviceItemId: installItemId, quantity: 1 }] }),
+    });
+    return res.json().data.id as string;
+  }
+
+  it('401 when unauthenticated', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/invoices' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('lists the branch’s invoices and excludes other branches', async () => {
+    const denverInv = await createInvoice(cookies.denverOwner, denverJobId);
+    const austinInv = await createInvoice(cookies.austinOwner, austinJobId);
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/invoices',
+      headers: { cookie: cookies.denverOwner },
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().data as Array<{ id: string }>).map((i) => i.id);
+    expect(ids).toContain(denverInv);
+    expect(ids).not.toContain(austinInv); // cross-branch isolation
+  });
+
+  it('filters by status', async () => {
+    const invId = await createInvoice(cookies.denverOwner, denverJobId);
+    await pool.query(
+      `UPDATE invoices SET status = 'finalized', finalized_at = NOW() WHERE id = $1`,
+      [invId],
+    );
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/invoices?status=finalized',
+      headers: { cookie: cookies.denverOwner },
+    });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().data as Array<{ id: string; status: string }>;
+    expect(rows.every((r) => r.status === 'finalized')).toBe(true);
+    expect(rows.map((r) => r.id)).toContain(invId);
+  });
+});
