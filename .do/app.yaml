@@ -18,6 +18,17 @@ services:
     envs:
       - key: NEXT_PUBLIC_API_URL
         value: ${api.PUBLIC_URL}
+      # NEXT_PUBLIC_* are inlined at build → must be RUN_AND_BUILD_TIME.
+      # Set the app-level secret values in the DO dashboard before deploy.
+      - key: NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+      - key: NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
+      - key: NEXT_PUBLIC_VAPID_PUBLIC_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY}
       - key: SENTRY_DSN
         scope: RUN_AND_BUILD_TIME
         value: ${SENTRY_DSN}
@@ -43,6 +54,70 @@ services:
       - key: REDIS_URL
         scope: RUN_AND_BUILD_TIME
         value: ${service-ai-redis.REDIS_URL}
+      # --- Auth (required: sessions dead without these) ---
+      - key: BETTER_AUTH_SECRET
+        scope: RUN_AND_BUILD_TIME
+        value: ${BETTER_AUTH_SECRET}
+      - key: BETTER_AUTH_URL
+        scope: RUN_AND_BUILD_TIME
+        value: ${api.PUBLIC_URL}
+      # Customer-facing share / accept / pay links + CSRF allowlist.
+      - key: WEB_ORIGIN
+        scope: RUN_AND_BUILD_TIME
+        value: ${web.PUBLIC_URL}
+      # --- Payments (required: money loop is stub without these) ---
+      - key: STRIPE_SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${STRIPE_SECRET_KEY}
+      - key: STRIPE_WEBHOOK_SECRET
+        scope: RUN_AND_BUILD_TIME
+        value: ${STRIPE_WEBHOOK_SECRET}
+      # --- AI ---
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${ANTHROPIC_API_KEY}
+      # --- Maps / places ---
+      - key: GOOGLE_MAPS_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${GOOGLE_MAPS_API_KEY}
+      - key: PLACES_COUNTRIES
+        value: ${PLACES_COUNTRIES}
+      # --- Object storage (photo uploads) ---
+      - key: DO_SPACES_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${DO_SPACES_KEY}
+      - key: DO_SPACES_SECRET
+        scope: RUN_AND_BUILD_TIME
+        value: ${DO_SPACES_SECRET}
+      - key: DO_SPACES_BUCKET
+        value: ${DO_SPACES_BUCKET}
+      - key: DO_SPACES_REGION
+        value: ${DO_SPACES_REGION}
+      - key: DO_SPACES_ENDPOINT
+        value: ${DO_SPACES_ENDPOINT}
+      # --- SMS (Twilio) ---
+      - key: TWILIO_ACCOUNT_SID
+        scope: RUN_AND_BUILD_TIME
+        value: ${TWILIO_ACCOUNT_SID}
+      - key: TWILIO_AUTH_TOKEN
+        scope: RUN_AND_BUILD_TIME
+        value: ${TWILIO_AUTH_TOKEN}
+      - key: TWILIO_MESSAGING_SERVICE_SID
+        value: ${TWILIO_MESSAGING_SERVICE_SID}
+      # --- Email ---
+      - key: RESEND_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${RESEND_API_KEY}
+      # --- Web push (VAPID) ---
+      - key: VAPID_PUBLIC_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${VAPID_PUBLIC_KEY}
+      - key: VAPID_PRIVATE_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${VAPID_PRIVATE_KEY}
+      - key: VAPID_CONTACT
+        value: ${VAPID_CONTACT}
+      # --- Observability ---
       - key: AXIOM_TOKEN
         scope: RUN_AND_BUILD_TIME
         value: ${AXIOM_TOKEN}
@@ -67,6 +142,27 @@ services:
     routes:
       - path: /voice
     envs:
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        value: ${service-ai-db.DATABASE_URL}
+      - key: REDIS_URL
+        scope: RUN_AND_BUILD_TIME
+        value: ${service-ai-redis.REDIS_URL}
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${ANTHROPIC_API_KEY}
+      - key: DEEPGRAM_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${DEEPGRAM_API_KEY}
+      - key: ELEVENLABS_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${ELEVENLABS_API_KEY}
+      - key: TWILIO_ACCOUNT_SID
+        scope: RUN_AND_BUILD_TIME
+        value: ${TWILIO_ACCOUNT_SID}
+      - key: TWILIO_AUTH_TOKEN
+        scope: RUN_AND_BUILD_TIME
+        value: ${TWILIO_AUTH_TOKEN}
       - key: SENTRY_DSN
         scope: RUN_AND_BUILD_TIME
         value: ${SENTRY_DSN}

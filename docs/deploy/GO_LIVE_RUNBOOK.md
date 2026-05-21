@@ -19,8 +19,12 @@ auto-deploy (`deploy_on_push: true`), so it is the LAST step.**
   (tsc) and `pnpm --filter @service-ai/web build` (next build, all routes incl.
   `/invoices`, `/invoices/[id]`, `/quotes/[token]/accept`, `/invoices/[token]/pay`).
   Suites green: api 747, web 196, suppliers 45, db 83.
-- **GL-03 ⚠️ `.do/app.yaml` is missing required env** — see below. This is the
-  top go-live blocker: the app would boot but the money loop would be dead.
+- **GL-03 ✅ `.do/app.yaml` env wiring completed.** The spec now references all
+  required vars per service (payments, auth, WEB_ORIGIN, integrations) via
+  `${VAR}` bindings + correct scopes (NEXT_PUBLIC_* are RUN_AND_BUILD_TIME);
+  Redis resource confirmed present. **What remains is setting the secret
+  VALUES in the DO dashboard** — the spec declares the keys, DO holds the
+  secrets. The reference below lists every value to set.
 
 ## Required environment (the GL-03 gap)
 
@@ -55,11 +59,14 @@ app-level secrets, then reference per service) before the first real deploy.
 ### voice
 `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `TWILIO_*`, `ANTHROPIC_API_KEY`, `DATABASE_URL`.
 
-### Also verify in app.yaml
-- A `service-ai-redis` resource is referenced (`${service-ai-redis.REDIS_URL}`)
-  but only the PG database is declared in the spec — **add the Redis resource**
-  or the api won't get `REDIS_URL`.
-- PG is `production: false` (dev tier) — acceptable for the pilot; size up later.
+### app.yaml status
+- All vars above are now wired in `.do/app.yaml` (per-service `${VAR}`
+  references + scopes). Set the secret VALUES in the DO dashboard.
+- Redis resource is declared. PG is `production: false` (dev tier) — fine for
+  the pilot; size up later.
+- `BETTER_AUTH_URL` binds to `${api.PUBLIC_URL}` and `WEB_ORIGIN` to
+  `${web.PUBLIC_URL}` — confirm these resolve to the intended hostnames after
+  the first deploy (DO assigns them).
 
 ### BC AI Agent connection (not env — seeded data)
 Service.AI reaches BC AI Agent per-supplier: the `suppliers` row holds
@@ -71,9 +78,9 @@ seeded with the prod BC AI Agent URL + the Elevated Doors account code.
 
 ## Deploy steps (GL-04 — Joey)
 
-1. Set all required env above as DO app secrets; update `.do/app.yaml` to
-   reference them per service (commit the spec change).
-2. Ensure the Redis resource exists in the spec.
+1. Set all required env above as DO app-level secrets (the spec already
+   references them via `${VAR}` — you only set the values in the dashboard).
+2. Redis resource is already in the spec.
 3. **Push `main`** → DO auto-deploys web/api/voice.
 4. Run migrations against DO Managed Postgres:
    `DATABASE_URL=<do-pg-url> pnpm --filter @service-ai/db db:migrate`
