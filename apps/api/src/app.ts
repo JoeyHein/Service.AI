@@ -28,6 +28,7 @@ import { registerInvoiceRoutes } from './invoice-routes.js';
 import { registerInvoicePaymentRoutes } from './invoice-payment-routes.js';
 import { registerPublicInvoiceRoutes } from './public-invoice-routes.js';
 import { registerPublicQuoteRoutes } from './public-quote-routes.js';
+import { registerPublicWidgetRoutes } from './public-widget-routes.js';
 import {
   registerPhoneRoutes,
   stubPhoneProvisioner,
@@ -397,6 +398,7 @@ export function buildApp(opts: AppOptions = {}) {
     // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle, stripe);
     registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry, stripe });
+    registerPublicWidgetRoutes(app, opts.drizzle);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app

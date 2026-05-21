@@ -132,9 +132,11 @@ async function clean(): Promise<void> {
     BRANCH_ID,
     OTHER_BRANCH_ID,
   ]);
-  await pool.query(`DELETE FROM customers WHERE id IN ($1, $2)`, [
-    CUSTOMER_ID,
-    OTHER_CUSTOMER_ID,
+  // WI-01 creates lead customers with random ids in the intake branch;
+  // delete by branch so they don't block the branches teardown.
+  await pool.query(`DELETE FROM customers WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
   ]);
   await pool.query(`DELETE FROM suppliers WHERE id IN ($1, $2)`, [
     SUPPLIER_ID,
@@ -1656,6 +1658,78 @@ describe('completion → balance invoice (QF-03)', () => {
     await completeJob(jobId);
     const { rows } = await pool.query(`SELECT 1 FROM invoices WHERE job_id = $1`, [jobId]);
     expect(rows.length).toBe(0);
+  });
+});
+
+describe('public widget quote-request (WI-01)', () => {
+  let prevSlug: string | undefined;
+  beforeAll(() => {
+    prevSlug = process.env['LEAD_INTAKE_BRANCH_SLUG'];
+    process.env['LEAD_INTAKE_BRANCH_SLUG'] = 'qr-branch'; // the seeded test branch
+  });
+  afterAll(() => {
+    if (prevSlug === undefined) delete process.env['LEAD_INTAKE_BRANCH_SLUG'];
+    else process.env['LEAD_INTAKE_BRANCH_SLUG'] = prevSlug;
+  });
+
+  function postWidget(body: unknown) {
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/public/widget/quote-request',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it('400 when contact.name is missing', async () => {
+    if (!reachable) return;
+    const res = await postWidget({ contact: { email: 'x@y.com' }, doorConfig: {} });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('creates a draft lead quote + customer from a configured door', async () => {
+    if (!reachable) return;
+    const email = `lead-${Date.now()}@example.com`;
+    const res = await postWidget({
+      contact: { name: 'Jane Homeowner', email, phone: '555-1212', postalCode: 'T2X1A1' },
+      doorConfig: { family: 'Panorama', size: "16' x 7'", design: 'Flush', color: 'Black', windows: 'Top row' },
+      source: 'website',
+    });
+    expect(res.statusCode).toBe(201);
+    const quoteId = res.json().data.quoteId as string;
+
+    const { rows: qrows } = await pool.query<{ status: string; branch_id: string; notes: string }>(
+      `SELECT status, branch_id, notes FROM quotes WHERE id = $1`,
+      [quoteId],
+    );
+    expect(qrows[0]!.status).toBe('draft');
+    expect(qrows[0]!.branch_id).toBe(BRANCH_ID);
+    expect(qrows[0]!.notes).toContain('Door designer lead');
+    expect(qrows[0]!.notes).toContain('Panorama');
+
+    const { rows: crows } = await pool.query(
+      `SELECT id FROM customers WHERE email = $1 AND branch_id = $2`,
+      [email, BRANCH_ID],
+    );
+    expect(crows.length).toBe(1);
+  });
+
+  it('reuses an existing customer by email (find-or-create)', async () => {
+    if (!reachable) return;
+    const email = `repeat-${Date.now()}@example.com`;
+    const body = {
+      contact: { name: 'Repeat Lead', email },
+      doorConfig: { family: 'AL976', size: "10' x 8'" },
+    };
+    const first = await postWidget(body);
+    const second = await postWidget(body);
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+    const { rows } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM customers WHERE email = $1 AND branch_id = $2`,
+      [email, BRANCH_ID],
+    );
+    expect(Number(rows[0]!.n)).toBe(1); // one customer, two lead quotes
   });
 });
 
