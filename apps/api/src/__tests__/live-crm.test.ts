@@ -276,6 +276,103 @@ describe('CRM-02 / customer notes', () => {
     }
   });
 
+  it('metrics: zeros for a customer with no activity', async () => {
+    const custId = await createCustomer(cookies.denverManager, { name: 'Quiet Customer' });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/customers/${custId}/metrics`,
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(res.statusCode).toBe(200);
+    const d = res.json().data;
+    expect(d.lifetimeRevenueCents).toBe(0);
+    expect(d.outstandingCents).toBe(0);
+    expect(d.totalJobs).toBe(0);
+    expect(d.totalQuotes).toBe(0);
+    expect(d.conversionRatePct).toBe(0);
+    expect(d.lastContactAt).toBeNull();
+  });
+
+  it('metrics: aggregates revenue, jobs, quotes, and recency', async () => {
+    const { rows: br } = await pool.query<{ id: string }>(
+      `SELECT id FROM branches WHERE slug = 'denver'`,
+    );
+    const branchId = br[0]!.id;
+    const custId = await createCustomer(cookies.denverManager, { name: 'Active Customer' });
+
+    const { rows: sup } = await pool.query<{ id: string }>(
+      `INSERT INTO suppliers (name, provider_kind, endpoint_url, api_key_secret_ref, supplier_account_code)
+       VALUES ('Metrics Supplier', 'bc_ai_agent', 'http://x', 'ref', 'ACME') RETURNING id`,
+    );
+    const supplierId = sup[0]!.id;
+
+    const { rows: j1 } = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, status, title) VALUES ($1,$2,'completed','Install') RETURNING id`,
+      [branchId, custId],
+    );
+    await pool.query(
+      `INSERT INTO jobs (branch_id, customer_id, status, title) VALUES ($1,$2,'scheduled','Service')`,
+      [branchId, custId],
+    );
+    const completedJobId = j1[0]!.id;
+
+    await pool.query(
+      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total) VALUES ($1,$2,$3,'paid','4200.00')`,
+      [branchId, completedJobId, custId],
+    );
+    await pool.query(
+      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total) VALUES ($1,$2,$3,'sent','1000.00')`,
+      [branchId, completedJobId, custId],
+    );
+
+    await pool.query(
+      `INSERT INTO quotes (branch_id, customer_id, supplier_id, status, total_cents) VALUES ($1,$2,$3,'accepted',500000)`,
+      [branchId, custId, supplierId],
+    );
+    await pool.query(
+      `INSERT INTO quotes (branch_id, customer_id, supplier_id, status, total_cents) VALUES ($1,$2,$3,'void',0)`,
+      [branchId, custId, supplierId],
+    );
+
+    await pool.query(
+      `INSERT INTO customer_notes (branch_id, customer_id, note_type, body, source) VALUES ($1,$2,'call','hi','manual')`,
+      [branchId, custId],
+    );
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/customers/${custId}/metrics`,
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(res.statusCode).toBe(200);
+    const d = res.json().data;
+    expect(d.lifetimeRevenueCents).toBe(420000);
+    expect(d.paidInvoices).toBe(1);
+    expect(d.avgOrderValueCents).toBe(420000);
+    expect(d.outstandingCents).toBe(100000);
+    expect(d.outstandingInvoices).toBe(1);
+    expect(d.totalJobs).toBe(2);
+    expect(d.openJobs).toBe(1);
+    expect(d.jobsByStatus.completed).toBe(1);
+    expect(d.jobsByStatus.scheduled).toBe(1);
+    expect(d.totalQuotes).toBe(2);
+    expect(d.quotesByStatus.accepted).toBe(1);
+    expect(d.quotesByStatus.void).toBe(1);
+    expect(d.conversionRatePct).toBe(100);
+    expect(d.openQuotes).toBe(0);
+    expect(d.lastContactAt).not.toBeNull();
+  });
+
+  it('metrics: cross-tenant 404', async () => {
+    const custId = await createCustomer(cookies.denverManager, { name: 'Metrics Private' });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/customers/${custId}/metrics`,
+      headers: { cookie: cookies.austinManager },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('triage: corporate links an unmatched note to a customer', async () => {
     const note = await ingest({
       email: `triage-${Date.now()}@nowhere.test`,

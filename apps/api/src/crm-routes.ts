@@ -25,6 +25,9 @@ import {
   branches,
   customerNotes,
   customers,
+  invoices,
+  jobs,
+  quotes,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
@@ -73,7 +76,131 @@ const INGEST_CORP_SCOPE: RequestScope = {
   role: 'corporate_admin',
 };
 
+function dollarsToCents(numericStr: string | null): number {
+  return Math.round(Number(numericStr ?? '0') * 100);
+}
+
 export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
+  // ---------------------------------------------------------------------------
+  // GET /api/v1/customers/:id/metrics — Customer 360 headline KPIs
+  //
+  // One fixed set of aggregate queries (no per-row N+1): invoices, jobs,
+  // quotes, and the notes recency are each a single grouped/aggregate pass.
+  // ---------------------------------------------------------------------------
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/customers/:id/metrics',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({
+          ok: false,
+          error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' },
+        });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' },
+        });
+      }
+      const scope = req.scope;
+      const id = req.params.id;
+
+      const data = await withScope(db, scope, async (tx) => {
+        const custRows = await tx
+          .select({ id: customers.id, branchId: customers.branchId })
+          .from(customers)
+          .where(and(eq(customers.id, id), isNull(customers.deletedAt)));
+        const cust = custRows[0];
+        if (!cust) return null;
+        const scopeBranch = branchIdFromScope(scope);
+        if (scopeBranch && cust.branchId !== scopeBranch) return null;
+
+        const invAgg = await tx
+          .select({
+            paidTotal: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} = 'paid' THEN ${invoices.total} ELSE 0 END), 0)`,
+            paidCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} = 'paid')::int`,
+            outstanding: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} IN ('finalized', 'sent') THEN ${invoices.total} ELSE 0 END), 0)`,
+            outstandingCount: sql<number>`COUNT(*) FILTER (WHERE ${invoices.status} IN ('finalized', 'sent'))::int`,
+          })
+          .from(invoices)
+          .where(and(eq(invoices.customerId, id), isNull(invoices.deletedAt)));
+
+        const jobRows = await tx
+          .select({ status: jobs.status, c: sql<number>`count(*)::int` })
+          .from(jobs)
+          .where(and(eq(jobs.customerId, id), isNull(jobs.deletedAt)))
+          .groupBy(jobs.status);
+
+        const jobBounds = await tx
+          .select({
+            first: sql<string | null>`min(${jobs.createdAt})`,
+            last: sql<string | null>`max(${jobs.createdAt})`,
+            open: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} NOT IN ('completed', 'canceled'))::int`,
+          })
+          .from(jobs)
+          .where(and(eq(jobs.customerId, id), isNull(jobs.deletedAt)));
+
+        const quoteRows = await tx
+          .select({ status: quotes.status, c: sql<number>`count(*)::int` })
+          .from(quotes)
+          .where(eq(quotes.customerId, id))
+          .groupBy(quotes.status);
+
+        const noteAgg = await tx
+          .select({ last: sql<string | null>`max(${customerNotes.occurredAt})` })
+          .from(customerNotes)
+          .where(eq(customerNotes.customerId, id));
+
+        const lifetimeRevenueCents = dollarsToCents(invAgg[0]?.paidTotal ?? '0');
+        const paidCount = invAgg[0]?.paidCount ?? 0;
+        const outstandingCents = dollarsToCents(invAgg[0]?.outstanding ?? '0');
+
+        const jobsByStatus: Record<string, number> = {};
+        for (const r of jobRows) jobsByStatus[r.status] = r.c;
+        const quotesByStatus: Record<string, number> = {};
+        for (const r of quoteRows) quotesByStatus[r.status] = r.c;
+
+        const totalQuotes = quoteRows.reduce((s, r) => s + r.c, 0);
+        const acceptedQuotes = quotesByStatus['accepted'] ?? 0;
+        const nonVoidQuotes = totalQuotes - (quotesByStatus['void'] ?? 0);
+        const conversionRatePct =
+          nonVoidQuotes > 0
+            ? Math.round((acceptedQuotes / nonVoidQuotes) * 1000) / 10
+            : 0;
+        const openQuotes =
+          (quotesByStatus['draft'] ?? 0) +
+          (quotesByStatus['priced'] ?? 0) +
+          (quotesByStatus['committed'] ?? 0);
+
+        return {
+          lifetimeRevenueCents,
+          outstandingCents,
+          outstandingInvoices: invAgg[0]?.outstandingCount ?? 0,
+          avgOrderValueCents: paidCount > 0 ? Math.round(lifetimeRevenueCents / paidCount) : 0,
+          paidInvoices: paidCount,
+          jobsByStatus,
+          totalJobs: jobRows.reduce((s, r) => s + r.c, 0),
+          openJobs: jobBounds[0]?.open ?? 0,
+          firstJobAt: jobBounds[0]?.first ?? null,
+          lastJobAt: jobBounds[0]?.last ?? null,
+          quotesByStatus,
+          totalQuotes,
+          openQuotes,
+          conversionRatePct,
+          lastContactAt: noteAgg[0]?.last ?? null,
+        };
+      });
+
+      if (!data) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Customer not found' },
+        });
+      }
+      return reply.code(200).send({ ok: true, data });
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // GET /api/v1/customers/:id/notes — per-customer timeline
   // ---------------------------------------------------------------------------
