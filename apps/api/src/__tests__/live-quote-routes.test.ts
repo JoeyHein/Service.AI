@@ -107,6 +107,16 @@ async function clean(): Promise<void> {
     BRANCH_ID,
     OTHER_BRANCH_ID,
   ]);
+  // QF: invoices reference jobs (RESTRICT) and jobs reference customers
+  // (RESTRICT), so tear them down before quotes/customers.
+  await pool.query(`DELETE FROM invoices WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM jobs WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
   await pool.query(`DELETE FROM quotes WHERE branch_id IN ($1, $2)`, [
     BRANCH_ID,
     OTHER_BRANCH_ID,
@@ -351,6 +361,17 @@ beforeEach(async () => {
     OTHER_BRANCH_ID,
   ]);
   await pool.query(`DELETE FROM quote_line_items WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  // invoices reference jobs (RESTRICT) so delete them first; both link to
+  // quotes via SET NULL. Keeps QF job/invoice assertions isolated — without
+  // this, auto-created jobs accumulate across tests.
+  await pool.query(`DELETE FROM invoices WHERE branch_id IN ($1, $2)`, [
+    BRANCH_ID,
+    OTHER_BRANCH_ID,
+  ]);
+  await pool.query(`DELETE FROM jobs WHERE branch_id IN ($1, $2)`, [
     BRANCH_ID,
     OTHER_BRANCH_ID,
   ]);
@@ -1393,6 +1414,194 @@ describe('quote deposit — Stripe intent + webhook (CQA-05)', () => {
       }),
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('accept → job fulfillment link (QF-02)', () => {
+  async function committedShared(): Promise<{ id: string; token: string }> {
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const share = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    return { id, token: share.json().data.token as string };
+  }
+
+  it('operator accept with no job creates one unassigned job linked to the quote', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { acknowledgmentChannel: 'verbal_phone' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const { rows } = await pool.query<{ id: string; status: string; quote_id: string }>(
+      `SELECT id, status, quote_id FROM jobs WHERE quote_id = $1`,
+      [id],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.status).toBe('unassigned');
+
+    const { rows: qrows } = await pool.query<{ job_id: string }>(
+      `SELECT job_id FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(qrows[0]!.job_id).toBe(rows[0]!.id);
+  });
+
+  it('public accept with no job creates one unassigned job linked to the quote', async () => {
+    if (!reachable) return;
+    const { id, token } = await committedShared();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/public/quotes/${token}/accept`,
+      headers: { 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+    const { rows } = await pool.query(`SELECT id FROM jobs WHERE quote_id = $1`, [id]);
+    expect(rows.length).toBe(1);
+  });
+
+  it('accept links an existing job instead of creating a second one', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    // Pre-create a job and link the quote to it.
+    const jobIns = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
+       VALUES ($1, $2, 'Pre-existing job', 'unassigned') RETURNING id`,
+      [BRANCH_ID, CUSTOMER_ID],
+    );
+    const existingJobId = jobIns.rows[0]!.id;
+    await pool.query(`UPDATE quotes SET job_id = $1 WHERE id = $2`, [existingJobId, id]);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(200);
+
+    // No second job; the existing one is now linked back to the quote.
+    const { rows } = await pool.query<{ id: string; quote_id: string }>(
+      `SELECT id, quote_id FROM jobs WHERE customer_id = $1`,
+      [CUSTOMER_ID],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.id).toBe(existingJobId);
+    expect(rows[0]!.quote_id).toBe(id);
+  });
+});
+
+describe('completion → balance invoice (QF-03)', () => {
+  async function shareCommitted(id: string): Promise<void> {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    if (res.statusCode !== 200) throw new Error(`share failed: ${res.statusCode}`);
+  }
+  async function acceptOperator(id: string): Promise<void> {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { acknowledgmentChannel: 'verbal_phone' },
+    });
+    if (res.statusCode !== 200) throw new Error(`accept failed: ${res.statusCode} ${res.body}`);
+  }
+  async function completeJob(jobId: string): Promise<void> {
+    for (const to of ['scheduled', 'en_route', 'arrived', 'in_progress', 'completed']) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/v1/jobs/${jobId}/transition`,
+        headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+        payload: JSON.stringify({ toStatus: to }),
+      });
+      if (res.statusCode !== 200) throw new Error(`transition ${to} failed: ${res.statusCode} ${res.body}`);
+    }
+  }
+  async function jobIdForQuote(quoteId: string): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM jobs WHERE quote_id = $1`,
+      [quoteId],
+    );
+    return rows[0]!.id;
+  }
+
+  it('completing a quote-linked job drafts a balance invoice crediting the paid deposit', async () => {
+    if (!reachable) return;
+    await pool.query(`UPDATE corporate SET deposit_pct = '25.00', deposit_min_cents = 0, deposit_max_cents = NULL`);
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id); // total 15_000 cents = $150
+    await shareCommitted(id); // freezes deposit 3_750
+    await acceptOperator(id); // creates the job
+    await pool.query(`UPDATE quotes SET deposit_paid_at = now() WHERE id = $1`, [id]);
+
+    const jobId = await jobIdForQuote(id);
+    await completeJob(jobId);
+
+    const { rows: inv } = await pool.query<{ id: string; status: string; total: string }>(
+      `SELECT id, status, total FROM invoices WHERE quote_id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+    expect(inv.length).toBe(1);
+    expect(inv[0]!.status).toBe('draft');
+    // balance = $150.00 − $37.50 deposit = $112.50
+    expect(Number(inv[0]!.total)).toBe(112.5);
+
+    const { rows: credit } = await pool.query<{ line_total: string }>(
+      `SELECT line_total FROM invoice_line_items WHERE invoice_id = $1 AND sku = 'DEPOSIT'`,
+      [inv[0]!.id],
+    );
+    expect(credit.length).toBe(1);
+    expect(Number(credit[0]!.line_total)).toBe(-37.5);
+  });
+
+  it('no deposit → balance invoice total is the full quote total, no credit line', async () => {
+    if (!reachable) return;
+    // deposit_pct 0 (beforeEach default) → no deposit frozen.
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    await acceptOperator(id);
+    const jobId = await jobIdForQuote(id);
+    await completeJob(jobId);
+
+    const { rows: inv } = await pool.query<{ id: string; total: string }>(
+      `SELECT id, total FROM invoices WHERE quote_id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+    expect(inv.length).toBe(1);
+    expect(Number(inv[0]!.total)).toBe(150.0);
+    const { rows: credit } = await pool.query(
+      `SELECT 1 FROM invoice_line_items WHERE invoice_id = $1 AND sku = 'DEPOSIT'`,
+      [inv[0]!.id],
+    );
+    expect(credit.length).toBe(0);
+  });
+
+  it('completing a plain (no-quote) job does NOT auto-generate an invoice', async () => {
+    if (!reachable) return;
+    const jobIns = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
+       VALUES ($1, $2, 'Plain service call', 'unassigned') RETURNING id`,
+      [BRANCH_ID, CUSTOMER_ID],
+    );
+    const jobId = jobIns.rows[0]!.id;
+    await completeJob(jobId);
+    const { rows } = await pool.query(`SELECT 1 FROM invoices WHERE job_id = $1`, [jobId]);
+    expect(rows.length).toBe(0);
   });
 });
 

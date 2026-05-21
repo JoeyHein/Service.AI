@@ -593,6 +593,58 @@ export async function runOrderConversion(
   return finalDetail;
 }
 
+/**
+ * Ensure an accepted quote has a job to be scheduled against (QF-02). Shared
+ * by the operator `/accept` and the public customer-link accept so they can't
+ * drift. Runs inside the caller's accept transaction.
+ *
+ * - If the quote already links a job, point that job's `quote_id` back at the
+ *   quote (idempotent — a re-link is a no-op write).
+ * - Otherwise create an `unassigned` job from the quote (branch, customer,
+ *   title) and link `quotes.job_id` to it so a replay/re-accept can't spawn a
+ *   second job.
+ *
+ * `actorUserId` is null for customer-link acceptance (no Service.AI user).
+ * Returns the job id.
+ */
+export async function ensureJobForAcceptedQuote(
+  tx: ScopedTx,
+  args: {
+    quoteId: string;
+    jobId: string | null;
+    branchId: string;
+    customerId: string;
+    supplierQuoteRef: string | null;
+    actorUserId: string | null;
+  },
+): Promise<string> {
+  if (args.jobId) {
+    await tx
+      .update(schema.jobs)
+      .set({ quoteId: args.quoteId, updatedAt: new Date() })
+      .where(eq(schema.jobs.id, args.jobId));
+    return args.jobId;
+  }
+  const title = `Install — ${args.supplierQuoteRef ?? args.quoteId.slice(0, 8)}`;
+  const inserted = await tx
+    .insert(schema.jobs)
+    .values({
+      branchId: args.branchId,
+      customerId: args.customerId,
+      quoteId: args.quoteId,
+      status: 'unassigned',
+      title,
+      createdByUserId: args.actorUserId,
+    })
+    .returning({ id: schema.jobs.id });
+  const newJobId = inserted[0]!.id;
+  await tx
+    .update(quotes)
+    .set({ jobId: newJobId, updatedAt: new Date() })
+    .where(eq(quotes.id, args.quoteId));
+  return newJobId;
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -1130,6 +1182,17 @@ export function registerQuoteRoutes(
             acknowledgmentChannel: channel,
             supplierQuoteRef: q.supplierQuoteRef,
           } as Record<string, unknown>,
+        });
+
+        // QF-02: ensure a job exists for the accepted quote so it lands on
+        // the dispatch board.
+        await ensureJobForAcceptedQuote(tx, {
+          quoteId: q.id,
+          jobId: q.jobId,
+          branchId: q.branchId,
+          customerId: q.customerId,
+          supplierQuoteRef: q.supplierQuoteRef,
+          actorUserId: scope.userId,
         });
 
         const detail = await loadQuoteDetail(tx, q.id, scope);

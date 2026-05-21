@@ -159,7 +159,14 @@ async function handlePaymentIntentSucceeded(
     }
     // CHR-08: the commission ledger replaces royalty accounting. Credit the
     // branch manager's active comp plan for this invoice in the same tx.
-    await onInvoicePaid(tx, invoice.id);
+    //
+    // QF-04: but NOT for a quote-linked balance invoice — commission was
+    // already credited to the closer at quote commit (onQuoteCommitted).
+    // Crediting again here would double-pay the same sale. Plain service
+    // invoices (quote_id null) still credit as before.
+    if (!invoice.quoteId) {
+      await onInvoicePaid(tx, invoice.id);
+    }
   });
 }
 

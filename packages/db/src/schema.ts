@@ -25,6 +25,7 @@ import {
   numeric,
   uniqueIndex,
   index,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -422,6 +423,9 @@ export const jobs = pgTable(
     customerId: uuid('customer_id')
       .notNull()
       .references(() => customers.id, { onDelete: 'restrict' }),
+    /** The quote this job was spawned from on accept (QF). NULL for plain service jobs. */
+    // AnyPgColumn annotation breaks the jobs↔quotes circular type inference.
+    quoteId: uuid('quote_id').references((): AnyPgColumn => quotes.id, { onDelete: 'set null' }),
     status: jobStatus('status').notNull().default('unassigned'),
     title: text('title').notNull(),
     description: text('description'),
@@ -446,6 +450,7 @@ export const jobs = pgTable(
     statusIdx: index('jobs_status_idx').on(t.status),
     scheduledStartIdx: index('jobs_scheduled_start_idx').on(t.scheduledStart),
     assignedTechIdx: index('jobs_assigned_tech_idx').on(t.assignedTechUserId),
+    quoteIdx: index('jobs_quote_idx').on(t.quoteId).where(sql`${t.quoteId} IS NOT NULL`),
   }),
 );
 
@@ -607,6 +612,8 @@ export const invoices = pgTable(
     customerId: uuid('customer_id')
       .notNull()
       .references(() => customers.id, { onDelete: 'restrict' }),
+    /** Set when this is the balance invoice for an accepted quote (QF). Credits the deposit; one live invoice per quote. */
+    quoteId: uuid('quote_id').references(() => quotes.id, { onDelete: 'set null' }),
     status: invoiceStatus('status').notNull().default('draft'),
     subtotal: numeric('subtotal', { precision: 12, scale: 2 }).notNull().default('0'),
     taxRate: numeric('tax_rate', { precision: 6, scale: 4 }).notNull().default('0'),
@@ -650,6 +657,9 @@ export const invoices = pgTable(
     paymentLinkTokenUnique: uniqueIndex('invoices_payment_link_token_unique')
       .on(t.paymentLinkToken)
       .where(sql`${t.paymentLinkToken} IS NOT NULL`),
+    quoteIdUnique: uniqueIndex('invoices_quote_id_unique')
+      .on(t.quoteId)
+      .where(sql`${t.quoteId} IS NOT NULL AND ${t.deletedAt} IS NULL`),
   }),
 );
 

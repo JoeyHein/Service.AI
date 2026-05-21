@@ -129,11 +129,12 @@ function buildDbStub(opts: {
   return dbStub as unknown as NodePgDatabase<typeof dbSchema>;
 }
 
-async function buildHarness() {
+async function buildHarness(opts: { quoteId?: string | null } = {}) {
   const fakeInvoice = {
     id: '11111111-1111-1111-1111-111111111111',
     branchId: '22222222-2222-2222-2222-222222222222',
     status: 'finalized',
+    quoteId: opts.quoteId ?? null,
   };
   const calls: Calls = {
     insertedEvents: new Set(),
@@ -186,6 +187,28 @@ describe('CHR-08 / Stripe webhook', () => {
     // status flipped to paid on the invoice row.
     const invUpdates = (calls.updatesByTable['invoices'] ?? []) as Array<{ status?: string }>;
     expect(invUpdates.some((u) => u.status === 'paid')).toBe(true);
+    await app.close();
+  });
+
+  it('QF-04: a quote-linked balance invoice does NOT re-credit commission', async () => {
+    const { app } = await buildHarness({ quoteId: '33333333-3333-3333-3333-333333333333' });
+    const res = await post(app, {
+      id: 'evt_pi_balance_1',
+      type: 'payment_intent.succeeded',
+      data: {
+        object: {
+          id: 'pi_balance_1',
+          amount: 112_50,
+          currency: 'cad',
+          status: 'succeeded',
+          latest_charge: 'ch_balance_1',
+        },
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    // Commission was already credited at quote commit; the balance payment
+    // must not credit again.
+    expect(onInvoicePaid).not.toHaveBeenCalled();
     await app.close();
   });
 

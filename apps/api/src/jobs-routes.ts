@@ -24,6 +24,7 @@ import {
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 import { canTransition, type JobStatus } from './job-status-machine.js';
+import { generateBalanceInvoiceOnCompletion } from './balance-invoice.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -354,7 +355,22 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
           actorUserId: req.userId,
           reason: parsed.data.reason ?? null,
         });
-        return { kind: 'ok' as const, row: updated[0]! };
+        // QF-03: a job spawned from an accepted quote drafts its balance
+        // invoice on completion (deposit credited). No-op for plain jobs or
+        // if a balance invoice already exists.
+        let balanceInvoiceId: string | null = null;
+        if (to === 'completed') {
+          balanceInvoiceId = await generateBalanceInvoiceOnCompletion(tx, {
+            job: {
+              id: row.id,
+              branchId: row.branchId,
+              customerId: row.customerId,
+              quoteId: row.quoteId,
+            },
+            actorUserId: req.userId,
+          });
+        }
+        return { kind: 'ok' as const, row: updated[0]!, balanceInvoiceId };
       });
 
       if (outcome.kind === 'not_found') {
@@ -372,7 +388,10 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
           },
         });
       }
-      return reply.code(200).send({ ok: true, data: outcome.row });
+      return reply.code(200).send({
+        ok: true,
+        data: { ...outcome.row, balanceInvoiceId: outcome.balanceInvoiceId },
+      });
     },
   );
 }

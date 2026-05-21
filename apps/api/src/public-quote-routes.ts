@@ -35,7 +35,7 @@ import {
 import * as schema from '@service-ai/db';
 import type { ProviderRegistry } from '@service-ai/suppliers';
 import { canTransition, type QuoteStatus } from './quote-status-machine.js';
-import { runOrderConversion } from './quote-routes.js';
+import { ensureJobForAcceptedQuote, runOrderConversion } from './quote-routes.js';
 import { renderQuotePdf } from './quote-pdf.js';
 import type { StripeClient } from './stripe.js';
 
@@ -313,6 +313,16 @@ export function registerPublicQuoteRoutes(
             customerRef,
             supplierQuoteRef: q.supplierQuoteRef,
           } as Record<string, unknown>,
+        });
+        // QF-02: ensure a job exists for the accepted quote. actorUserId null
+        // — the customer is not a Service.AI user.
+        await ensureJobForAcceptedQuote(tx, {
+          quoteId: q.id,
+          jobId: q.jobId,
+          branchId: q.branchId,
+          customerId: q.customerId,
+          supplierQuoteRef: q.supplierQuoteRef,
+          actorUserId: null,
         });
       });
 
