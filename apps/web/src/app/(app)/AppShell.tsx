@@ -76,6 +76,13 @@ export function AppShell({
             >
               Invoices
             </Link>
+            <Link
+              href="/crm/notes"
+              className="text-sm text-blue-700 hover:underline"
+              data-testid="nav-crm"
+            >
+              CRM Inbox
+            </Link>
             {isManager && (
               <Link
                 href="/branch"
