@@ -17,6 +17,7 @@ import { registerMarginRoutes } from './margin-routes.js';
 import { registerBranchRoutes } from './branch-routes.js';
 import { registerAuditLogRoutes } from './audit-log-routes.js';
 import { registerCustomerRoutes } from './customers-routes.js';
+import { registerCrmRoutes } from './crm-routes.js';
 import { registerJobRoutes } from './jobs-routes.js';
 import { registerPlacesRoutes, stubPlacesClient, type PlacesClient } from './places.js';
 import { registerJobPhotoRoutes } from './job-photos-routes.js';
@@ -338,6 +339,7 @@ export function buildApp(opts: AppOptions = {}) {
     registerBranchRoutes(app, { drizzle: opts.drizzle });
     registerAuditLogRoutes(app, opts.drizzle);
     registerCustomerRoutes(app, opts.drizzle);
+    registerCrmRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
     const objectStore = opts.objectStore ?? stubObjectStore();
     registerJobPhotoRoutes(app, opts.drizzle, objectStore);
