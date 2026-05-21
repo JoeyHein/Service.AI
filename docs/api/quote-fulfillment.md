@@ -65,6 +65,23 @@ before this phase.
 (`jobs ↔ quotes` is now a nullable FK cycle; the Drizzle schema uses an
 `AnyPgColumn` annotation on `jobs.quoteId` to break the type-inference loop.)
 
+## Void unwind (phase_void_unwind, VU)
+
+`POST /api/v1/quotes/:id/void` on an accepted/paid quote now unwinds the
+fulfillment artifacts:
+- **Commission** reversed (SQB) — balancing −cents ledger row.
+- **BC sales quote** voided via `provider.voidQuote` (best-effort).
+- **Balance invoice** (unpaid) set to `void` inside the void transaction. A
+  paid balance invoice is left alone (refunding a collected balance is a
+  separate flow).
+- **Deposit** refunded best-effort via Stripe `createRefund`, idempotent via
+  `quotes.deposit_refunded_at` (migration 0021) — only when a deposit was
+  paid and not already refunded.
+
+Remaining gap (TD-QF-01): if the quote was already converted to a BC sales
+**order**, the order stays alive — `provider.voidQuote` rejects a converted
+quote and there is no order-cancel op yet.
+
 ## Performance
 
 Balance-invoice generation is a handful of inserts inside the existing job

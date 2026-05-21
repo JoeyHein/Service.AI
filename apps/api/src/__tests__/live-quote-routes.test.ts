@@ -1659,6 +1659,105 @@ describe('completion → balance invoice (QF-03)', () => {
   });
 });
 
+describe('void unwind — refund deposit + void balance invoice (VU)', () => {
+  async function acceptedWithPaidDeposit(): Promise<string> {
+    await pool.query(`UPDATE corporate SET deposit_pct = '25.00', deposit_min_cents = 0, deposit_max_cents = NULL`);
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/share`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { acknowledgmentChannel: 'verbal_phone' },
+    });
+    // Simulate a paid deposit (the webhook would normally stamp these).
+    await pool.query(
+      `UPDATE quotes SET deposit_paid_at = now(), deposit_payment_intent_id = 'pi_vu_dep' WHERE id = $1`,
+      [id],
+    );
+    return id;
+  }
+  function voidQuote(id: string) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/void`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { reason: 'customer canceled' },
+    });
+  }
+
+  it('voiding refunds a paid deposit (stamps deposit_refunded_at)', async () => {
+    if (!reachable) return;
+    const id = await acceptedWithPaidDeposit();
+    const res = await voidQuote(id);
+    expect(res.statusCode).toBe(200);
+    const { rows } = await pool.query<{ status: string; deposit_refunded_at: string | null }>(
+      `SELECT status, deposit_refunded_at FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.status).toBe('void');
+    expect(rows[0]!.deposit_refunded_at).not.toBeNull();
+  });
+
+  it('voiding does NOT refund when no deposit was paid', async () => {
+    if (!reachable) return;
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id);
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: {},
+    });
+    const res = await voidQuote(id);
+    expect(res.statusCode).toBe(200);
+    const { rows } = await pool.query<{ deposit_refunded_at: string | null }>(
+      `SELECT deposit_refunded_at FROM quotes WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.deposit_refunded_at).toBeNull();
+  });
+
+  it('voiding voids the unpaid balance invoice', async () => {
+    if (!reachable) return;
+    const id = await acceptedWithPaidDeposit();
+    // Complete the job → drafts the balance invoice.
+    const { rows: jrows } = await pool.query<{ id: string }>(
+      `SELECT id FROM jobs WHERE quote_id = $1`,
+      [id],
+    );
+    const jobId = jrows[0]!.id;
+    for (const to of ['scheduled', 'en_route', 'arrived', 'in_progress', 'completed']) {
+      await app.inject({
+        method: 'POST',
+        url: `/api/v1/jobs/${jobId}/transition`,
+        headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+        payload: JSON.stringify({ toStatus: to }),
+      });
+    }
+    // Sanity: a draft balance invoice exists.
+    const { rows: before } = await pool.query<{ status: string }>(
+      `SELECT status FROM invoices WHERE quote_id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+    expect(before[0]!.status).toBe('draft');
+
+    await voidQuote(id);
+
+    const { rows: after } = await pool.query<{ status: string }>(
+      `SELECT status FROM invoices WHERE quote_id = $1 AND deleted_at IS NULL`,
+      [id],
+    );
+    expect(after[0]!.status).toBe('void');
+  });
+});
+
 describe('quote routes — accept + quote-to-order conversion (QOC)', () => {
   it('happy path: accept stamps SO-XXXXXX on the quote row via mock provider', async () => {
     if (!reachable) return;

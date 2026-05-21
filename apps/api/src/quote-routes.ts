@@ -23,7 +23,7 @@
  * per the project's defence-in-depth rule.
  */
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
@@ -64,6 +64,7 @@ import {
   reverseQuoteCommitted,
 } from './commission-engine.js';
 import { renderQuotePdf } from './quote-pdf.js';
+import type { StripeClient } from './stripe.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -652,6 +653,8 @@ export async function ensureJobForAcceptedQuote(
 export interface QuoteRoutesDeps {
   drizzle: Drizzle;
   providerRegistry: ProviderRegistry;
+  /** Used by /void to refund a paid deposit (VU). */
+  stripe: StripeClient;
 }
 
 /**
@@ -669,7 +672,7 @@ export function registerQuoteRoutes(
   app: FastifyInstance,
   deps: QuoteRoutesDeps,
 ): void {
-  const { drizzle: db, providerRegistry: registry } = deps;
+  const { drizzle: db, providerRegistry: registry, stripe } = deps;
 
   // -------------------------------------------------------------------------
   // POST /api/v1/quotes — create draft
@@ -1496,6 +1499,20 @@ export function registerQuoteRoutes(
           await reverseQuoteCommitted(tx, q.id, reason ?? 'quote_voided');
         }
 
+        // VU: void any unpaid balance invoice for this quote (a paid one is
+        // left alone — refunding a collected balance is a separate flow).
+        // Transactional with the quote void so they can't drift.
+        await tx
+          .update(schema.invoices)
+          .set({ status: 'void', voidedAt, updatedAt: voidedAt })
+          .where(
+            and(
+              eq(schema.invoices.quoteId, q.id),
+              ne(schema.invoices.status, 'paid'),
+              isNull(schema.invoices.deletedAt),
+            ),
+          );
+
         const supplierRef = q.supplierQuoteRef;
         const supplierId = q.supplierId;
         const detail = await loadQuoteDetail(tx, q.id, scope);
@@ -1504,6 +1521,9 @@ export function registerQuoteRoutes(
           detail,
           supplierRef,
           supplierId,
+          // VU: deposit refund is best-effort, after the tx.
+          depositPaymentIntentId:
+            q.depositPaidAt && !q.depositRefundedAt ? q.depositPaymentIntentId : null,
         };
       });
 
@@ -1557,6 +1577,30 @@ export function registerQuoteRoutes(
           }
         } catch (err) {
           app.log.warn({ err }, 'supplier voidQuote threw; continuing');
+        }
+      }
+
+      // VU: best-effort deposit refund. Outside the tx (Stripe is external).
+      // Idempotent: only when a deposit was paid and not already refunded;
+      // stamps deposit_refunded_at on success so a retry won't double-refund.
+      if (outcome.depositPaymentIntentId) {
+        try {
+          await stripe.createRefund({
+            paymentIntentId: outcome.depositPaymentIntentId,
+            reason: 'requested_by_customer',
+            metadata: { quoteId: req.params.id, kind: 'quote_deposit_refund' },
+          });
+          await withScope(db, scope, async (tx) => {
+            await tx
+              .update(quotes)
+              .set({ depositRefundedAt: new Date(), updatedAt: new Date() })
+              .where(eq(quotes.id, req.params.id));
+          });
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'deposit refund failed on void; quote is voided, refund needs a manual retry',
+          );
         }
       }
 

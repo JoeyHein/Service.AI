@@ -390,6 +390,7 @@ export function buildApp(opts: AppOptions = {}) {
     registerQuoteRoutes(app, {
       drizzle: opts.drizzle,
       providerRegistry,
+      stripe,
     });
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER

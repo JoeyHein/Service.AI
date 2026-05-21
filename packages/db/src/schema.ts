@@ -1472,6 +1472,8 @@ export const quotes = pgTable(
     depositAmountCents: integer('deposit_amount_cents'),
     depositPaymentIntentId: text('deposit_payment_intent_id'),
     depositPaidAt: timestamp('deposit_paid_at', { withTimezone: true }),
+    /** When the deposit was refunded on void (VU). NULL until refunded. */
+    depositRefundedAt: timestamp('deposit_refunded_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

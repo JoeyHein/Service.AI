@@ -14,10 +14,10 @@ Format:
 
 ## phase_quote_fulfillment (QF)
 
-- [MED] TD-QF-01 · phase_quote_fulfillment · `accepted → void` doesn't unwind fulfillment
-  - What: Voiding a quote reverses commission (SQB) but, now that QF exists, leaves the downstream artifacts intact: the BC order stays alive (TD-SQB-A8 added the void endpoint but the void route doesn't call it for the order), a paid deposit is neither refunded nor captured-decision'd, and a drafted balance invoice (if the job completed) is not voided. The pilot will hit this the first time a customer cancels after accepting/paying.
-  - Where: `apps/api/src/quote-routes.ts::/void`, `balance-invoice.ts`, the deposit PaymentIntent.
-  - Resolution: On `accepted → void`: call `provider.voidQuote` (cancel/delete the BC order too if converted), refund the deposit PaymentIntent (Stripe refund), and soft-delete/void any draft balance invoice. Sequence + idempotency need a small design pass. Was explicitly out of scope for QF.
+- [LOW] TD-QF-01 · phase_quote_fulfillment · `accepted → void` unwind — mostly done (VU); one remnant
+  - DONE (phase_void_unwind, VU, 2026-05-20): voiding now refunds the paid deposit (Stripe `createRefund`, idempotent via `quotes.deposit_refunded_at`, migration 0021) and voids the unpaid balance invoice (in the void tx). `provider.voidQuote` already voids the BC sales quote.
+  - REMAINING (the one remnant): if the quote was already **converted to a BC sales order**, the order stays alive — `provider.voidQuote` returns 422 for a converted quote (BC AI Agent rejects it), and there is no order-cancel operation. Needs a BC-side `cancel/delete sales order` endpoint + a `provider.cancelOrder` method, then wire it into `/void` for the converted case. Also: voiding does NOT refund an already-PAID balance invoice (only voids unpaid ones) — refunding a collected balance is a separate flow.
+  - Where: bc-ai-agent external order API (new cancel-order op), `packages/suppliers` (`cancelOrder`), `quote-routes.ts::/void`.
 
 - [LOW] TD-QF-02 · phase_quote_fulfillment · Materials reconciliation on the balance invoice
   - What: The balance invoice bills the accepted quote total as-is. If what was installed differs from what was quoted (substitutions, extra parts), there's no reconciliation step — the office would manually edit the draft invoice.
