@@ -11,6 +11,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 export interface ToolSchema {
   name: string;
@@ -241,7 +242,122 @@ function estimateCostUsd(
  * is missing so boot never depends on AI credentials. Tests
  * always construct `stubAIClient({ script })` directly.
  */
+// ---------------------------------------------------------------------------
+// Grok adapter (xAI) — VP-03. xAI is OpenAI-compatible, so we wrap the
+// `openai` SDK pointed at api.x.ai/v1. Same AIClient contract as Anthropic.
+// ---------------------------------------------------------------------------
+
+interface GrokOpts {
+  apiKey: string;
+  defaultModel?: string;
+  baseURL?: string;
+}
+
+export function grokAIClient(opts: GrokOpts): AIClient {
+  const client = new OpenAI({
+    apiKey: opts.apiKey,
+    baseURL: opts.baseURL ?? 'https://api.x.ai/v1',
+  });
+  const model = opts.defaultModel ?? 'grok-2-latest';
+  return {
+    async turn(input) {
+      const messages = toOpenAIMessages(input.systemPrompt, input.history);
+      const resp = await client.chat.completions.create({
+        model: input.model ?? model,
+        max_tokens: 1024,
+        messages,
+        tools: input.tools.map((t) => ({
+          type: 'function' as const,
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema as Record<string, unknown>,
+          },
+        })),
+      });
+      const choice = resp.choices[0];
+      const msg = choice?.message;
+      const toolCall = msg?.tool_calls?.[0];
+      if (toolCall && toolCall.type === 'function') {
+        let toolInput: Record<string, unknown> = {};
+        try {
+          toolInput = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
+        } catch {
+          toolInput = {};
+        }
+        return {
+          role: 'assistant',
+          kind: 'tool_use',
+          toolUseId: toolCall.id,
+          toolName: toolCall.function.name,
+          toolInput,
+          text: msg?.content ?? undefined,
+          confidence: 0.75,
+          // xAI usage pricing differs from Anthropic; left at 0 until a
+          // grok cost table is wired (the loop's budget guard still works
+          // off the per-tool dollar caps, not this field).
+          costUsd: 0,
+          provider: 'xai',
+          model: resp.model,
+        };
+      }
+      return {
+        role: 'assistant',
+        kind: 'text',
+        text: msg?.content ?? '(no response)',
+        confidence: 1,
+        costUsd: 0,
+        provider: 'xai',
+        model: resp.model,
+      };
+    },
+  };
+}
+
+function toOpenAIMessages(
+  systemPrompt: string,
+  history: HistoryMessage[],
+): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+  ];
+  for (const m of history) {
+    if (m.role === 'user') {
+      out.push({ role: 'user', content: m.content });
+    } else if (m.role === 'tool_result') {
+      out.push({
+        role: 'tool',
+        tool_call_id: m.toolUseId,
+        content: typeof m.result === 'string' ? m.result : JSON.stringify(m.result),
+      });
+    } else if (m.kind === 'tool_use') {
+      out.push({
+        role: 'assistant',
+        content: m.text ?? null,
+        tool_calls: [
+          {
+            id: m.toolUseId,
+            type: 'function',
+            function: { name: m.toolName, arguments: JSON.stringify(m.toolInput) },
+          },
+        ],
+      });
+    } else {
+      out.push({ role: 'assistant', content: m.text });
+    }
+  }
+  return out;
+}
+
 export function resolveAIClient(): AIClient {
+  // VP-03: opt into Grok via AI_PROVIDER=grok (default is Claude). Each is
+  // gated on its own key; falls back to the stub when unconfigured (boot-safe).
+  const provider = (process.env['AI_PROVIDER'] ?? 'claude').toLowerCase();
+  if (provider === 'grok' || provider === 'xai') {
+    const xaiKey = process.env['XAI_API_KEY'];
+    if (xaiKey) return grokAIClient({ apiKey: xaiKey });
+    return stubAIClient({ script: [] });
+  }
   const key = process.env['ANTHROPIC_API_KEY'];
   if (!key) return stubAIClient({ script: [] });
   return anthropicAIClient({ apiKey: key });

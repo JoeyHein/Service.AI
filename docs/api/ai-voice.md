@@ -128,3 +128,29 @@ Unknown tenant on `start` → the socket closes immediately; no
 Every newly-inserted `franchisees` row inherits these via the
 schema default, so voice boots safely without requiring an
 explicit admin step post-onboarding.
+
+## Real ASR / TTS / Grok (phase_voice_port, VP — 2026-05-20)
+
+The voice plumbing (Twilio media streams + `CallOrchestrator` + the CSR
+tool-loop) shipped earlier with **stub** ASR/TTS. VP wired the real adapters,
+ported from Donna (`email-ai-tool`):
+
+- **ASR** — `deepgramAsrClient` in `packages/ai/asr.ts` (Deepgram
+  nova-2-phonecall, µ-law 8kHz, interim + speech_final endpointing).
+  `resolveAsrClient()` returns it when `DEEPGRAM_API_KEY` is set, else the stub.
+- **TTS** — `elevenLabsTtsClient` in `packages/ai/tts.ts` (ElevenLabs
+  flash_v2_5, `ulaw_8000`, re-chunked to 160-byte Twilio frames).
+  `resolveTtsClient()` gated on `ELEVENLABS_API_KEY`; `ELEVENLABS_VOICE_ID`
+  overrides the default voice.
+- **Grok** — `grokAIClient` in `packages/ai/client.ts` (xAI OpenAI-compatible
+  API via the `openai` SDK at `api.x.ai/v1`). `resolveAIClient()` selects by
+  `AI_PROVIDER` (`claude` default | `grok`); Grok gated on `XAI_API_KEY`.
+
+All three are boot-safe (fall back to stub when keys are unset). Verified by
+mocked unit tests (Deepgram live-conn mock, ElevenLabs fetch/stream mock, Grok
+completions mock). **Live phone-call quality is not yet validated** — that
+needs a real pilot call with the keys configured (same as the go-live
+one-real-transaction step).
+
+Env (set in DO per the go-live runbook): `DEEPGRAM_API_KEY`,
+`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `XAI_API_KEY`, `AI_PROVIDER`.

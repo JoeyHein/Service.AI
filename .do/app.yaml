@@ -72,10 +72,15 @@ services:
       - key: STRIPE_WEBHOOK_SECRET
         scope: RUN_AND_BUILD_TIME
         value: ${STRIPE_WEBHOOK_SECRET}
-      # --- AI ---
+      # --- AI (provider router: AI_PROVIDER=claude|grok, default claude) ---
       - key: ANTHROPIC_API_KEY
         scope: RUN_AND_BUILD_TIME
         value: ${ANTHROPIC_API_KEY}
+      - key: AI_PROVIDER
+        value: ${AI_PROVIDER}
+      - key: XAI_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${XAI_API_KEY}
       # --- Maps / places ---
       - key: GOOGLE_MAPS_API_KEY
         scope: RUN_AND_BUILD_TIME
@@ -157,6 +162,13 @@ services:
       - key: ELEVENLABS_API_KEY
         scope: RUN_AND_BUILD_TIME
         value: ${ELEVENLABS_API_KEY}
+      - key: ELEVENLABS_VOICE_ID
+        value: ${ELEVENLABS_VOICE_ID}
+      - key: AI_PROVIDER
+        value: ${AI_PROVIDER}
+      - key: XAI_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ${XAI_API_KEY}
       - key: TWILIO_ACCOUNT_SID
         scope: RUN_AND_BUILD_TIME
         value: ${TWILIO_ACCOUNT_SID}

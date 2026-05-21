@@ -19,8 +19,10 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",
+    "@deepgram/sdk": "^3.13.0",
     "@service-ai/db": "workspace:^",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "openai": "^6.38.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
