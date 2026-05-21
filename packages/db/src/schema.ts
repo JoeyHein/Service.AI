@@ -410,6 +410,46 @@ export const customers = pgTable(
   }),
 );
 
+export const customerNotes = pgTable(
+  'customer_notes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    branchId: uuid('branch_id')
+      .notNull()
+      .references(() => branches.id, { onDelete: 'restrict' }),
+    customerId: uuid('customer_id').references(() => customers.id, {
+      onDelete: 'set null',
+    }),
+    noteType: text('note_type').notNull().default('manual'),
+    subject: text('subject'),
+    body: text('body').notNull(),
+    source: text('source').notNull().default('manual'),
+    sourceRef: text('source_ref'),
+    matchKey: text('match_key'),
+    matchKeyType: text('match_key_type'),
+    authorUserId: text('author_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    customerIdx: index('customer_notes_customer_idx').on(t.customerId),
+    branchIdx: index('customer_notes_branch_idx').on(t.branchId),
+    branchOccurredIdx: index('customer_notes_branch_occurred_idx').on(
+      t.branchId,
+      t.occurredAt,
+    ),
+    matchKeyIdx: index('customer_notes_match_key_idx').on(t.matchKey),
+    sourceRefUnique: uniqueIndex('customer_notes_source_ref_unique').on(
+      t.source,
+      t.sourceRef,
+    ),
+  }),
+);
+
 export const jobs = pgTable(
   'jobs',
   {
