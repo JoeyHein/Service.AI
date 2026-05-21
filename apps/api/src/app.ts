@@ -394,7 +394,7 @@ export function buildApp(opts: AppOptions = {}) {
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER
     // the EventBus is resolved.
-    registerPublicInvoiceRoutes(app, opts.drizzle);
+    registerPublicInvoiceRoutes(app, opts.drizzle, stripe);
     registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry, stripe });
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands

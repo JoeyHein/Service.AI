@@ -2,7 +2,9 @@
 
 **Written before build begins. Criteria here cannot be loosened mid-phase.**
 
-**STATUS: APPROVED 2026-05-20 (Joey). Open decisions resolved below; build proceeds per the task order.**
+**STATUS: SHIPPED 2026-05-20. QF-01..07 all landed; api suite 744 + web suite green. Detailed reference: `docs/api/quote-fulfillment.md`.**
+
+**(Original: APPROVED 2026-05-20, Joey. Open decisions resolved below.)**
 
 Phase 18 — closes the back half of the money loop. Today a quote can be
 sold (commit), accepted (operator or customer link), converted to a BC order,

@@ -1502,6 +1502,60 @@ describe('accept → job fulfillment link (QF-02)', () => {
   });
 });
 
+describe('public invoice payment-intent (QF-05)', () => {
+  async function seedFinalizedInvoice(token: string, piId: string): Promise<void> {
+    const job = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, title, status)
+       VALUES ($1, $2, 'Invoice job', 'completed') RETURNING id`,
+      [BRANCH_ID, CUSTOMER_ID],
+    );
+    await pool.query(
+      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total, payment_link_token, stripe_payment_intent_id, finalized_at)
+       VALUES ($1, $2, $3, 'finalized', '100.00', $4, $5, now())`,
+      [BRANCH_ID, job.rows[0]!.id, CUSTOMER_ID, token, piId],
+    );
+  }
+
+  it('returns the clientSecret for a finalized invoice', async () => {
+    if (!reachable) return;
+    const token = `qf5${'x'.repeat(40)}`;
+    await seedFinalizedInvoice(token, 'pi_qf5_balance');
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/invoices/${token}/payment-intent`,
+    });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data as { clientSecret: string; amountCents: number };
+    expect(data.clientSecret).toContain('_secret_stub');
+    expect(data.amountCents).toBe(10_000);
+  });
+
+  it('returns 404 on an unknown token', async () => {
+    if (!reachable) return;
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/invoices/${'z'.repeat(43)}/payment-intent`,
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns 409 ALREADY_PAID when the invoice is paid', async () => {
+    if (!reachable) return;
+    const token = `qf5paid${'x'.repeat(38)}`;
+    await seedFinalizedInvoice(token, 'pi_qf5_paid');
+    await pool.query(
+      `UPDATE invoices SET status = 'paid', paid_at = now() WHERE payment_link_token = $1`,
+      [token],
+    );
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/public/invoices/${token}/payment-intent`,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('ALREADY_PAID');
+  });
+});
+
 describe('completion → balance invoice (QF-03)', () => {
   async function shareCommitted(id: string): Promise<void> {
     const res = await app.inject({

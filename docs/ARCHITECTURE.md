@@ -91,6 +91,14 @@ CQA (migration 0019) adds customer-acceptance + deposit columns to `quotes`
 deposit policy to `corporate` (`deposit_pct`, `deposit_min_cents`,
 `deposit_max_cents`). See `docs/api/customer-acceptance.md`.
 
+QF (migration 0020) links fulfillment: `jobs.quote_id` (the quote a job was
+spawned from on accept) and `invoices.quote_id` (the balance invoice for a
+quote — one live invoice per quote via a partial-unique index). On job
+completion the balance invoice is drafted crediting the deposit; commission
+is credited once at quote commit, never again at balance payment. This makes
+`jobs ↔ quotes` a nullable FK cycle (Drizzle `AnyPgColumn` annotation breaks
+the type-inference loop). See `docs/api/quote-fulfillment.md`.
+
 ## 2b. Local vs. DO environment parity
 
 | Concern | Local (Docker Compose) | DO App Platform |

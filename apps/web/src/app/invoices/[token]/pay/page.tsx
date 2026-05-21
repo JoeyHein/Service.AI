@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { apiServerFetch } from '../../../../lib/api.js';
+import { InvoicePayForm } from './InvoicePayForm';
 
 interface PublicInvoice {
   status: string;
@@ -34,6 +35,7 @@ export default async function InvoicePayPage({
   if (res.status !== 200 || !res.body.ok || !res.body.data) notFound();
   const invoice = res.body.data;
   const paid = invoice.paidAt !== null;
+  const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
 
   return (
     <main className="min-h-screen bg-slate-50 py-12 px-4">
@@ -52,24 +54,8 @@ export default async function InvoicePayPage({
           </div>
         </dl>
 
-        <div className="mt-6">
-          {paid ? (
-            <div
-              role="status"
-              className="rounded-md bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700"
-            >
-              Paid — thank you!
-            </div>
-          ) : (
-            <button
-              type="button"
-              data-testid="pay-button"
-              disabled={!invoice.paymentIntentId}
-              className="w-full rounded-md bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              Pay ${Number(invoice.total).toFixed(2)}
-            </button>
-          )}
+        <div className="mt-6" data-testid="pay-panel">
+          <InvoicePayForm token={token} publishableKey={publishableKey} alreadyPaid={paid} />
         </div>
 
         <p className="mt-6 text-xs text-slate-500 text-center">

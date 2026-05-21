@@ -12,6 +12,23 @@ Format:
 
 ---
 
+## phase_quote_fulfillment (QF)
+
+- [MED] TD-QF-01 · phase_quote_fulfillment · `accepted → void` doesn't unwind fulfillment
+  - What: Voiding a quote reverses commission (SQB) but, now that QF exists, leaves the downstream artifacts intact: the BC order stays alive (TD-SQB-A8 added the void endpoint but the void route doesn't call it for the order), a paid deposit is neither refunded nor captured-decision'd, and a drafted balance invoice (if the job completed) is not voided. The pilot will hit this the first time a customer cancels after accepting/paying.
+  - Where: `apps/api/src/quote-routes.ts::/void`, `balance-invoice.ts`, the deposit PaymentIntent.
+  - Resolution: On `accepted → void`: call `provider.voidQuote` (cancel/delete the BC order too if converted), refund the deposit PaymentIntent (Stripe refund), and soft-delete/void any draft balance invoice. Sequence + idempotency need a small design pass. Was explicitly out of scope for QF.
+
+- [LOW] TD-QF-02 · phase_quote_fulfillment · Materials reconciliation on the balance invoice
+  - What: The balance invoice bills the accepted quote total as-is. If what was installed differs from what was quoted (substitutions, extra parts), there's no reconciliation step — the office would manually edit the draft invoice.
+  - Where: `balance-invoice.ts` + the invoice PATCH flow.
+  - Resolution: A reconciliation surface (quoted vs. installed) when materials tracking exists. Fine to defer — the office can edit the draft today.
+
+- [LOW] TD-QF-03 · phase_quote_fulfillment · No office invoice view to link the balance invoice
+  - What: QF-06 surfaces a "balance invoice drafted" banner on the completed job, but there's no office-facing invoice detail page to link to (only the public pay page + the tech invoice editor). The office finds the invoice via... no dedicated route.
+  - Where: `apps/web/src/app/(app)/` — a new `invoices/[id]` office view.
+  - Resolution: Add an office invoice detail/finalize page; link the QF-06 banner to it.
+
 ## phase_customer_quote_acceptance (CQA)
 
 - [LOW] TD-CQA-01 · phase_customer_quote_acceptance · DB-level RLS test for the corporate model

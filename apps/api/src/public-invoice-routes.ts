@@ -29,6 +29,7 @@ import {
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 import { renderReceiptPdf, type ReceiptLine } from './receipt-pdf.js';
+import type { StripeClient } from './stripe.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -43,6 +44,7 @@ function scopedBranchId(scope: RequestScope): string | null {
 export function registerPublicInvoiceRoutes(
   app: FastifyInstance,
   db: Drizzle,
+  stripe: StripeClient,
 ): void {
   // ----- GET /api/v1/public/invoices/:token (no auth) -----------------------
   app.get<{ Params: { token: string } }>(
@@ -95,6 +97,58 @@ export function registerPublicInvoiceRoutes(
             feRows[0]?.legalEntityName ?? feRows[0]?.name ?? 'Service provider',
           paymentIntentId: inv.stripePaymentIntentId,
           paidAt: inv.paidAt,
+        },
+      });
+    },
+  );
+
+  // ----- GET /api/v1/public/invoices/:token/payment-intent (no auth) --------
+  // Returns the clientSecret for a finalized invoice's PaymentIntent so the
+  // public pay page can mount Stripe Elements. The PI is created at finalize;
+  // this retrieves it (no second PI). 409 if not finalized or already paid.
+  app.get<{ Params: { token: string } }>(
+    '/api/v1/public/invoices/:token/payment-intent',
+    async (req, reply) => {
+      if (!TOKEN_RE.test(req.params.token)) {
+        return reply.code(400).send({
+          ok: false,
+          error: { code: 'VALIDATION_ERROR', message: 'bad token shape' },
+        });
+      }
+      const invRows = await db
+        .select()
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.paymentLinkToken, req.params.token),
+            isNull(invoices.deletedAt),
+          ),
+        );
+      const inv = invRows[0];
+      if (!inv) {
+        return reply.code(404).send({
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Invoice not found' },
+        });
+      }
+      if (inv.paidAt) {
+        return reply.code(409).send({
+          ok: false,
+          error: { code: 'ALREADY_PAID', message: 'This invoice is already paid' },
+        });
+      }
+      if (!inv.stripePaymentIntentId) {
+        return reply.code(409).send({
+          ok: false,
+          error: { code: 'NOT_FINALIZED', message: 'This invoice is not ready for payment yet' },
+        });
+      }
+      const pi = await stripe.retrievePaymentIntent(inv.stripePaymentIntentId);
+      return reply.code(200).send({
+        ok: true,
+        data: {
+          clientSecret: pi.clientSecret,
+          amountCents: Math.round(Number(inv.total) * 100),
         },
       });
     },

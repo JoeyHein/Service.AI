@@ -32,28 +32,42 @@ export function JobTransitionPanel({
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [balanceInvoiced, setBalanceInvoiced] = useState(false);
   const [pending, startTransition] = useTransition();
   const validTargets = MATRIX[status as Status] ?? [];
 
   function go(to: Status) {
     setError(null);
     startTransition(async () => {
-      const res = await apiClientFetch(`/api/v1/jobs/${jobId}/transition`, {
-        method: 'POST',
-        body: JSON.stringify({ toStatus: to }),
-      });
+      const res = await apiClientFetch<{ balanceInvoiceId?: string | null }>(
+        `/api/v1/jobs/${jobId}/transition`,
+        { method: 'POST', body: JSON.stringify({ toStatus: to }) },
+      );
       if (res.status !== 200) {
         setError(res.body.error?.message ?? 'Transition failed.');
         return;
       }
+      // QF-06: completing a quote-linked job drafts the balance invoice.
+      if (res.body.data?.balanceInvoiceId) setBalanceInvoiced(true);
       router.refresh();
     });
   }
 
   if (validTargets.length === 0) {
     return (
-      <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-500">
-        This job is {status}. No further transitions.
+      <div className="space-y-3">
+        <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-500">
+          This job is {status}. No further transitions.
+        </div>
+        {balanceInvoiced && (
+          <div
+            className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800"
+            data-testid="balance-invoice-banner"
+          >
+            Balance invoice drafted — the customer&apos;s deposit is credited.
+            Review and finalize it under Invoices to send the balance.
+          </div>
+        )}
       </div>
     );
   }

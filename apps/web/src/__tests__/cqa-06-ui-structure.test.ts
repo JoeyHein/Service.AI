@@ -45,17 +45,35 @@ describe('CQA-06 / AcceptPanel', () => {
   });
 });
 
-describe('CQA-06 / CardDepositForm uses Stripe Elements', () => {
-  const src = read('src/app/quotes/[token]/accept/CardDepositForm.tsx');
-  it('loads Stripe + renders Elements/PaymentElement', () => {
+describe('CQA-06 / shared StripeCardForm uses Stripe Elements', () => {
+  const src = read('src/lib/StripeCardForm.tsx');
+  it('loads Stripe + renders Elements/PaymentElement + confirms', () => {
     expect(src).toMatch(/loadStripe/);
     expect(src).toMatch(/@stripe\/react-stripe-js/);
     expect(src).toMatch(/PaymentElement/);
     expect(src).toMatch(/confirmPayment/);
   });
-  it('fetches the deposit intent for the clientSecret', () => {
+});
+
+describe('CQA-06 / CardDepositForm wraps the shared form', () => {
+  const src = read('src/app/quotes/[token]/accept/CardDepositForm.tsx');
+  it('uses StripeCardForm + the deposit-intent endpoint', () => {
+    expect(src).toMatch(/StripeCardForm/);
     expect(src).toMatch(/\/api\/v1\/public\/quotes\/.+\/deposit-intent/);
     expect(src).toMatch(/clientSecret/);
+  });
+});
+
+describe('QF-05 / invoice pay page uses the shared card form', () => {
+  it('InvoicePayForm wraps StripeCardForm + the invoice payment-intent endpoint', () => {
+    const src = read('src/app/invoices/[token]/pay/InvoicePayForm.tsx');
+    expect(src).toMatch(/StripeCardForm/);
+    expect(src).toMatch(/\/api\/v1\/public\/invoices\/.+\/payment-intent/);
+  });
+  it('pay page renders the InvoicePayForm (no more inert stub button)', () => {
+    const src = read('src/app/invoices/[token]/pay/page.tsx');
+    expect(src).toMatch(/InvoicePayForm/);
+    expect(src).toMatch(/NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY/);
   });
 });
 
