@@ -25,6 +25,7 @@ import {
 import * as schema from '@service-ai/db';
 import { canTransition, type JobStatus } from './job-status-machine.js';
 import { generateBalanceInvoiceOnCompletion } from './balance-invoice.js';
+import { consumeInventoryForJob } from './inventory-consume.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -367,6 +368,11 @@ export function registerJobRoutes(app: FastifyInstance, db: Drizzle): void {
               customerId: row.customerId,
               quoteId: row.quoteId,
             },
+            actorUserId: req.userId,
+          });
+          // INV-03: auto-consume branch stock for the quote's parts.
+          await consumeInventoryForJob(tx, {
+            job: { id: row.id, branchId: row.branchId, quoteId: row.quoteId },
             actorUserId: req.userId,
           });
         }

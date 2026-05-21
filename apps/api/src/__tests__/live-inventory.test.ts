@@ -250,3 +250,157 @@ describe('INV-02 / inventory API', () => {
     expect(read.statusCode).toBe(404);
   });
 });
+
+describe('INV-03 / auto-consume on job completion + reconciliation', () => {
+  let customerId: string;
+  let supplierId: string;
+
+  beforeAll(async () => {
+    if (!reachable) return;
+    const cust = await app.inject({
+      method: 'POST',
+      url: '/api/v1/customers',
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ name: 'INV Job Customer' }),
+    });
+    customerId = cust.json().data.id as string;
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO suppliers (name, provider_kind, endpoint_url, api_key_secret_ref, supplier_account_code)
+       VALUES ('INV Supplier', 'bc_ai_agent', 'http://x', 'ref', 'INV') RETURNING id`,
+    );
+    supplierId = rows[0]!.id;
+  });
+
+  async function seedQuoteJob(matchSku: string, noMatchSku: string): Promise<string> {
+    const { rows: qr } = await pool.query<{ id: string }>(
+      `INSERT INTO quotes (branch_id, customer_id, supplier_id, status, total_cents)
+       VALUES ($1,$2,$3,'accepted',100000) RETURNING id`,
+      [denverBranchId, customerId, supplierId],
+    );
+    const quoteId = qr[0]!.id;
+    for (const [pos, sku, qty] of [
+      [1, matchSku, 2],
+      [2, noMatchSku, 1],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO quote_line_items
+           (quote_id, branch_id, position, supplier_sku, description, quantity,
+            unit_price_cents, line_total_cents, applied_margin_pct, applied_margin_source)
+         VALUES ($1,$2,$3,$4,$5,$6,1000,1000,'40.00','corporate_default')`,
+        [quoteId, denverBranchId, pos, sku, `${sku} desc`, qty],
+      );
+    }
+    const { rows: jr } = await pool.query<{ id: string }>(
+      `INSERT INTO jobs (branch_id, customer_id, quote_id, status, title)
+       VALUES ($1,$2,$3,'in_progress','Install') RETURNING id`,
+      [denverBranchId, customerId, quoteId],
+    );
+    return jr[0]!.id;
+  }
+
+  function complete(jobId: string) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/v1/jobs/${jobId}/transition`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ toStatus: 'completed' }),
+    });
+  }
+
+  it('decrements matched stock and queues unmatched SKUs as exceptions', async () => {
+    const matchSku = `JOB-MATCH-${Date.now()}`;
+    const noMatchSku = `JOB-NOMATCH-${Date.now()}`;
+    const created = await createItem(cookies.denverManager, {
+      sku: matchSku,
+      name: 'Matched Part',
+      qtyOnHand: 10,
+    });
+    const itemId = created.json().data.id as string;
+    const jobId = await seedQuoteJob(matchSku, noMatchSku);
+
+    const res = await complete(jobId);
+    expect(res.statusCode).toBe(200);
+
+    // Matched item: 10 - 2 = 8, with a consumption movement referencing the job.
+    const detail = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/items/${itemId}`,
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(Number(detail.json().data.item.qtyOnHand)).toBe(8);
+    const consumption = (detail.json().data.movements as Array<{ reason: string; refId: string }>).find(
+      (m) => m.reason === 'consumption' && m.refId === jobId,
+    );
+    expect(consumption).toBeTruthy();
+
+    // Unmatched SKU is a pending exception.
+    const exc = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/exceptions',
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(exc.statusCode).toBe(200);
+    expect(exc.json().data.rows.map((r: { sku: string }) => r.sku)).toContain(noMatchSku);
+  });
+
+  it('resolve creates a stocked item and consumes the exception quantity', async () => {
+    const matchSku = `R-MATCH-${Date.now()}`;
+    const noMatchSku = `R-NOMATCH-${Date.now()}`;
+    await createItem(cookies.denverManager, { sku: matchSku, name: 'M', qtyOnHand: 5 });
+    const jobId = await seedQuoteJob(matchSku, noMatchSku);
+    await complete(jobId);
+
+    const exc = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/exceptions',
+      headers: { cookie: cookies.denverManager },
+    });
+    const excId = (exc.json().data.rows as Array<{ id: string; sku: string }>).find(
+      (r) => r.sku === noMatchSku,
+    )!.id;
+
+    const resolve = await app.inject({
+      method: 'POST',
+      url: `/api/v1/inventory/exceptions/${excId}/resolve`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ create: { sku: noMatchSku, name: 'Newly stocked' } }),
+    });
+    expect(resolve.statusCode).toBe(200);
+    expect(resolve.json().data.status).toBe('resolved');
+
+    // The new item exists and was consumed (1 used from 0 = -1).
+    const list = await app.inject({
+      method: 'GET',
+      url: `/api/v1/inventory/items?search=${encodeURIComponent(noMatchSku)}`,
+      headers: { cookie: cookies.denverManager },
+    });
+    const row = (list.json().data.rows as Array<{ sku: string; qtyOnHand: string }>).find(
+      (r) => r.sku === noMatchSku,
+    );
+    expect(row).toBeTruthy();
+    expect(Number(row!.qtyOnHand)).toBe(-1);
+  });
+
+  it('ignore marks an exception ignored', async () => {
+    const jobId = await seedQuoteJob(`IG-M-${Date.now()}`, `IG-N-${Date.now()}`);
+    await complete(jobId);
+    const exc = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/exceptions',
+      headers: { cookie: cookies.denverManager },
+    });
+    // Two unmatched SKUs from this job (neither was stocked).
+    const mine = (exc.json().data.rows as Array<{ id: string; jobId: string }>).filter(
+      (r) => r.jobId === jobId,
+    );
+    expect(mine.length).toBe(2);
+    const ignore = await app.inject({
+      method: 'POST',
+      url: `/api/v1/inventory/exceptions/${mine[0]!.id}/ignore`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: '{}',
+    });
+    expect(ignore.statusCode).toBe(200);
+    expect(ignore.json().data.status).toBe('ignored');
+  });
+});

@@ -23,6 +23,7 @@ import { z } from 'zod';
 import {
   inventoryItems,
   inventoryMovements,
+  inventoryConsumptionExceptions,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
@@ -78,6 +79,28 @@ const AdjustSchema = z
     unitCostCents: z.number().int().min(0).optional(),
   })
   .strict();
+
+const ResolveExceptionSchema = z
+  .object({
+    itemId: z.string().uuid().optional(),
+    create: z
+      .object({
+        sku: z.string().min(1).max(100),
+        name: z.string().min(1).max(200),
+        category: z.string().max(100).nullable().optional(),
+        unit: z.string().max(20).optional(),
+        unitCostCents: z.number().int().min(0).optional(),
+        reorderPoint: z.number().min(0).optional(),
+        reorderQty: z.number().min(0).optional(),
+        bin: z.string().max(60).nullable().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((d) => (d.itemId ? !d.create : !!d.create), {
+    message: 'Provide exactly one of itemId or create',
+  });
 
 function num(v: string | number): number {
   return typeof v === 'string' ? Number(v) : v;
@@ -339,4 +362,194 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Drizzle): void
     }
     return reply.code(200).send({ ok: true, data: { qtyOnHand: outcome.onHand, movement: outcome.movement } });
   });
+
+  // GET /api/v1/inventory/exceptions — reconciliation inbox (pending by default)
+  app.get('/api/v1/inventory/exceptions', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    const scope = req.scope;
+    const q = req.query as Record<string, string | undefined>;
+    const status = ['pending', 'resolved', 'ignored'].includes(q['status'] ?? '')
+      ? q['status']!
+      : 'pending';
+    const limit = Math.min(Math.max(parseInt(q['limit'] ?? '50', 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(q['offset'] ?? '0', 10) || 0, 0);
+
+    const { rows, total } = await withScope(db, scope, async (tx) => {
+      const conditions: unknown[] = [eq(inventoryConsumptionExceptions.status, status)];
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch) conditions.push(eq(inventoryConsumptionExceptions.branchId, scopeBranch));
+      const where = and(...(conditions as Parameters<typeof and>));
+      const rows = await tx
+        .select()
+        .from(inventoryConsumptionExceptions)
+        .where(where)
+        .orderBy(desc(inventoryConsumptionExceptions.createdAt))
+        .limit(limit)
+        .offset(offset);
+      const countRows = await tx
+        .select({ c: sql<number>`count(*)::int` })
+        .from(inventoryConsumptionExceptions)
+        .where(where);
+      return { rows, total: countRows[0]?.c ?? 0 };
+    });
+    return reply.code(200).send({ ok: true, data: { rows, total, limit, offset } });
+  });
+
+  // POST /api/v1/inventory/exceptions/:id/resolve — link/create an item + consume
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/inventory/exceptions/:id/resolve',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+      }
+      if (!canWrite(req.scope)) {
+        return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Manager role required' } });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' } });
+      }
+      const parsed = ResolveExceptionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: parsed.error.message } });
+      }
+      const scope = req.scope;
+      const d = parsed.data;
+
+      const outcome = await withScope(db, scope, async (tx) => {
+        const excRows = await tx
+          .select()
+          .from(inventoryConsumptionExceptions)
+          .where(eq(inventoryConsumptionExceptions.id, req.params.id))
+          .limit(1);
+        const exc = excRows[0];
+        if (!exc) return { kind: 'not_found' as const };
+        const scopeBranch = branchIdFromScope(scope);
+        if (scopeBranch && exc.branchId !== scopeBranch) return { kind: 'not_found' as const };
+        if (exc.status !== 'pending') return { kind: 'already' as const };
+
+        // Resolve the target item: link an existing one or create from input.
+        let itemId: string;
+        if (d.itemId) {
+          const itRows = await tx
+            .select({ id: inventoryItems.id, branchId: inventoryItems.branchId, qtyOnHand: inventoryItems.qtyOnHand })
+            .from(inventoryItems)
+            .where(eq(inventoryItems.id, d.itemId))
+            .limit(1);
+          const it = itRows[0];
+          if (!it || it.branchId !== exc.branchId) return { kind: 'item_missing' as const };
+          itemId = it.id;
+        } else {
+          const c = d.create!;
+          const dupe = await tx
+            .select({ id: inventoryItems.id })
+            .from(inventoryItems)
+            .where(and(eq(inventoryItems.branchId, exc.branchId), eq(inventoryItems.sku, c.sku)))
+            .limit(1);
+          if (dupe[0]) return { kind: 'dupe' as const };
+          const created = await tx
+            .insert(inventoryItems)
+            .values({
+              branchId: exc.branchId,
+              sku: c.sku,
+              name: c.name,
+              category: c.category ?? null,
+              unit: c.unit ?? 'each',
+              unitCostCents: c.unitCostCents ?? 0,
+              reorderPoint: String(c.reorderPoint ?? 0),
+              reorderQty: String(c.reorderQty ?? 0),
+              bin: c.bin ?? null,
+            })
+            .returning({ id: inventoryItems.id });
+          itemId = created[0]!.id;
+        }
+
+        // Consume the exception's quantity from the resolved item.
+        const cur = await tx
+          .select({ qtyOnHand: inventoryItems.qtyOnHand })
+          .from(inventoryItems)
+          .where(eq(inventoryItems.id, itemId))
+          .limit(1);
+        const qty = Number(exc.quantity);
+        const newOnHand = Number(cur[0]!.qtyOnHand) - qty;
+        await tx
+          .update(inventoryItems)
+          .set({ qtyOnHand: String(newOnHand), updatedAt: new Date() })
+          .where(eq(inventoryItems.id, itemId));
+        await tx.insert(inventoryMovements).values({
+          branchId: exc.branchId,
+          itemId,
+          deltaQty: String(-qty),
+          reason: 'consumption',
+          refType: 'job',
+          refId: exc.jobId,
+          note: 'Reconciled from consumption exception',
+          actorUserId: scope.userId,
+        });
+        const updated = await tx
+          .update(inventoryConsumptionExceptions)
+          .set({ status: 'resolved', resolvedItemId: itemId, resolvedAt: new Date() })
+          .where(eq(inventoryConsumptionExceptions.id, exc.id))
+          .returning();
+        return { kind: 'ok' as const, row: updated[0]!, itemId };
+      });
+
+      if (outcome.kind === 'not_found') {
+        return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Exception not found' } });
+      }
+      if (outcome.kind === 'item_missing') {
+        return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Target item not found' } });
+      }
+      if (outcome.kind === 'dupe') {
+        return reply.code(409).send({ ok: false, error: { code: 'DUPLICATE_SKU', message: 'That SKU is already stocked' } });
+      }
+      if (outcome.kind === 'already') {
+        return reply.code(409).send({ ok: false, error: { code: 'ALREADY_RESOLVED', message: 'Exception is not pending' } });
+      }
+      return reply.code(200).send({ ok: true, data: outcome.row });
+    },
+  );
+
+  // POST /api/v1/inventory/exceptions/:id/ignore
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/inventory/exceptions/:id/ignore',
+    async (req, reply) => {
+      if (req.scope === null) {
+        return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+      }
+      if (!canWrite(req.scope)) {
+        return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Manager role required' } });
+      }
+      if (!UUID_RE.test(req.params.id)) {
+        return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' } });
+      }
+      const scope = req.scope;
+      const outcome = await withScope(db, scope, async (tx) => {
+        const excRows = await tx
+          .select({ id: inventoryConsumptionExceptions.id, branchId: inventoryConsumptionExceptions.branchId, status: inventoryConsumptionExceptions.status })
+          .from(inventoryConsumptionExceptions)
+          .where(eq(inventoryConsumptionExceptions.id, req.params.id))
+          .limit(1);
+        const exc = excRows[0];
+        if (!exc) return { kind: 'not_found' as const };
+        const scopeBranch = branchIdFromScope(scope);
+        if (scopeBranch && exc.branchId !== scopeBranch) return { kind: 'not_found' as const };
+        if (exc.status !== 'pending') return { kind: 'already' as const };
+        const updated = await tx
+          .update(inventoryConsumptionExceptions)
+          .set({ status: 'ignored', resolvedAt: new Date() })
+          .where(eq(inventoryConsumptionExceptions.id, exc.id))
+          .returning();
+        return { kind: 'ok' as const, row: updated[0]! };
+      });
+      if (outcome.kind === 'not_found') {
+        return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Exception not found' } });
+      }
+      if (outcome.kind === 'already') {
+        return reply.code(409).send({ ok: false, error: { code: 'ALREADY_RESOLVED', message: 'Exception is not pending' } });
+      }
+      return reply.code(200).send({ ok: true, data: outcome.row });
+    },
+  );
 }
