@@ -12,6 +12,8 @@ interface PO {
   expectedDate: string | null;
   submittedAt: string | null;
   receivedAt: string | null;
+  supplierPoRef: string | null;
+  bcSyncedAt: string | null;
 }
 
 function money(cents: number): string {
@@ -57,6 +59,12 @@ export default async function PurchaseOrderDetailPage({
             {po.receivedAt ? ` · received ${new Date(po.receivedAt).toLocaleDateString()}` : ''}
           </p>
           {po.notes && <p className="mt-1 text-sm text-slate-500">{po.notes}</p>}
+          {po.supplierPoRef && (
+            <p className="mt-1 text-sm text-emerald-700">
+              BC PO <code className="font-mono">{po.supplierPoRef}</code>
+              {po.bcSyncedAt ? ` · synced ${new Date(po.bcSyncedAt).toLocaleDateString()}` : ''}
+            </p>
+          )}
         </div>
         <Link href="/purchase-orders" className="text-sm text-slate-600 hover:underline">
           ← Purchase orders

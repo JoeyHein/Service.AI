@@ -29,6 +29,8 @@ export function NewPurchaseOrderForm({ suppliers }: { suppliers: SupplierOption[
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const [genPending, startGen] = useTransition();
+  const [avail, setAvail] = useState<Record<string, { status: string; available: number }>>({});
+  const [availPending, startAvail] = useTransition();
 
   function patch(key: string, p: Partial<LineDraft>) {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...p } : l)));
@@ -86,6 +88,36 @@ export function NewPurchaseOrderForm({ suppliers }: { suppliers: SupplierOption[
     });
   }
 
+  function checkStock() {
+    setError(null);
+    if (!supplierId) {
+      setError('Pick a supplier first.');
+      return;
+    }
+    const items = lines
+      .filter((l) => l.sku.trim() && Number(l.quantity) > 0)
+      .map((l) => ({ sku: l.sku.trim(), quantity: Number(l.quantity) }));
+    if (items.length === 0) return;
+    startAvail(async () => {
+      const res = await apiClientFetch<{ items: { sku: string; status: string; available: number }[] }>(
+        '/api/v1/inventory/check-availability',
+        { method: 'POST', body: JSON.stringify({ supplierId, items }) },
+      );
+      if (res.status !== 200 || !res.body.ok || !res.body.data) {
+        setError(res.body.error?.message ?? 'Availability check failed.');
+        return;
+      }
+      const map: Record<string, { status: string; available: number }> = {};
+      for (const it of res.body.data.items) map[it.sku] = { status: it.status, available: it.available };
+      setAvail(map);
+    });
+  }
+
+  const availBadge: Record<string, string> = {
+    available: 'text-emerald-700',
+    partial: 'text-amber-700',
+    unavailable: 'text-rose-700',
+  };
   const cell = 'rounded border border-slate-300 px-2 py-1.5 text-sm';
   return (
     <div className="space-y-4">
@@ -115,6 +147,15 @@ export function NewPurchaseOrderForm({ suppliers }: { suppliers: SupplierOption[
         >
           {genPending ? 'Generating…' : 'Generate from low stock'}
         </button>
+        <button
+          type="button"
+          onClick={checkStock}
+          disabled={availPending}
+          className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          data-testid="po-check-stock"
+        >
+          {availPending ? 'Checking…' : 'Check supplier stock'}
+        </button>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -125,6 +166,7 @@ export function NewPurchaseOrderForm({ suppliers }: { suppliers: SupplierOption[
               <th className="px-3 py-2 font-medium">Description</th>
               <th className="px-3 py-2 font-medium">Qty</th>
               <th className="px-3 py-2 font-medium">Unit cost ($)</th>
+              <th className="px-3 py-2 font-medium">Supplier stock</th>
               <th className="px-3 py-2" />
             </tr>
           </thead>
@@ -142,6 +184,15 @@ export function NewPurchaseOrderForm({ suppliers }: { suppliers: SupplierOption[
                 </td>
                 <td className="px-3 py-2">
                   <input type="number" step="0.01" min="0" value={l.unitCost} onChange={(e) => patch(l.key, { unitCost: e.target.value })} className={`w-28 ${cell}`} />
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  {avail[l.sku.trim()] ? (
+                    <span className={availBadge[avail[l.sku.trim()]!.status] ?? 'text-slate-500'}>
+                      {avail[l.sku.trim()]!.status} ({avail[l.sku.trim()]!.available})
+                    </span>
+                  ) : (
+                    <span className="text-slate-300">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right">
                   {lines.length > 1 && (
