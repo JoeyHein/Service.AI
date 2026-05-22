@@ -32,6 +32,7 @@ import {
   type RequestScope,
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
+import type { ProviderRegistry, SupplierProvider } from '@service-ai/suppliers';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -73,6 +74,16 @@ const FromLowStockSchema = z
   })
   .strict();
 
+const CheckAvailabilitySchema = z
+  .object({
+    supplierId: z.string().uuid(),
+    items: z
+      .array(z.object({ sku: z.string().min(1), quantity: z.number().positive() }).strict())
+      .min(1)
+      .max(200),
+  })
+  .strict();
+
 const ReceiveSchema = z
   .object({
     lines: z
@@ -92,7 +103,42 @@ async function supplierExists(db: Drizzle, supplierId: string): Promise<boolean>
   });
 }
 
-export function registerPurchaseOrderRoutes(app: FastifyInstance, db: Drizzle): void {
+/** Load a supplier's provider config under a corporate scope (suppliers RLS denies branches). */
+async function loadSupplierConfig(db: Drizzle, supplierId: string) {
+  return withScope(db, CORP_SCOPE, async (tx) => {
+    const rows = await tx
+      .select({
+        id: suppliers.id,
+        providerKind: suppliers.providerKind,
+        endpointUrl: suppliers.endpointUrl,
+        apiKeySecretRef: suppliers.apiKeySecretRef,
+        supplierAccountCode: suppliers.supplierAccountCode,
+      })
+      .from(suppliers)
+      .where(eq(suppliers.id, supplierId))
+      .limit(1);
+    return rows[0] ?? null;
+  });
+}
+
+function bindProvider(
+  registry: ProviderRegistry,
+  supplier: { id: string; providerKind: string; endpointUrl: string; apiKeySecretRef: string; supplierAccountCode: string },
+): SupplierProvider {
+  return registry.bind({
+    supplierId: supplier.id,
+    providerKind: supplier.providerKind as 'bc_ai_agent' | 'mock',
+    endpointUrl: supplier.endpointUrl,
+    apiKey: process.env[supplier.apiKeySecretRef] ?? '',
+    supplierAccountCode: supplier.supplierAccountCode,
+  });
+}
+
+export function registerPurchaseOrderRoutes(
+  app: FastifyInstance,
+  db: Drizzle,
+  registry: ProviderRegistry,
+): void {
   // GET /api/v1/suppliers — corporate-shared vendor list (any authenticated
   // user; read under a corporate scope since `suppliers` RLS denies branches).
   app.get('/api/v1/suppliers', async (req, reply) => {
@@ -319,10 +365,117 @@ export function registerPurchaseOrderRoutes(app: FastifyInstance, db: Drizzle): 
     return reply.code(200).send({ ok: true, data });
   });
 
-  // POST /api/v1/purchase-orders/:id/submit
+  // POST /api/v1/purchase-orders/:id/submit — flip to submitted + best-effort
+  // push a real BC purchase order (TD-PO-01); stamp the BC ref on success.
   app.post<{ Params: { id: string } }>('/api/v1/purchase-orders/:id/submit', async (req, reply) => {
-    return transition(req, reply, 'submit');
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    if (!canWrite(req.scope)) {
+      return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Manager role required' } });
+    }
+    if (!UUID_RE.test(req.params.id)) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' } });
+    }
+    const scope = req.scope;
+
+    // Phase 1: flip draft → submitted (local source of truth) + load lines.
+    const flipped = await withScope(db, scope, async (tx) => {
+      const rows = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, req.params.id)).limit(1);
+      const po = rows[0];
+      if (!po) return { kind: 'not_found' as const };
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && po.branchId !== scopeBranch) return { kind: 'not_found' as const };
+      if (po.status !== 'draft') return { kind: 'invalid' as const, from: po.status };
+      const upd = await tx
+        .update(purchaseOrders)
+        .set({ status: 'submitted', submittedAt: new Date(), updatedAt: new Date() })
+        .where(eq(purchaseOrders.id, po.id))
+        .returning();
+      const lines = await tx
+        .select()
+        .from(purchaseOrderLines)
+        .where(eq(purchaseOrderLines.poId, po.id))
+        .orderBy(purchaseOrderLines.position);
+      return { kind: 'ok' as const, po: upd[0]!, lines };
+    });
+
+    if (flipped.kind === 'not_found') {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Purchase order not found' } });
+    }
+    if (flipped.kind === 'invalid') {
+      return reply.code(409).send({ ok: false, error: { code: 'INVALID_TRANSITION', message: `cannot submit from ${flipped.from}` } });
+    }
+
+    // Phase 2 (best-effort, post-commit): push to BC. A failure leaves the PO
+    // submitted with a null ref — a later resubmit/retry path can re-sync.
+    let po = flipped.po;
+    const supplier = await loadSupplierConfig(db, po.supplierId);
+    if (supplier) {
+      const provider = bindProvider(registry, supplier);
+      if (provider.createPurchaseOrder) {
+        const res = await provider.createPurchaseOrder({
+          supplierAccountCode: supplier.supplierAccountCode,
+          externalPoId: po.id,
+          poNumber: po.poNumber ?? undefined,
+          lines: flipped.lines.map((l) => ({
+            sku: l.sku,
+            quantity: Number(l.quantity),
+            unitCostCents: l.unitCostCents,
+            description: l.description ?? undefined,
+          })),
+          requestId: req.id,
+        });
+        if (res.ok) {
+          const stamped = await withScope(db, scope, async (tx) =>
+            tx
+              .update(purchaseOrders)
+              .set({
+                supplierPoRef: res.data.supplierPoRef,
+                supplierPoId: res.data.supplierPoId,
+                bcSyncedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(purchaseOrders.id, po.id))
+              .returning(),
+          );
+          po = stamped[0] ?? po;
+        } else {
+          req.log.warn({ poId: po.id, error: res.error }, 'BC purchase-order sync failed (PO left submitted)');
+        }
+      }
+    }
+    return reply.code(200).send({ ok: true, data: po });
   });
+
+  // POST /api/v1/inventory/check-availability — supplier stock for a basket.
+  app.post('/api/v1/inventory/check-availability', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    const parsed = CheckAvailabilitySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: parsed.error.message } });
+    }
+    const supplier = await loadSupplierConfig(db, parsed.data.supplierId);
+    if (!supplier) {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Supplier not found' } });
+    }
+    const provider = bindProvider(registry, supplier);
+    if (!provider.checkAvailability) {
+      return reply.code(501).send({ ok: false, error: { code: 'NOT_SUPPORTED', message: 'Supplier has no availability surface' } });
+    }
+    const res = await provider.checkAvailability({
+      supplierAccountCode: supplier.supplierAccountCode,
+      items: parsed.data.items.map((i) => ({ sku: i.sku, quantity: i.quantity })),
+      requestId: req.id,
+    });
+    if (!res.ok) {
+      return reply.code(502).send({ ok: false, error: { code: res.error.code, message: res.error.message } });
+    }
+    return reply.code(200).send({ ok: true, data: res.data });
+  });
+
   // POST /api/v1/purchase-orders/:id/cancel
   app.post<{ Params: { id: string } }>('/api/v1/purchase-orders/:id/cancel', async (req, reply) => {
     return transition(req, reply, 'cancel');

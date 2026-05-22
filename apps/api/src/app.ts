@@ -343,7 +343,6 @@ export function buildApp(opts: AppOptions = {}) {
     registerCustomerRoutes(app, opts.drizzle);
     registerCrmRoutes(app, opts.drizzle);
     registerInventoryRoutes(app, opts.drizzle);
-    registerPurchaseOrderRoutes(app, opts.drizzle);
     registerJobRoutes(app, opts.drizzle);
     const objectStore = opts.objectStore ?? stubObjectStore();
     registerJobPhotoRoutes(app, opts.drizzle, objectStore);
@@ -391,6 +390,7 @@ export function buildApp(opts: AppOptions = {}) {
     });
     registerOwnerDashboardRoutes(app, opts.drizzle);
     const providerRegistry = opts.providerRegistry ?? defaultProviderRegistry();
+    registerPurchaseOrderRoutes(app, opts.drizzle, providerRegistry);
     registerQuoteRoutes(app, {
       drizzle: opts.drizzle,
       providerRegistry,

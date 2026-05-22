@@ -12,6 +12,7 @@ import pkg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import type { FastifyInstance } from 'fastify';
 import { createAuth } from '@service-ai/auth';
+import { MockSupplierProvider, ProviderRegistry } from '@service-ai/suppliers';
 import * as schema from '@service-ai/db';
 import { users, sessions, accounts, verifications } from '@service-ai/db';
 import { buildApp } from '../app.js';
@@ -92,12 +93,17 @@ beforeAll(async () => {
     baseUrl: 'http://localhost',
     secret: 'x'.repeat(32),
   });
+  // Mock supplier registry so submit's best-effort BC push hits the mock
+  // (fast) instead of a real fetch to the test supplier's http://x endpoint.
+  const registry = new ProviderRegistry();
+  registry.registerFactory('bc_ai_agent', () => new MockSupplierProvider());
   app = buildApp({
     db: { query: async () => ({ rows: [] }) },
     redis: { ping: async () => 'PONG' },
     logger: false,
     auth,
     drizzle: db,
+    providerRegistry: registry,
     membershipResolver: membershipResolver(db),
     auditWriter: auditLogWriter(db),
     magicLinkSender: { async send() {} },
