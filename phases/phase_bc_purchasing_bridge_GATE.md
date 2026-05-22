@@ -1,6 +1,6 @@
 # Phase Gate: phase_bc_purchasing_bridge
 
-**STATUS: APPROVED 2026-05-21 (Joey). Cross-repo: BC availability overlay (TD-INV-01) + PO send-to-BC (TD-PO-01). Touches bc-ai-agent (Python) AND servicetitan-clone. Commit both locally; do not push.**
+**STATUS: SHIPPED 2026-05-21. BCB-01..05 landed across both repos (local commits, not pushed). Ref: `docs/api/bc-purchasing-bridge.md`. Closes TD-INV-01 + TD-PO-01.**
 
 Phase 26 — the BC purchasing bridge that closes TD-INV-01 + TD-PO-01. Two
 supplier-side capabilities reached through the existing `SupplierProvider` seam
@@ -22,7 +22,7 @@ by mocked unit/integration tests + typecheck. The live BC path is unvalidated
 
 ## Must Pass
 
-- [ ] **BCB-01** — `SupplierProvider` gains two optional ops (`packages/suppliers`):
+- [x] **BCB-01** — `SupplierProvider` gains two optional ops (`packages/suppliers`):
   - `checkAvailability(req)` → `{ allAvailable, items:[{ sku, onHand, available,
     shortfall, status, leadTimeDays }] }`.
   - `createPurchaseOrder(req)` → `{ supplierPoRef, supplierPoId, createdAt }`;
@@ -31,7 +31,7 @@ by mocked unit/integration tests + typecheck. The live BC path is unvalidated
   (POST `/api/external/check-availability`, `/api/external/purchase-orders`;
   widen the retry `operation` union; `Idempotency-Key` on PO create). Types in
   `types.ts`. Mocked tests for both providers.
-- [ ] **BCB-02** — BC AI Agent endpoints (`bc-ai-agent/backend`):
+- [x] **BCB-02** — BC AI Agent endpoints (`bc-ai-agent/backend`):
   - `POST /api/external/check-availability` — `require_external_key` +
     `assert_account_code`; wraps `bc_inventory_service.check_availability`
     (`items:[{itemNumber, quantity}]`); returns the camelCase envelope.
@@ -43,7 +43,7 @@ by mocked unit/integration tests + typecheck. The live BC path is unvalidated
   - Register the router; pytest with a fake bc_client + service (mirror
     `test_external_*`). Auth 401, account-mismatch 404, happy path, idempotent
     replay.
-- [ ] **BCB-03** — Service.AI wiring (`apps/api`):
+- [x] **BCB-03** — Service.AI wiring (`apps/api`):
   - Migration `0025_po_bc_ref.sql` — add `supplier_po_ref`, `supplier_po_id`,
     `bc_synced_at` to `purchase_orders` (+ Drizzle + roundtrip `bcb-01`).
   - PO routes get the `ProviderRegistry` dep; `POST /purchase-orders/:id/submit`
@@ -55,10 +55,10 @@ by mocked unit/integration tests + typecheck. The live BC path is unvalidated
     Branch-scoped read.
   - Tests with a mock provider: submit stamps the ref; provider failure leaves
     the PO submitted with null ref; availability happy path + cross-tenant.
-- [ ] **BCB-04** — web: an availability check in the quote builder (badge per
+- [x] **BCB-04** — web: an availability check in the quote builder (badge per
   line / a "Check supplier stock" affordance) and the BC PO ref shown on the PO
   detail once synced. Verified via `next build`.
-- [ ] **BCB-05** — docs (`docs/api/bc-purchasing-bridge.md`) + close TD-INV-01 +
+- [x] **BCB-05** — docs (`docs/api/bc-purchasing-bridge.md`) + close TD-INV-01 +
   TD-PO-01 + new TDs + gate SHIPPED + memory.
 
 ## Security / tenancy

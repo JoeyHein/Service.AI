@@ -227,10 +227,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### Inventory follow-ups (INV) — phase 24
 
-- [MED] TD-INV-01 · phase_inventory · BC supplier-availability overlay
-  - What: Inventory tracks Service.AI's own branch stock. There's no view of the manufacturer's (BC) availability — "can Elevated Doors' BC fulfill this door/part, and in what lead time?" BC AI Agent already computes this (`bc_inventory_service.check_availability`, `get_inventory_levels`, `get_item_movements`) but exposes no external endpoint.
-  - Where: `packages/suppliers` (SupplierProvider), bc-ai-agent `backend/app/api/external_pricing.py` + `bc_inventory_service.py`.
-  - Resolution: Add `POST /api/external/check-availability` to BC AI Agent (wraps `check_availability`), a `checkAvailability` op on `SupplierProvider` + `BcAiAgentProvider`, and an availability badge in the quote builder. Small cross-repo bridge phase.
+- [CLOSED] TD-INV-01 · phase_inventory · BC supplier-availability overlay
+  - Closed 2026-05-21 (phase 26, BCB). `SupplierProvider.checkAvailability` + BC AI Agent `POST /api/external/check-availability` (wraps `bc_inventory_service.check_availability`) + Service.AI `POST /api/v1/inventory/check-availability` + a "Check supplier stock" affordance on the PO form. Live BC path unvalidated (mocked tests). Ref: `docs/api/bc-purchasing-bridge.md`.
 
 - [MED] TD-INV-02 · phase_inventory · Auto-reserve stock on quote accept
   - What: `inventory_items.qty_reserved` exists and `available = on_hand - reserved` is computed everywhere, but nothing populates `qty_reserved`. Reserving stock when a quote is accepted (before the job consumes it) would make `available` and low-stock truthful for in-flight work.
@@ -249,10 +247,25 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### Purchase order follow-ups (PO) — phase 25
 
-- [MED] TD-PO-01 · phase_purchase_orders · Send the PO to the supplier / BC
-  - What: `submit` only flips an internal status; the PO is never transmitted to the supplier. BC AI Agent can create a real BC purchase order (`bc_client.create_purchase_order` + `add_purchase_order_line`), but there's no external endpoint and no SupplierProvider op.
-  - Where: `packages/suppliers` (SupplierProvider), bc-ai-agent `external_*` + `bc/client.py`.
-  - Resolution: Add `POST /api/external/purchase-orders` to BC AI Agent (wraps create_purchase_order + lines), a `createPurchaseOrder` op on SupplierProvider + BcAiAgentProvider, and call it on submit (best-effort, stamp `bc_po_ref` on the PO). Pairs with TD-INV-01 (BC availability) as a "BC purchasing bridge" phase.
+- [CLOSED] TD-PO-01 · phase_purchase_orders · Send the PO to the supplier / BC
+  - Closed 2026-05-21 (phase 26, BCB). `SupplierProvider.createPurchaseOrder` (idempotent on externalPoId) + BC AI Agent `POST /api/external/purchase-orders` (wraps create_purchase_order + add_purchase_order_line, idempotency via `external_purchase_orders` table) + Service.AI `submit` best-effort push that stamps `supplier_po_ref`/`bc_synced_at`. Live BC path unvalidated (mocked tests). Ref: `docs/api/bc-purchasing-bridge.md`.
+
+### BC purchasing bridge follow-ups (BCB) — phase 26
+
+- [LOW] TD-BCB-01 · phase_bc_purchasing_bridge · Quote-builder availability badge
+  - What: The availability check is wired on the PO form (supplier + SKUs present). The quote builder has no wired supplier (the `/quotes/new` page punts supplierId to null), so per-line "can BC fulfill this?" badges aren't there.
+  - Where: `apps/web/.../quotes/new/QuoteBuilder.tsx` + the supplier resolution on `quotes/new/page.tsx`.
+  - Resolution: Resolve the branch's default supplier server-side (the registry/suppliers list endpoint already exists), pass `supplierId` into the builder, and call `/inventory/check-availability` for the current lines.
+
+- [LOW] TD-BCB-02 · phase_bc_purchasing_bridge · No PO BC-resync endpoint
+  - What: If `submit`'s best-effort BC push fails, the PO stays submitted with a null `supplier_po_ref` and there's no way to retry the BC sync short of a manual DB poke (re-submit is blocked — it's no longer a draft).
+  - Where: `apps/api/src/purchase-order-routes.ts`.
+  - Resolution: Add `POST /api/v1/purchase-orders/:id/sync-bc` (manager+) that re-calls `createPurchaseOrder` (idempotent on the PO id) and stamps the ref. Surface a "Sync to BC" button when submitted + unsynced.
+
+- [LOW] TD-BCB-03 · phase_bc_purchasing_bridge · bc-ai-agent alembic has 3 heads
+  - What: bc-ai-agent's alembic history is branched (3 heads pre-existing). The new `b1c2d3e4f5a6` migration is based on the external-tables lineage head (`c5d6e7f8g9h0`); `alembic upgrade head` would need `--heads` or a merge revision.
+  - Where: `bc-ai-agent/backend/alembic/versions`.
+  - Resolution: Add an alembic merge revision unifying the heads (separate from this phase; pre-existing condition).
 
 - [LOW] TD-PO-02 · phase_purchase_orders · No demand-signal acknowledge workflow
   - What: `from-low-stock` reads the live low-stock report directly. BC AI Agent had a `demand_signals` table with severity + acknowledge gating before PO generation; Service.AI has no equivalent persistence/triage.
