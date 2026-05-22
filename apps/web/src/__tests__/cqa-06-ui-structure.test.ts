@@ -66,12 +66,12 @@ describe('CQA-06 / CardDepositForm wraps the shared form', () => {
 
 describe('QF-05 / invoice pay page uses the shared card form', () => {
   it('InvoicePayForm wraps StripeCardForm + the invoice payment-intent endpoint', () => {
-    const src = read('src/app/invoices/[token]/pay/InvoicePayForm.tsx');
+    const src = read('src/app/invoices/[id]/pay/InvoicePayForm.tsx');
     expect(src).toMatch(/StripeCardForm/);
     expect(src).toMatch(/\/api\/v1\/public\/invoices\/.+\/payment-intent/);
   });
   it('pay page renders the InvoicePayForm (no more inert stub button)', () => {
-    const src = read('src/app/invoices/[token]/pay/page.tsx');
+    const src = read('src/app/invoices/[id]/pay/page.tsx');
     expect(src).toMatch(/InvoicePayForm/);
     expect(src).toMatch(/NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY/);
   });

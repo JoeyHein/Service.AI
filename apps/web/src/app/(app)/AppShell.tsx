@@ -2,17 +2,15 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useTransition, type ReactNode } from 'react';
+import { useState, useTransition, type ReactNode } from 'react';
 import { apiClientFetch } from '../../lib/api.js';
 import type { MeResponse } from '../../lib/session.js';
 
 /**
- * The persistent chrome for every authenticated route. Displays the
- * user's resolved scope in the header and exposes the sign-out button.
- *
- * Post-CHR-06: the franchisor / impersonation chrome (HqBanner, "View as"
- * links) is gone. Corporate admins see the corporate hub nav; branch-
- * scoped users see their day-to-day links.
+ * The persistent chrome for every authenticated route. Primary day-to-day
+ * links sit inline; the corporate-console links are grouped under a
+ * "Corporate" dropdown so the bar stays clean. Corporate admins see the
+ * corporate hub; branch-scoped users see their day-to-day links.
  */
 export function AppShell({
   session,
@@ -32,179 +30,67 @@ export function AppShell({
     });
   }
 
-  const scopeLabel = session.scope
-    ? describeScope(session.scope)
-    : 'no active membership';
+  const scopeLabel = session.scope ? describeScope(session.scope) : 'no membership';
 
   const isCorporate = session.scope?.type === 'corporate';
-  const isTech =
-    session.scope?.type === 'branch' && session.scope.role === 'tech';
+  const isTech = session.scope?.type === 'branch' && session.scope.role === 'tech';
   const isBranchScope = session.scope?.type === 'branch';
-  const isManager =
-    session.scope?.type === 'branch' && session.scope.role === 'manager';
+  const isManager = session.scope?.type === 'branch' && session.scope.role === 'manager';
 
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14">
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard" className="font-semibold text-slate-900">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14 gap-4">
+          <div className="flex items-center gap-1.5">
+            <Link href="/dashboard" className="font-semibold text-slate-900 mr-2 shrink-0">
               Service.AI
             </Link>
-            <span
-              className="text-xs text-slate-500 px-2 py-0.5 rounded border border-slate-200 bg-slate-50"
-              data-testid="scope-pill"
-            >
-              {scopeLabel}
-            </span>
-            <Link
-              href="/customers"
-              className="text-sm text-blue-700 hover:underline"
-            >
-              Customers
-            </Link>
-            <Link
-              href="/jobs"
-              className="text-sm text-blue-700 hover:underline"
-            >
-              Jobs
-            </Link>
+
+            {/* Primary, day-to-day links (all roles). */}
+            <NavLink href="/customers">Customers</NavLink>
+            <NavLink href="/jobs">Jobs</NavLink>
             <Link
               href="/invoices"
-              className="text-sm text-blue-700 hover:underline"
               data-testid="nav-invoices"
+              className="rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap"
             >
               Invoices
             </Link>
-            <Link
-              href="/crm/notes"
-              className="text-sm text-blue-700 hover:underline"
-              data-testid="nav-crm"
-            >
-              CRM Inbox
-            </Link>
-            <Link
-              href="/inventory"
-              className="text-sm text-blue-700 hover:underline"
-              data-testid="nav-inventory"
-            >
-              Inventory
-            </Link>
-            <Link
-              href="/purchase-orders"
-              className="text-sm text-blue-700 hover:underline"
-              data-testid="nav-purchase-orders"
-            >
-              POs
-            </Link>
-            {isManager && (
-              <Link
-                href="/branch"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-branch"
-              >
-                Branch
-              </Link>
-            )}
+            <NavLink href="/inventory" testId="nav-inventory">Inventory</NavLink>
+            <NavLink href="/purchase-orders" testId="nav-purchase-orders">POs</NavLink>
+            <NavLink href="/crm/notes" testId="nav-crm">CRM</NavLink>
+            <NavLink href="/pricebook">Pricebook</NavLink>
+
+            {/* Branch-scoped, day-to-day ops. */}
+            {isBranchScope && <NavLink href="/dispatch">Dispatch</NavLink>}
             {isBranchScope && (
-              <Link
-                href="/dispatch"
-                className="text-sm text-blue-700 hover:underline"
-              >
-                Dispatch
-              </Link>
+              <NavLink href="/quotes/new" testId="nav-new-quote">New quote</NavLink>
             )}
+            {isManager && <NavLink href="/branch" testId="nav-branch">Branch</NavLink>}
             {isBranchScope && (
-              <Link
-                href="/quotes/new"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-new-quote"
-              >
-                New quote
-              </Link>
+              <NavLink href="/collections" testId="nav-collections">Collections</NavLink>
             )}
+            {isTech && <NavLink href="/tech" testId="nav-tech-view">Tech view</NavLink>}
+
+            {/* Corporate console — grouped to keep the bar uncluttered. */}
             {isCorporate && (
-              <Link
-                href="/corporate"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-corporate"
-              >
-                Corporate
-              </Link>
-            )}
-            {isCorporate && (
-              <Link
-                href="/corporate/branches"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-corporate-branches"
-              >
-                Branches
-              </Link>
-            )}
-            {isCorporate && (
-              <Link
-                href="/corporate/managers"
-                className="text-sm text-blue-700 hover:underline"
-              >
-                Managers
-              </Link>
-            )}
-            {isCorporate && (
-              <Link
-                href="/corporate/comp-plans"
-                className="text-sm text-blue-700 hover:underline"
-              >
-                Comp plans
-              </Link>
-            )}
-            {isCorporate && (
-              <Link
-                href="/corporate/pricebook-suggestions"
-                className="text-sm text-blue-700 hover:underline"
-              >
-                Price requests
-              </Link>
-            )}
-            {isCorporate && (
-              <Link
-                href="/corporate/settings/margins"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-corporate-margins"
-              >
-                Margins
-              </Link>
-            )}
-            <Link
-              href="/pricebook"
-              className="text-sm text-blue-700 hover:underline"
-            >
-              Pricebook
-            </Link>
-            {isTech && (
-              <Link
-                href="/tech"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-tech-view"
-              >
-                Tech view
-              </Link>
-            )}
-            {isBranchScope && (
-              <Link
-                href="/collections"
-                className="text-sm text-blue-700 hover:underline"
-                data-testid="nav-collections"
-              >
-                Collections
-              </Link>
+              <NavDropdown label="Corporate">
+                <DropItem href="/corporate" testId="nav-corporate">Overview</DropItem>
+                <DropItem href="/corporate/branches" testId="nav-corporate-branches">Branches</DropItem>
+                <DropItem href="/corporate/managers">Managers</DropItem>
+                <DropItem href="/corporate/comp-plans">Comp plans</DropItem>
+                <DropItem href="/corporate/pricebook-suggestions">Price requests</DropItem>
+                <DropItem href="/corporate/settings/margins" testId="nav-corporate-margins">Margins</DropItem>
+              </NavDropdown>
             )}
           </div>
-          <div className="flex items-center gap-3">
+
+          <div className="flex items-center gap-3 shrink-0">
             <span
-              className="text-sm text-slate-600 hidden sm:inline"
-              data-testid="user-id"
+              className="text-xs text-slate-600 px-2 py-1 rounded-full border border-slate-200 bg-slate-50 hidden sm:inline"
+              data-testid="scope-pill"
             >
-              {session.user.id}
+              {scopeLabel}
             </span>
             <button
               type="button"
@@ -217,17 +103,79 @@ export function AppShell({
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
-        {children}
-      </main>
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">{children}</main>
     </div>
+  );
+}
+
+function NavLink({
+  href,
+  children,
+  testId,
+}: {
+  href: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      data-testid={testId}
+      className="rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900 whitespace-nowrap"
+    >
+      {children}
+    </Link>
+  );
+}
+
+function NavDropdown({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative" onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="rounded px-2 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100 whitespace-nowrap"
+        data-testid="nav-corporate-menu"
+      >
+        {label} ▾
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 z-20 mt-1 w-44 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          onClick={() => setOpen(false)}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DropItem({
+  href,
+  children,
+  testId,
+}: {
+  href: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      data-testid={testId}
+      className="block px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+    >
+      {children}
+    </Link>
   );
 }
 
 function describeScope(scope: NonNullable<MeResponse['scope']>): string {
   switch (scope.type) {
     case 'corporate':
-      return `Corporate admin · ${scope.role}`;
+      return 'Corporate';
     case 'branch':
       return `Branch · ${scope.role}`;
     default:

@@ -1,4 +1,5 @@
 import { apiServerFetch } from '../../../../lib/api.js';
+import { InviteManager, type BranchOption } from './InviteManager';
 
 interface ManagerRow {
   userId: string;
@@ -20,17 +21,27 @@ function money(cents: number): string {
 }
 
 export default async function ManagersPage() {
-  const res = await apiServerFetch<ManagerRow[]>('/api/v1/corporate/managers');
+  const [res, branchRes] = await Promise.all([
+    apiServerFetch<ManagerRow[]>('/api/v1/corporate/managers'),
+    apiServerFetch<BranchOption[]>('/api/v1/corporate/branches'),
+  ]);
   const rows = res.body.ok && res.body.data ? res.body.data : [];
+  const branches = branchRes.body.ok ? (branchRes.body.data ?? []) : [];
 
   return (
     <section>
-      <h1 className="text-2xl font-semibold text-slate-900">Managers</h1>
-      <p className="mt-1 text-sm text-slate-500">
-        {rows.length === 0
-          ? 'No managers yet.'
-          : `${rows.length} manager${rows.length === 1 ? '' : 's'} in the network.`}
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Managers</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {rows.length === 0
+              ? 'No managers yet.'
+              : `${rows.length} manager${rows.length === 1 ? '' : 's'} in the network.`}
+          </p>
+        </div>
+      </div>
+
+      <InviteManager branches={branches} />
 
       <div
         data-testid="managers-table"
