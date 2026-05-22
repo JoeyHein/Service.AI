@@ -99,15 +99,19 @@ export async function runAgentLoop(
     let toolInput = turn.toolInput;
     // Guardrail: if a gated tool fires below the confidence
     // threshold, redirect to transferToHuman.
+    // TD-SQB-FU3: per-tool confidence floor wins over the global default.
+    const floor =
+      ctx.guardrails.perTool?.[toolName]?.confidenceThreshold ??
+      ctx.guardrails.confidenceThreshold;
     if (
       gatedTools.includes(toolName) &&
-      turn.confidence < ctx.guardrails.confidenceThreshold &&
+      turn.confidence < floor &&
       ctx.guardrails.transferOnLowConfidence &&
       tools[transferToolName]
     ) {
       toolName = transferToolName;
       toolInput = {
-        reason: `confidence ${turn.confidence.toFixed(2)} below threshold ${ctx.guardrails.confidenceThreshold.toFixed(2)} for ${turn.toolName}`,
+        reason: `confidence ${turn.confidence.toFixed(2)} below threshold ${floor.toFixed(2)} for ${turn.toolName}`,
         priority: 'normal',
       };
     }

@@ -27,6 +27,11 @@ export interface ToolContext {
     confidenceThreshold: number;
     undoWindowSeconds: number;
     transferOnLowConfidence: boolean;
+    /** TD-SQB-FU3: per-tool overrides; the loop prefers these over the global. */
+    perTool?: Record<
+      string,
+      { confidenceThreshold?: number; dollarCapCents?: number; undoWindowMin?: number }
+    >;
   };
   /** Narrowed AssistantTurn metadata from the turn that emitted
    *  this tool call. Used by `confidence`-gated tools. */

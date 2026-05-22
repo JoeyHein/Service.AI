@@ -140,6 +140,26 @@ describe('CV-02 / runAgentLoop', () => {
     expect(String(toolEntry.tool!.input.reason)).toContain('bookJob');
   });
 
+  it('TD-SQB-FU3: a per-tool floor overrides the global threshold', async () => {
+    // bookJob fires at 0.85 — above the global 0.8 but below its per-tool 0.9.
+    const ai = stubAIClient({ script: [toolUse('bookJob', { title: 'x' }, 0.85)] });
+    const strictCtx: ToolContext = {
+      ...ctx,
+      guardrails: { ...ctx.guardrails, perTool: { bookJob: { confidenceThreshold: 0.9 } } },
+    };
+    const out = await runAgentLoop({
+      ai,
+      systemPrompt: 's',
+      tools: { bookJob: bookTool, transferToHuman: transferTool },
+      ctx: strictCtx,
+      gatedTools: ['bookJob'],
+    });
+    expect(out.outcome).toBe('transferred');
+    const toolEntry = out.transcript.find((t) => t.role === 'tool')!;
+    expect(toolEntry.tool!.name).toBe('transferToHuman');
+    expect(String(toolEntry.tool!.input.reason)).toContain('0.90');
+  });
+
   it('does NOT redirect a non-gated tool below threshold', async () => {
     const ai = stubAIClient({
       script: [

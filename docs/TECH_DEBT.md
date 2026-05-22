@@ -19,10 +19,8 @@ Format:
   - REMAINING (the one remnant): if the quote was already **converted to a BC sales order**, the order stays alive — `provider.voidQuote` returns 422 for a converted quote (BC AI Agent rejects it), and there is no order-cancel operation. Needs a BC-side `cancel/delete sales order` endpoint + a `provider.cancelOrder` method, then wire it into `/void` for the converted case. Also: voiding does NOT refund an already-PAID balance invoice (only voids unpaid ones) — refunding a collected balance is a separate flow.
   - Where: bc-ai-agent external order API (new cancel-order op), `packages/suppliers` (`cancelOrder`), `quote-routes.ts::/void`.
 
-- [LOW] TD-QF-02 · phase_quote_fulfillment · Materials reconciliation on the balance invoice
-  - What: The balance invoice bills the accepted quote total as-is. If what was installed differs from what was quoted (substitutions, extra parts), there's no reconciliation step — the office would manually edit the draft invoice.
-  - Where: `balance-invoice.ts` + the invoice PATCH flow.
-  - Resolution: A reconciliation surface (quoted vs. installed) when materials tracking exists. Fine to defer — the office can edit the draft today.
+- [WONTFIX-v1] TD-QF-02 · phase_quote_fulfillment · Materials reconciliation on the balance invoice
+  - Decision 2026-05-22: deliberately deferred (the TD itself says "fine to defer — the office can edit the draft today"). The balance invoice is a DRAFT the office reviews + can edit before finalize, so substitutions/extra parts are already handleable manually. A structured quoted-vs-installed reconciliation surface only earns its keep once per-job materials tracking exists (INV consumption is auto from the quote, not a separate "what the tech actually installed" capture). Revisit alongside a tech materials-used capture feature.
 
 - [CLOSED] TD-QF-03 · phase_quote_fulfillment · Office invoice console shipped (phase_office_invoicing)
   - Closed 2026-05-20. Phase 19 (OI-01..05): `GET /api/v1/invoices` list + `(app)/invoices` list + `(app)/invoices/[id]` detail (finalize/send/copy-link, reusing the existing endpoints) + Invoices nav + job-page invoice list. The QF-06 banner links to the detail page. See `docs/api/office-invoicing.md`.
@@ -102,15 +100,11 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 - [CLOSED] TD-SQB-FU2 · phase_supplier_quote_bridge · "Customer accepted" button shipped in QOC-07 (both `QuoteBuilder.tsx` and `MobileQuoteBuilder.tsx`). The ts-rest contract migration is a smaller follow-up under TD-QOC-FU1 below if desired.
 
-- [LOW] TD-QOC-FU1 · phase_quote_order_conversion · `/accept` should be a ts-rest contract entry
-  - What: QOC ships the accept endpoint as a raw Fastify handler. Other quote routes in `packages/contracts/src/quotes.ts` live as ts-rest contracts. The UI works today by calling fetch directly; type safety would improve with the contract layer.
-  - Where: `packages/contracts/src/` (new entry), `apps/api/src/quote-routes.ts::/accept` (migrate the binding).
-  - Resolution: Add the ts-rest contract entry, generate the client, switch QuoteBuilder/MobileQuoteBuilder to use the typed client.
+- [WONTFIX-v1] TD-QOC-FU1 · phase_quote_order_conversion · `/accept` should be a ts-rest contract entry
+  - Decision 2026-05-22: deliberately deferred. Purely a type-safety/consistency nicety — the endpoint works and is covered by live integration tests; migrating it to ts-rest touches the contracts package + client regen + two UI call sites for zero functional change. Several other quote routes (`/share`, `/void`, `/design-config`, `/accept`) are also raw handlers; a single sweep migrating them all to ts-rest is the right unit of work, not a one-off for `/accept`. Revisit when the contracts layer gets a broader pass.
 
-- [LOW] TD-SQB-FU3 · phase_supplier_quote_bridge · Per-tool AI guardrails in `ctx.guardrails`
-  - What: M3 added an in-tool confidence + dollar-cap guard inside `commitQuoteTool` (floors hard-coded to 0.9 and $5,000 per CLAUDE.md). The agent loop still uses a single global `confidenceThreshold` for every gated tool; per-tool floors are encoded only inside the tool that needs them. Works today (only `commitQuote` has a higher floor than the global), will get noisy once a fourth gated tool with its own floor lands.
-  - Where: `packages/ai/src/loop.ts`, `packages/ai/src/call-context.ts::DEFAULT_GUARDRAILS`, all gated tool files.
-  - Resolution: Reshape `ctx.guardrails` to `Record<toolName, { confidenceThreshold, dollarCap?, undoWindowMin? }>`. Have `loop.ts` look up `guardrails[toolName]` before falling back to the global. Remove the in-tool guard once the loop enforces.
+- [CLOSED] TD-SQB-FU3 · phase_supplier_quote_bridge · Per-tool AI guardrails
+  - Closed 2026-05-22. `guardrails.perTool` (`Record<toolName, { confidenceThreshold?, dollarCapCents?, undoWindowMin? }>`) added to the call-context + tool-context types, seeded from the CLAUDE.md table (commitQuote 0.9/$5k, bookJob 0.8, quoteConfigurator 0.7, autoAssign 0.8, photoQuote 0.75/$500, sendDraft 0.9). `loop.ts` now resolves `perTool[toolName]?.confidenceThreshold ?? confidenceThreshold` for the gate — a new gated tool just adds a `perTool` entry, no per-tool global. Loop test asserts a per-tool floor overrides the global. The in-tool `commitQuote` confidence+dollar guard is kept as defense-in-depth (the tool can be invoked outside the loop's gating), now redundant with the loop's floor rather than the only enforcement.
 
 ### Audit-1 minors (deferred — see phase_supplier_quote_bridge_AUDIT_1.md)
 
@@ -237,10 +231,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-BCB-03 · phase_bc_purchasing_bridge · bc-ai-agent alembic has 3 heads
   - Closed 2026-05-21. Added no-op merge revision `d4e5f6a7b8c9` (down_revision = the 3 heads: `b1c2d3e4f5a6`, `c7d8e9f0a1b2`, `m7n8o9p0q1r2`) so `alembic upgrade head` resolves to a single head. No schema change. (bc-ai-agent local commit.)
 
-- [LOW] TD-PO-02 · phase_purchase_orders · No demand-signal acknowledge workflow
-  - What: `from-low-stock` reads the live low-stock report directly. BC AI Agent had a `demand_signals` table with severity + acknowledge gating before PO generation; Service.AI has no equivalent persistence/triage.
-  - Where: `inventory-routes.ts` (low-stock), `purchase-order-routes.ts` (from-low-stock).
-  - Resolution: If managers want to review/snooze reorder suggestions before ordering, add a lightweight reorder-suggestion table + an acknowledge step. Not needed while the live report suffices.
+- [WONTFIX-v1] TD-PO-02 · phase_purchase_orders · No demand-signal acknowledge workflow
+  - Decision 2026-05-22: deliberately not built. The live `GET /inventory/low-stock` report + `POST /purchase-orders/from-low-stock` already give the manager the full review-then-order loop (they see what's low and choose to draft a PO, which they then review/edit before submit). A persisted demand-signal table with severity + ack/snooze (BC AI Agent's pattern) adds a table + UI for marginal value on a single-branch pilot. Reopen if a manager wants to snooze/track suggestions over time across many branches.
 
 - [CLOSED] TD-PO-03 · phase_purchase_orders · Over-receipt flag + draft-line edits
   - Closed 2026-05-22. Receiving accepts an `allowOver: true` flag to receive beyond the ordered quantity (real over-shipments); without it the 422 guard stands. `PATCH /api/v1/purchase-orders/:id/lines` replaces lines on a DRAFT PO (recomputes subtotal); 409 once submitted. 2 tests. (Vendor-invoice / 3-way AP match is a separate finance feature, intentionally out of scope for v1.)

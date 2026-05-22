@@ -19,6 +19,17 @@ export interface ResolvedCallTenant {
     confidenceThreshold: number;
     undoWindowSeconds: number;
     transferOnLowConfidence: boolean;
+    /**
+     * TD-SQB-FU3: per-tool overrides. The loop looks up
+     * `perTool[toolName]?.confidenceThreshold` before falling back to the
+     * global `confidenceThreshold`, so a high-stakes tool can demand more
+     * confidence without every gated tool inheriting it. Mirrors the
+     * CLAUDE.md "AI guardrail defaults" table.
+     */
+    perTool?: Record<
+      string,
+      { confidenceThreshold?: number; dollarCapCents?: number; undoWindowMin?: number }
+    >;
   };
 }
 
@@ -26,6 +37,15 @@ const DEFAULT_GUARDRAILS = {
   confidenceThreshold: 0.8,
   undoWindowSeconds: 900,
   transferOnLowConfidence: true,
+  perTool: {
+    // names are the registered tool names (see apps/api/src/ai-tools)
+    bookJob: { confidenceThreshold: 0.8, undoWindowMin: 15 },
+    quoteConfigurator: { confidenceThreshold: 0.7 },
+    commitQuote: { confidenceThreshold: 0.9, dollarCapCents: 500_000, undoWindowMin: 5 },
+    autoAssign: { confidenceThreshold: 0.8, undoWindowMin: 5 },
+    photoQuote: { confidenceThreshold: 0.75, dollarCapCents: 50_000 },
+    sendDraft: { confidenceThreshold: 0.9, undoWindowMin: 30 },
+  } as Record<string, { confidenceThreshold?: number; dollarCapCents?: number; undoWindowMin?: number }>,
 };
 
 export async function resolveTenantByToNumber(
