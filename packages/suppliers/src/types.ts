@@ -200,6 +200,24 @@ export interface CreatePurchaseOrderResponse {
   createdAt: string;
 }
 
+export interface ResolveDoorConfigRequest {
+  supplierAccountCode: string;
+  /** The widget's human/ID door config (open shape; the provider maps it). */
+  doorConfig: Record<string, unknown>;
+  requestId?: string;
+}
+
+export interface DoorConfigPart {
+  sku: string;
+  quantity: number;
+  description?: string;
+  category?: string;
+}
+
+export interface ResolveDoorConfigResponse {
+  parts: DoorConfigPart[];
+}
+
 /**
  * Catalog row used by the live-quote autocomplete. Optional helper —
  * providers that don't expose a browsable catalog can return [].
@@ -296,6 +314,15 @@ export interface SupplierProvider {
   createPurchaseOrder?(
     req: CreatePurchaseOrderRequest,
   ): Promise<SupplierResult<CreatePurchaseOrderResponse>>;
+
+  /**
+   * TD-WI-01. Resolve a door-designer config to concrete supplier SKUs +
+   * quantities (so a widget lead can arrive with line items instead of a
+   * notes blob). No side effects. Optional — callers null-check.
+   */
+  resolveDoorConfig?(
+    req: ResolveDoorConfigRequest,
+  ): Promise<SupplierResult<ResolveDoorConfigResponse>>;
 
   /**
    * Optional catalog browse — used by the live-quote autocomplete.

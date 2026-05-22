@@ -40,6 +40,9 @@ import type {
   ConvertQuoteToOrderResponse,
   CreatePurchaseOrderRequest,
   CreatePurchaseOrderResponse,
+  DoorConfigPart,
+  ResolveDoorConfigRequest,
+  ResolveDoorConfigResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -64,7 +67,7 @@ export interface BcAiAgentProviderOptions extends SupplierConfig {
   timeoutMs?: number;
   /** Optional Sentry-style hook for instrumentation. */
   onError?: (ctx: {
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder';
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder' | 'resolveDoorConfig';
     error: SupplierError;
     attempt: number;
   }) => void;
@@ -371,6 +374,27 @@ export class BcAiAgentProvider implements SupplierProvider {
     };
   }
 
+  /**
+   * TD-WI-01. Resolve a door-designer config to BC SKUs + quantities.
+   * Path: POST /api/external/door-config/resolve-parts.
+   */
+  async resolveDoorConfig(
+    req: ResolveDoorConfigRequest,
+  ): Promise<SupplierResult<ResolveDoorConfigResponse>> {
+    const body = {
+      supplierAccountCode: req.supplierAccountCode || this.defaultAccountCode,
+      doorConfig: req.doorConfig,
+    };
+    const raw = await this.callWithRetry<{ parts: DoorConfigPart[] }>(
+      'resolveDoorConfig',
+      '/api/external/door-config/resolve-parts',
+      body,
+      req.requestId,
+    );
+    if (!raw.ok) return raw;
+    return { ok: true, data: { parts: raw.data.parts } };
+  }
+
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {
     // Not exposed externally; consumers should use Service.AI's own
     // pricebook for the autocomplete catalog.
@@ -382,7 +406,7 @@ export class BcAiAgentProvider implements SupplierProvider {
   // ---------------------------------------------------------------------------
 
   private async callWithRetry<T>(
-    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder',
+    operation: 'priceItems' | 'commitQuote' | 'voidQuote' | 'convertQuoteToOrder' | 'checkAvailability' | 'createPurchaseOrder' | 'resolveDoorConfig',
     path: string,
     body: unknown,
     requestId?: string,

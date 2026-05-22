@@ -22,12 +22,14 @@ import {
   branches,
   customers,
   quotes,
+  quoteLineItems,
   suppliers,
   withScope,
   type RequestScope,
 } from '@service-ai/db';
 import * as schema from '@service-ai/db';
 import { storeDoorImage, type ObjectStore } from './object-store.js';
+import type { ProviderRegistry, DoorConfigPart } from '@service-ai/suppliers';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -61,6 +63,7 @@ export function registerPublicWidgetRoutes(
   app: FastifyInstance,
   db: Drizzle,
   objectStore: ObjectStore,
+  registry: ProviderRegistry,
 ): void {
   app.post('/api/v1/public/widget/quote-request', async (req, reply) => {
     if ((req.headers['content-type'] ?? '').includes('application/json') === false) {
@@ -89,7 +92,13 @@ export function registerPublicWidgetRoutes(
       .limit(1);
     const branch = branchRows[0];
     const supRows = await db
-      .select({ id: suppliers.id })
+      .select({
+        id: suppliers.id,
+        providerKind: suppliers.providerKind,
+        endpointUrl: suppliers.endpointUrl,
+        apiKeySecretRef: suppliers.apiKeySecretRef,
+        supplierAccountCode: suppliers.supplierAccountCode,
+      })
       .from(suppliers)
       .orderBy(asc(suppliers.createdAt))
       .limit(1);
@@ -108,6 +117,30 @@ export function registerPublicWidgetRoutes(
       branchId: branch.id,
     };
     const configSummary = summarizeConfig(doorConfig);
+
+    // TD-WI-01: best-effort resolve the door config → SKUs so the draft lead
+    // arrives with line items (unpriced; a manager prices them). Falls back to
+    // the notes-only behaviour when the supplier can't resolve.
+    let resolvedParts: DoorConfigPart[] = [];
+    try {
+      const provider = registry.bind({
+        supplierId: supplier.id,
+        providerKind: supplier.providerKind as 'bc_ai_agent' | 'mock',
+        endpointUrl: supplier.endpointUrl,
+        apiKey: process.env[supplier.apiKeySecretRef] ?? '',
+        supplierAccountCode: supplier.supplierAccountCode,
+      });
+      if (provider.resolveDoorConfig) {
+        const res = await provider.resolveDoorConfig({
+          supplierAccountCode: supplier.supplierAccountCode,
+          doorConfig,
+          requestId: req.id,
+        });
+        if (res.ok) resolvedParts = res.data.parts;
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'widget door-config resolve failed (notes-only fallback)');
+    }
 
     const result = await withScope(db, scope, async (tx) => {
       // Find-or-create the customer by email within the branch.
@@ -178,6 +211,26 @@ export function registerPublicWidgetRoutes(
         .returning({ id: quotes.id });
       const quoteId = q[0]!.id;
 
+      // TD-WI-01: seed the resolved SKUs as (unpriced) draft lines so a manager
+      // opens a pre-populated quote. Pricing is recomputed by /quotes/:id/price.
+      if (resolvedParts.length > 0) {
+        await tx.insert(quoteLineItems).values(
+          resolvedParts.map((p, i) => ({
+            quoteId,
+            branchId: branch.id,
+            position: i + 1,
+            supplierSku: p.sku,
+            description: p.description ?? p.sku,
+            itemCategory: p.category ?? null,
+            quantity: String(p.quantity),
+            unitPriceCents: 0,
+            lineTotalCents: 0,
+            appliedMarginPct: '0',
+            appliedMarginSource: 'corporate_default' as const,
+          })),
+        );
+      }
+
       // Best-effort: store the configured-door image and stamp its key on
       // the notes so a manager can see what was designed. Never blocks intake.
       const imageKey = await storeDoorImage(
@@ -191,7 +244,7 @@ export function registerPublicWidgetRoutes(
           .set({ notes: `${quoteNotes}\nImage: ${imageKey}` })
           .where(eq(quotes.id, quoteId));
       }
-      return { quoteId, customerId };
+      return { quoteId, customerId, partsResolved: resolvedParts.length };
     });
 
     return reply.code(201).send({ ok: true, data: result });

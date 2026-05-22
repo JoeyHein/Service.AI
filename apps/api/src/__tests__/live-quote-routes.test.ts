@@ -1824,6 +1824,16 @@ describe('public widget quote-request (WI-01)', () => {
       [email, BRANCH_ID],
     );
     expect(crows.length).toBe(1);
+
+    // TD-WI-01: the door config is auto-resolved to SKUs and seeded as draft
+    // lines (the mock provider returns a panel + a spring).
+    expect(res.json().data.partsResolved).toBe(2);
+    const { rows: lrows } = await pool.query<{ supplier_sku: string }>(
+      `SELECT supplier_sku FROM quote_line_items WHERE quote_id = $1 ORDER BY position`,
+      [quoteId],
+    );
+    expect(lrows.length).toBe(2);
+    expect(lrows[0]!.supplier_sku).toContain('Panorama'); // family-PANEL from the mock
   });
 
   it('reuses an existing customer by email (find-or-create)', async () => {

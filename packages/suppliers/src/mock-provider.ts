@@ -25,6 +25,8 @@ import type {
   ConvertQuoteToOrderResponse,
   CreatePurchaseOrderRequest,
   CreatePurchaseOrderResponse,
+  ResolveDoorConfigRequest,
+  ResolveDoorConfigResponse,
   PriceItemsRequest,
   PriceItemsResponse,
   SupplierCatalogEntry,
@@ -308,6 +310,23 @@ export class MockSupplierProvider implements SupplierProvider {
     };
     this.purchaseOrders.set(req.externalPoId, response);
     return { ok: true, data: response };
+  }
+
+  async resolveDoorConfig(
+    req: ResolveDoorConfigRequest,
+  ): Promise<SupplierResult<ResolveDoorConfigResponse>> {
+    if (this.latencyMs > 0) await sleep(this.latencyMs);
+    // Deterministic: emit a spring + a panel keyed off the config family/size.
+    const family = String(req.doorConfig['family'] ?? req.doorConfig['familyId'] ?? 'DOOR');
+    return {
+      ok: true,
+      data: {
+        parts: [
+          { sku: `${family}-PANEL`, quantity: 1, description: `${family} panel`, category: 'panel' },
+          { sku: 'SPRING-STD', quantity: 2, description: 'Torsion spring', category: 'spring' },
+        ],
+      },
+    };
   }
 
   async listCatalog(): Promise<SupplierResult<SupplierCatalogEntry[]>> {

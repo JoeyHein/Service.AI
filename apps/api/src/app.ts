@@ -402,7 +402,7 @@ export function buildApp(opts: AppOptions = {}) {
     // the EventBus is resolved.
     registerPublicInvoiceRoutes(app, opts.drizzle, stripe);
     registerPublicQuoteRoutes(app, { drizzle: opts.drizzle, providerRegistry, stripe });
-    registerPublicWidgetRoutes(app, opts.drizzle, objectStore);
+    registerPublicWidgetRoutes(app, opts.drizzle, objectStore, providerRegistry);
     registerPushRoutes(app, opts.drizzle);
     // Resolve the push sender now so a missing-VAPID warning lands
     // at boot time rather than at first send. Stashed on the app

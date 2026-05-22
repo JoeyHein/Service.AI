@@ -14,10 +14,8 @@ Format:
 
 ## phase_quote_fulfillment (QF)
 
-- [LOW] TD-QF-01 · phase_quote_fulfillment · `accepted → void` unwind — mostly done (VU); one remnant
-  - DONE (phase_void_unwind, VU, 2026-05-20): voiding now refunds the paid deposit (Stripe `createRefund`, idempotent via `quotes.deposit_refunded_at`, migration 0021) and voids the unpaid balance invoice (in the void tx). `provider.voidQuote` already voids the BC sales quote.
-  - REMAINING (the one remnant): if the quote was already **converted to a BC sales order**, the order stays alive — `provider.voidQuote` returns 422 for a converted quote (BC AI Agent rejects it), and there is no order-cancel operation. Needs a BC-side `cancel/delete sales order` endpoint + a `provider.cancelOrder` method, then wire it into `/void` for the converted case. Also: voiding does NOT refund an already-PAID balance invoice (only voids unpaid ones) — refunding a collected balance is a separate flow.
-  - Where: bc-ai-agent external order API (new cancel-order op), `packages/suppliers` (`cancelOrder`), `quote-routes.ts::/void`.
+- [WONTFIX-v1 / BLOCKED] TD-QF-01 · phase_quote_fulfillment · converted-order cancel on void
+  - Decision 2026-05-22: BLOCKED on BC capability. VU already handles the financial unwind (deposit refund + unpaid balance-invoice void + BC sales-quote void). The remaining piece — cancelling an already-converted BC **sales order** on void — has no implementation path: `bc_client` exposes only create/update/ship for sales orders (no cancel/delete), and BC OData v2.0 does not expose order deletion (a created order is managed by status in BC, not deleted via API). Building a speculative "cancel via update_sales_order to some status" is unverifiable without live BC + BC docs and risks corrupting real orders. Workaround today: an order placed in error is cancelled by staff in BC directly; the Service.AI quote still voids + refunds. Reopen if BC adds a cancel-order action (then: `provider.cancelOrder` → `POST /api/external/quotes/:id/cancel-order` → wire into `/void` for the converted case). Refunding an already-PAID balance invoice is likewise a separate, deliberate finance flow (not auto on void).
 
 - [WONTFIX-v1] TD-QF-02 · phase_quote_fulfillment · Materials reconciliation on the balance invoice
   - Decision 2026-05-22: deliberately deferred (the TD itself says "fine to defer — the office can edit the draft today"). The balance invoice is a DRAFT the office reviews + can edit before finalize, so substitutions/extra parts are already handleable manually. A structured quoted-vs-installed reconciliation surface only earns its keep once per-job materials tracking exists (INV consumption is auto from the quote, not a separate "what the tech actually installed" capture). Revisit alongside a tech materials-used capture feature.
@@ -154,18 +152,14 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-QOC-A5 · phase_quote_order_conversion · suppliers read wrapped in `withScope`
   - Closed 2026-05-20. Both the accept-path convert lookup and the void-path supplier lookup now read `suppliers` inside `withScope(db, scope, ...)`, matching the codebase convention even though the corporate-only table reads safely from any scope today.
 
-- [LOW] TD-QOC-A6 · phase_quote_order_conversion · BC AI Agent convert endpoint accepts any content-type
-  - What: The `POST /api/external/quotes/:id/convert-to-order` endpoint has no request body (keyed entirely on the path param). FastAPI accepts any content-type for empty-body POSTs.
-  - Where: `bc-ai-agent/backend/app/api/external_quotes.py::convert_to_order`
-  - Why still deferred (2026-05-20): genuinely cosmetic — there is no body to validate, so there is no injection/parse surface. Tighten with `Body(None)` or a strict `{}` model only when/if the endpoint grows real body fields. Not worth the churn now. (The newer `/void` endpoint already takes an optional `VoidQuoteIn` model.)
+- [CLOSED] TD-QOC-A6 · phase_quote_order_conversion · convert endpoint body tightened
+  - Closed 2026-05-22. `convert_to_order` now takes `Optional[ConvertToOrderIn]` (`model_config = ConfigDict(extra='forbid')`) — empty body still works (path-keyed), smuggled fields → 422. pytest asserts the 422. (bc-ai-agent local commit 4320ba3.)
 
 - [CLOSED] TD-QOC-A7 · phase_quote_order_conversion · `Idempotency-Key` header on convert call
   - Closed 2026-05-20. `ConvertQuoteToOrderRequest` gained an optional `idempotencyKey`; `BcAiAgentProvider` threads it through `callWithRetry`/`doFetch` to set the `Idempotency-Key` header. `quote-routes.ts::/accept` passes the quoteId. Belt-and-suspenders alongside the path-param idempotency BC already enforces.
 
-- [LOW] TD-QOC-A8 · phase_quote_order_conversion · `external_call_log` not implemented (inherited from SQB)
-  - What: The SQB gate called for an `external_call_log` table that records every external API call (key_id, latency, status). It was never implemented in SQB; QOC's convert endpoint inherits the gap.
-  - Where: bc-ai-agent's `external_quotes.py`, `external_pricing.py`, new `external_quotes/convert-to-order` (all three lack the call log).
-  - Resolution: Add an `external_call_log` table + a small wrapper that records every external call. One follow-up phase that covers all three endpoints. Useful for billing / rate limiting / debug.
+- [CLOSED] TD-QOC-A8 · phase_quote_order_conversion · `external_call_log` implemented
+  - Closed 2026-05-22. `external_call_log` table (model + alembic `e5f6a7b8c9d0`) + an `/api/external/*` HTTP middleware in `main.py` that records method/path/status/latency_ms + the 12-char key prefix (never the secret), best-effort (a log failure never affects the response) — covers all external endpoints (pricing, quotes, convert, void, availability, purchase-orders) at once. (bc-ai-agent local commit 4320ba3.)
 
 - [WONTFIX-v1] TD-QOC-A9 · phase_quote_order_conversion · Migration 0018 not CONCURRENTLY-safe
   - Decision 2026-05-22: accepted for v1. 0018 is already applied; rewriting an applied migration achieves nothing, and `CREATE INDEX CONCURRENTLY` can't run inside a transaction (our migration runner wraps each file in BEGIN/COMMIT). The brief ACCESS EXCLUSIVE lock only matters on a hot, large `quotes` table — Elevated Doors' single-branch pilot is nowhere near that. Documented as the pattern to use for any FUTURE index on a large table; no change to the existing migration.
@@ -175,10 +169,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### Widget integration follow-ups (WI) — phase 22
 
-- [HIGH] TD-WI-01 · phase_widget_integration · Auto-SKU resolution for door-designer leads
-  - What: The door-designer widget emits a human-readable `doorConfig` (family/size/design/color/windows), not resolved BC SKUs. v1 captures the config on a draft quote's notes and a manager prices it by hand. This is the deliberate v1 scope line, but it leaves a manual step on every widget lead.
-  - Where: `apps/api/src/public-widget-routes.ts` (lead intake), `apps/api/src/quote-routes.ts::/design-config` (in-app). Resolution lives behind a NEW BC AI Agent external endpoint wrapping `part_number_service`.
-  - Resolution: Add `POST /api/external/door-config/resolve-parts` to BC AI Agent that maps a `doorConfig` → `[{ sku, quantity }]` (it already does this internally for `get_parts_for_door_config`). Add a `resolveDoorConfig` op to `SupplierProvider` + `BcAiAgentProvider`; on widget intake, resolve → seed priced quote lines instead of (or in addition to) the notes block. Then the lead arrives priced.
+- [CLOSED] TD-WI-01 · phase_widget_integration · Auto-SKU resolution for door-designer leads
+  - Closed 2026-05-22 (cross-repo). BC AI Agent: `POST /api/external/door-config/resolve-parts` maps the widget's config (familyId/colorId/designId/widthInches…) onto `get_parts_for_door_config` and returns `[{ sku, quantity, description, category }]` (3 pytest). Service.AI: `SupplierProvider.resolveDoorConfig` (Mock + BcAiAgent), and the public widget intake now best-effort resolves the config → SKUs and **seeds them as (unpriced) draft quote lines** so a manager opens a pre-populated quote and just hits price (the `/quotes/:id/price` flow recomputes with the margin engine). Falls back to notes-only when resolve fails. Response carries `partsResolved`. Test asserts 2 seeded lines. (Left intentionally unpriced at intake rather than replicating the full margin pipeline in the public path — the draft is priced in one click.)
 
 - [CLOSED] TD-WI-02 · phase_widget_integration · In-app design image now stored
   - Closed 2026-05-22. Threaded `objectStore` into `QuoteRoutesDeps`; `/quotes/:id/design-config` now best-effort stores the door image under `quote-designs/<quoteId>.png` (reusing `storeDoorImage`) and stamps the key on the notes — same as the public widget path. Test asserts the `Image: quote-designs/...` line.
@@ -188,10 +180,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### CRM follow-ups (CRM) — phase 23
 
-- [MED] TD-CRM-01 · phase_crm · External BC metrics overlay on the Customer 360
-  - What: The Customer 360 KPIs are computed from Service.AI's own jobs/quotes/invoices. The BC AI Agent portal also surfaced BC-OData numbers (sales YTD vs prior year, credit limit + utilization, on-time delivery %, recent shipments, monthly sales chart) that Service.AI does not have.
-  - Where: `apps/api/src/crm-routes.ts` (metrics), `bc_metrics_service.get_customer_metrics` in bc-ai-agent.
-  - Resolution: Add a `customerMetrics` op to `SupplierProvider` + a BC AI Agent `GET /api/external/customers/:account/metrics` endpoint, and render a "Business Central" overlay section on the 360 when the customer is BC-linked. Needs the supplier_account_code ↔ customer mapping.
+- [WONTFIX-v1] TD-CRM-01 · phase_crm · External BC metrics overlay on the Customer 360
+  - Decision 2026-05-22: conceptual mismatch with the corporate-hub model. `bc_metrics_service.get_customer_metrics(customer_number)` is keyed by a **BC customer = a dealer/account** (in the OPENDC portal, "customers" are BC dealer accounts). In Service.AI, `customers` are **homeowners (end consumers)** and the single BC account is the SUPPLIER (Elevated Doors). So "sales YTD / credit limit / on-time % for this customer" has no per-homeowner meaning — those numbers describe the whole Elevated Doors↔BC relationship. The right home for that data is a future **corporate supplier-account dashboard** (one card for the Elevated Doors BC account: YTD vs PY, open orders, recent shipments), not the homeowner 360. Filed as that future feature; the per-homeowner overlay this TD described is intentionally not built. (Service.AI's own per-homeowner 360 metrics — lifetime revenue, jobs/quotes, recency — already shipped in CRM-03.)
 
 - [CLOSED] TD-CRM-02 · phase_crm · Payments are a distinct timeline stream
   - Closed 2026-05-22. The 360 timeline UNION gained `payments` (positive) + `refunds` (negative) arms (joined to invoices by customer), surfaced as `kind='payment'` with subtype payment/refund. Web `CustomerActivity` got a "Payments" filter + teal badge. Test seeds a payment + refund and asserts the `payment` kind + count.
