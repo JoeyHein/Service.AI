@@ -120,6 +120,10 @@ export function NewCustomerForm() {
         body.country = selectedDetails.country;
         body.latitude = selectedDetails.latitude;
         body.longitude = selectedDetails.longitude;
+      } else if (addressQuery.trim()) {
+        // No Places pick (e.g. Places not configured, or a town the stub
+        // doesn't list) — persist the free-typed address so it isn't lost.
+        body.addressLine1 = addressQuery.trim();
       }
       const res = await apiClientFetch<{ id: string }>('/api/v1/customers', {
         method: 'POST',
