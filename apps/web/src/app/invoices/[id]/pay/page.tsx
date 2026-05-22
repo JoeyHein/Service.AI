@@ -26,9 +26,11 @@ interface PublicInvoice {
 export default async function InvoicePayPage({
   params,
 }: {
-  params: Promise<{ token: string }>;
+  // Slug is named `id` to match the office `/invoices/[id]` route (Next requires
+  // the same slug name at a shared path); the value is the payment-link token.
+  params: Promise<{ id: string }>;
 }) {
-  const { token } = await params;
+  const { id: token } = await params;
   const res = await apiServerFetch<PublicInvoice>(
     `/api/v1/public/invoices/${encodeURIComponent(token)}`,
   );
