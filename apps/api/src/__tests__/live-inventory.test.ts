@@ -249,6 +249,59 @@ describe('INV-02 / inventory API', () => {
     });
     expect(read.statusCode).toBe(404);
   });
+
+  it('valuation: sums on-hand value by category (INV-04)', async () => {
+    const cat = `VAL-${Date.now()}`;
+    await createItem(cookies.denverManager, { sku: `V1-${Date.now()}`, name: 'A', category: cat, qtyOnHand: 4, unitCostCents: 500 });
+    await createItem(cookies.denverManager, { sku: `V2-${Date.now()}`, name: 'B', category: cat, qtyOnHand: 2, unitCostCents: 1000 });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/inventory/valuation',
+      headers: { cookie: cookies.denverManager },
+    });
+    expect(res.statusCode).toBe(200);
+    const row = (res.json().data.byCategory as Array<{ category: string; onHandValueCents: number; items: number }>).find((r) => r.category === cat);
+    expect(row).toBeTruthy();
+    expect(row!.onHandValueCents).toBe(4 * 500 + 2 * 1000); // 4000
+    expect(row!.items).toBe(2);
+    expect(res.json().data.totalValueCents).toBeGreaterThanOrEqual(4000);
+  });
+
+  it('transfer: corporate moves stock between branches (INV-03)', async () => {
+    const { rows: au } = await pool.query<{ id: string }>(`SELECT id FROM branches WHERE slug = 'austin'`);
+    const austinBranchId = au[0]!.id;
+    const sku = `TR-${Date.now()}`;
+    const created = await createItem(cookies.denverManager, { sku, name: 'Transferable', qtyOnHand: 10 });
+    const fromItemId = created.json().data.id as string;
+
+    // Branch manager cannot transfer (corporate-only).
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/api/v1/inventory/transfer',
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ fromItemId, toBranchId: austinBranchId, quantity: 3 }),
+    });
+    expect(denied.statusCode).toBe(403);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/inventory/transfer',
+      headers: { cookie: cookies.corporate, 'content-type': 'application/json' },
+      payload: JSON.stringify({ fromItemId, toBranchId: austinBranchId, quantity: 3 }),
+    });
+    expect(res.statusCode).toBe(200);
+
+    const { rows: src } = await pool.query<{ qty_on_hand: string }>(
+      `SELECT qty_on_hand FROM inventory_items WHERE id = $1`,
+      [fromItemId],
+    );
+    expect(Number(src[0]!.qty_on_hand)).toBe(7);
+    const { rows: dst } = await pool.query<{ qty_on_hand: string }>(
+      `SELECT qty_on_hand FROM inventory_items WHERE branch_id = $1 AND sku = $2`,
+      [austinBranchId, sku],
+    );
+    expect(Number(dst[0]!.qty_on_hand)).toBe(3);
+  });
 });
 
 describe('INV-03 / auto-consume on job completion + reconciliation', () => {

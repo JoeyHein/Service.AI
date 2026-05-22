@@ -214,20 +214,14 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-INV-01 · phase_inventory · BC supplier-availability overlay
   - Closed 2026-05-21 (phase 26, BCB). `SupplierProvider.checkAvailability` + BC AI Agent `POST /api/external/check-availability` (wraps `bc_inventory_service.check_availability`) + Service.AI `POST /api/v1/inventory/check-availability` + a "Check supplier stock" affordance on the PO form. Live BC path unvalidated (mocked tests). Ref: `docs/api/bc-purchasing-bridge.md`.
 
-- [MED] TD-INV-02 · phase_inventory · Auto-reserve stock on quote accept
-  - What: `inventory_items.qty_reserved` exists and `available = on_hand - reserved` is computed everywhere, but nothing populates `qty_reserved`. Reserving stock when a quote is accepted (before the job consumes it) would make `available` and low-stock truthful for in-flight work.
-  - Where: the quote accept path (`runOrderConversion`/`ensureJobForAcceptedQuote`) + `inventory-consume.ts` (release reserved when consumed).
-  - Resolution: On accept, write `reserve` movements + bump `qty_reserved` for matched lines; on completion, `release` then `consume`. Mirror the auto-consume matching logic.
+- [CLOSED] TD-INV-02 · phase_inventory · Auto-reserve stock on quote accept
+  - Closed 2026-05-22. `reserveInventoryForQuote` (in `inventory-consume.ts`) runs inside `ensureJobForAcceptedQuote`: for each accepted-quote line matching an active stocked item, bumps `qty_reserved` + writes a zero-delta `reserve` movement (idempotent on the quote). `consumeInventoryForJob` now releases the reservation (decrements `qty_reserved` + a zero-delta `release` movement) before consuming on-hand. So `available = on_hand − reserved` and low-stock are truthful for in-flight work. Test: accept reserves 1, completion releases + consumes (reserved→0, on_hand 10→9).
 
-- [LOW] TD-INV-03 · phase_inventory · No multi-location/bin or branch transfers
-  - What: Stock is a single on-hand number per (branch, sku). The `transfer_in`/`transfer_out` movement reasons exist but there's no transfer workflow, and no bin-level detail (the `bin` column is a free-text label only).
-  - Where: `inventory-routes.ts`, schema.
-  - Resolution: Add a transfer endpoint (paired out/in movements across two branches in one tx) and, if needed, a bin sub-location model.
+- [CLOSED] TD-INV-03 · phase_inventory · Branch-to-branch transfers
+  - Closed 2026-05-22. `POST /api/v1/inventory/transfer` (corporate-only — it writes two branches' rows) `{ fromItemId, toBranchId, quantity, note? }`: decrements the source + `transfer_out` movement, upserts the dest item by (toBranch, sku) + `transfer_in` movement, one tx; 403 for branch roles, 422 on insufficient on-hand, 400 same-branch. (Bin sub-locations remain a future nicety — the `bin` free-text label suffices for v1.)
 
-- [LOW] TD-INV-04 · phase_inventory · No inventory valuation / COGS reporting
-  - What: `unit_cost_cents` is stored per item + per receipt movement, but there's no valuation rollup (on-hand value per branch/category) or COGS-from-consumption report.
-  - Where: a new `GET /api/v1/inventory/valuation` aggregate + a dashboard tile.
-  - Resolution: Sum `qty_on_hand * unit_cost_cents` by branch/category; optionally moving-average cost from receipt movements.
+- [CLOSED] TD-INV-04 · phase_inventory · Inventory valuation rollup
+  - Closed 2026-05-22. `GET /api/v1/inventory/valuation` returns `{ totalValueCents, byCategory:[{ category, items, onHandValueCents }] }` summing `qty_on_hand * unit_cost_cents` over active items, branch-scoped. Test asserts the per-category rollup. (Moving-average COGS-from-consumption is a deeper accounting feature, not needed for v1.)
 
 ### Purchase order follow-ups (PO) — phase 25
 

@@ -80,6 +80,15 @@ const AdjustSchema = z
   })
   .strict();
 
+const TransferSchema = z
+  .object({
+    fromItemId: z.string().uuid(),
+    toBranchId: z.string().uuid(),
+    quantity: z.number().positive(),
+    note: z.string().max(500).optional(),
+  })
+  .strict();
+
 const ResolveExceptionSchema = z
   .object({
     itemId: z.string().uuid().optional(),
@@ -205,6 +214,37 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Drizzle): void
       return { rows, total: countRows[0]?.c ?? 0 };
     });
     return reply.code(200).send({ ok: true, data: { rows, total, limit, offset } });
+  });
+
+  // GET /api/v1/inventory/valuation — on-hand stock value, by category (INV-04)
+  app.get('/api/v1/inventory/valuation', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    const scope = req.scope;
+    const data = await withScope(db, scope, async (tx) => {
+      const conditions: unknown[] = [eq(inventoryItems.active, true)];
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch) conditions.push(eq(inventoryItems.branchId, scopeBranch));
+      const where = and(...(conditions as Parameters<typeof and>));
+      const byCategory = await tx
+        .select({
+          category: inventoryItems.category,
+          items: sql<number>`count(*)::int`,
+          onHandValueCents: sql<string>`COALESCE(SUM(${inventoryItems.qtyOnHand} * ${inventoryItems.unitCostCents}), 0)`,
+        })
+        .from(inventoryItems)
+        .where(where)
+        .groupBy(inventoryItems.category);
+      const rows = byCategory.map((r) => ({
+        category: r.category ?? 'uncategorized',
+        items: r.items,
+        onHandValueCents: Math.round(Number(r.onHandValueCents)),
+      }));
+      const totalValueCents = rows.reduce((s, r) => s + r.onHandValueCents, 0);
+      return { totalValueCents, byCategory: rows };
+    });
+    return reply.code(200).send({ ok: true, data });
   });
 
   // GET /api/v1/inventory/low-stock
@@ -361,6 +401,98 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Drizzle): void
       });
     }
     return reply.code(200).send({ ok: true, data: { qtyOnHand: outcome.onHand, movement: outcome.movement } });
+  });
+
+  // POST /api/v1/inventory/transfer — move stock between branches (INV-03).
+  // Corporate-only: it writes to two branches' rows, which a branch scope can't.
+  app.post('/api/v1/inventory/transfer', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    if (req.scope.type !== 'corporate') {
+      return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Branch transfers are corporate-only' } });
+    }
+    const parsed = TransferSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: parsed.error.message } });
+    }
+    const scope = req.scope;
+    const d = parsed.data;
+
+    const outcome = await withScope(db, scope, async (tx) => {
+      const fromRows = await tx.select().from(inventoryItems).where(eq(inventoryItems.id, d.fromItemId)).limit(1);
+      const from = fromRows[0];
+      if (!from) return { kind: 'from_missing' as const };
+      if (from.branchId === d.toBranchId) return { kind: 'same_branch' as const };
+      if (Number(from.qtyOnHand) < d.quantity) {
+        return { kind: 'insufficient' as const, onHand: Number(from.qtyOnHand) };
+      }
+      // Decrement source + transfer_out movement.
+      await tx
+        .update(inventoryItems)
+        .set({ qtyOnHand: String(Number(from.qtyOnHand) - d.quantity), updatedAt: new Date() })
+        .where(eq(inventoryItems.id, from.id));
+      await tx.insert(inventoryMovements).values({
+        branchId: from.branchId,
+        itemId: from.id,
+        deltaQty: String(-d.quantity),
+        reason: 'transfer_out',
+        refType: 'branch',
+        refId: d.toBranchId,
+        note: d.note ?? `Transfer to branch ${d.toBranchId}`,
+        actorUserId: scope.userId,
+      });
+      // Upsert dest item by (toBranch, sku) + increment + transfer_in movement.
+      const destRows = await tx
+        .select({ id: inventoryItems.id, qtyOnHand: inventoryItems.qtyOnHand })
+        .from(inventoryItems)
+        .where(and(eq(inventoryItems.branchId, d.toBranchId), eq(inventoryItems.sku, from.sku)))
+        .limit(1);
+      let destId: string;
+      if (destRows[0]) {
+        destId = destRows[0].id;
+        await tx
+          .update(inventoryItems)
+          .set({ qtyOnHand: String(Number(destRows[0].qtyOnHand) + d.quantity), updatedAt: new Date() })
+          .where(eq(inventoryItems.id, destId));
+      } else {
+        const created = await tx
+          .insert(inventoryItems)
+          .values({
+            branchId: d.toBranchId,
+            sku: from.sku,
+            name: from.name,
+            category: from.category,
+            unit: from.unit,
+            unitCostCents: from.unitCostCents,
+            qtyOnHand: String(d.quantity),
+          })
+          .returning({ id: inventoryItems.id });
+        destId = created[0]!.id;
+      }
+      await tx.insert(inventoryMovements).values({
+        branchId: d.toBranchId,
+        itemId: destId,
+        deltaQty: String(d.quantity),
+        reason: 'transfer_in',
+        refType: 'branch',
+        refId: from.branchId,
+        note: d.note ?? `Transfer from branch ${from.branchId}`,
+        actorUserId: scope.userId,
+      });
+      return { kind: 'ok' as const, fromItemId: from.id, toItemId: destId, quantity: d.quantity };
+    });
+
+    if (outcome.kind === 'from_missing') {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Source item not found' } });
+    }
+    if (outcome.kind === 'same_branch') {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'Source and destination branch are the same' } });
+    }
+    if (outcome.kind === 'insufficient') {
+      return reply.code(422).send({ ok: false, error: { code: 'INSUFFICIENT_STOCK', message: `On-hand is ${outcome.onHand}` } });
+    }
+    return reply.code(200).send({ ok: true, data: outcome });
   });
 
   // GET /api/v1/inventory/exceptions — reconciliation inbox (pending by default)

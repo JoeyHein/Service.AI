@@ -65,7 +65,7 @@ export async function consumeInventoryForJob(
     if (!Number.isFinite(qty) || qty <= 0) continue;
 
     const matches = await tx
-      .select({ id: inventoryItems.id, qtyOnHand: inventoryItems.qtyOnHand })
+      .select({ id: inventoryItems.id, qtyOnHand: inventoryItems.qtyOnHand, qtyReserved: inventoryItems.qtyReserved })
       .from(inventoryItems)
       .where(
         and(
@@ -78,11 +78,26 @@ export async function consumeInventoryForJob(
     const item = matches[0];
 
     if (item) {
+      // INV-02: release any reservation this quote held, then consume on-hand.
       const newOnHand = Number(item.qtyOnHand) - qty;
+      const released = Math.min(Number(item.qtyReserved), qty);
+      const newReserved = Number(item.qtyReserved) - released;
       await tx
         .update(inventoryItems)
-        .set({ qtyOnHand: String(newOnHand), updatedAt: new Date() })
+        .set({ qtyOnHand: String(newOnHand), qtyReserved: String(newReserved), updatedAt: new Date() })
         .where(eq(inventoryItems.id, item.id));
+      if (released > 0) {
+        await tx.insert(inventoryMovements).values({
+          branchId: job.branchId,
+          itemId: item.id,
+          deltaQty: '0',
+          reason: 'release',
+          refType: 'job',
+          refId: job.id,
+          note: `Released ${released} reserved on completion`,
+          actorUserId: args.actorUserId,
+        });
+      }
       await tx.insert(inventoryMovements).values({
         branchId: job.branchId,
         itemId: item.id,
@@ -107,4 +122,71 @@ export async function consumeInventoryForJob(
     }
   }
   return { consumed, exceptions };
+}
+
+/**
+ * INV-02. Reserve branch stock for an accepted quote's lines so `available`
+ * (on_hand − reserved) and the low-stock report reflect in-flight work before
+ * the job consumes it. Reservation does NOT move on_hand — it bumps
+ * `qty_reserved` and writes a zero-delta `reserve` movement for the audit
+ * trail. The reservation is released on job completion (see consume above).
+ *
+ * Idempotent: skips if a `reserve` movement already references this quote.
+ */
+export async function reserveInventoryForQuote(
+  tx: ScopedTx,
+  args: { quoteId: string; branchId: string; actorUserId: string | null },
+): Promise<{ reserved: number } | null> {
+  const prior = await tx
+    .select({ id: inventoryMovements.id })
+    .from(inventoryMovements)
+    .where(
+      and(
+        eq(inventoryMovements.refType, 'quote'),
+        eq(inventoryMovements.refId, args.quoteId),
+        eq(inventoryMovements.reason, 'reserve'),
+      ),
+    )
+    .limit(1);
+  if (prior[0]) return { reserved: 0 };
+
+  const lines = await tx
+    .select({ supplierSku: quoteLineItems.supplierSku, quantity: quoteLineItems.quantity })
+    .from(quoteLineItems)
+    .where(eq(quoteLineItems.quoteId, args.quoteId));
+
+  let reserved = 0;
+  for (const line of lines) {
+    const qty = Number(line.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    const matches = await tx
+      .select({ id: inventoryItems.id, qtyReserved: inventoryItems.qtyReserved })
+      .from(inventoryItems)
+      .where(
+        and(
+          eq(inventoryItems.branchId, args.branchId),
+          eq(inventoryItems.sku, line.supplierSku),
+          eq(inventoryItems.active, true),
+        ),
+      )
+      .limit(1);
+    const item = matches[0];
+    if (!item) continue;
+    await tx
+      .update(inventoryItems)
+      .set({ qtyReserved: String(Number(item.qtyReserved) + qty), updatedAt: new Date() })
+      .where(eq(inventoryItems.id, item.id));
+    await tx.insert(inventoryMovements).values({
+      branchId: args.branchId,
+      itemId: item.id,
+      deltaQty: '0',
+      reason: 'reserve',
+      refType: 'quote',
+      refId: args.quoteId,
+      note: `Reserved ${qty} for accepted quote`,
+      actorUserId: args.actorUserId,
+    });
+    reserved += 1;
+  }
+  return { reserved };
 }

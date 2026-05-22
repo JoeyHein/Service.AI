@@ -66,6 +66,7 @@ import {
 import { renderQuotePdf } from './quote-pdf.js';
 import type { StripeClient } from './stripe.js';
 import { storeDoorImage, type ObjectStore } from './object-store.js';
+import { reserveInventoryForQuote } from './inventory-consume.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -631,6 +632,12 @@ export async function ensureJobForAcceptedQuote(
     actorUserId: string | null;
   },
 ): Promise<string> {
+  // INV-02: reserve branch stock for the quote's lines on acceptance.
+  await reserveInventoryForQuote(tx, {
+    quoteId: args.quoteId,
+    branchId: args.branchId,
+    actorUserId: args.actorUserId,
+  });
   if (args.jobId) {
     await tx
       .update(schema.jobs)

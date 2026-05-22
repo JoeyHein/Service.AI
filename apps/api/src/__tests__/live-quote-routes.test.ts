@@ -1682,6 +1682,39 @@ describe('completion → balance invoice (QF-03)', () => {
     const { rows } = await pool.query(`SELECT 1 FROM invoices WHERE job_id = $1`, [jobId]);
     expect(rows.length).toBe(0);
   });
+
+  it('reserves stock on accept, releases + consumes on completion (INV-02)', async () => {
+    if (!reachable) return;
+    await pool.query(
+      `INSERT INTO inventory_items (branch_id, sku, name, qty_on_hand, qty_reserved)
+       VALUES ($1, 'PART-A', 'Spring kit', 10, 0)
+       ON CONFLICT (branch_id, sku) DO UPDATE SET qty_on_hand = 10, qty_reserved = 0, active = true`,
+      [BRANCH_ID],
+    );
+    const id = await createDraftQuote(MANAGER_USER);
+    await commitQuoteHelper(MANAGER_USER, id); // prices PART-A x1
+    await app.inject({
+      method: 'POST',
+      url: `/api/v1/quotes/${id}/accept`,
+      headers: { 'x-test-user': MANAGER_USER, 'content-type': 'application/json' },
+      payload: { acknowledgmentChannel: 'verbal_phone' },
+    });
+    let r = await pool.query<{ qty_on_hand: string; qty_reserved: string }>(
+      `SELECT qty_on_hand, qty_reserved FROM inventory_items WHERE branch_id = $1 AND sku = 'PART-A'`,
+      [BRANCH_ID],
+    );
+    expect(Number(r.rows[0]!.qty_reserved)).toBe(1); // reserved on accept
+    expect(Number(r.rows[0]!.qty_on_hand)).toBe(10); // on-hand unchanged yet
+
+    const jobId = await jobIdForQuote(id);
+    await completeJob(jobId);
+    r = await pool.query(
+      `SELECT qty_on_hand, qty_reserved FROM inventory_items WHERE branch_id = $1 AND sku = 'PART-A'`,
+      [BRANCH_ID],
+    );
+    expect(Number(r.rows[0]!.qty_reserved)).toBe(0); // released
+    expect(Number(r.rows[0]!.qty_on_hand)).toBe(9); // consumed 1
+  });
 });
 
 describe('in-app door-designer config attach (WI-02)', () => {
