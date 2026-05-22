@@ -226,6 +226,20 @@ describe('CRM-02 / customer notes', () => {
     expect(list.json().data.rows.map((r: { source: string }) => r.source)).toContain('donna_pa');
   });
 
+  it('ingest: matches a customer by phone despite +1/dashes (TD-CRM-04)', async () => {
+    const phone = `555${Date.now() % 10000000}`.slice(0, 10);
+    const custId = await createCustomer(cookies.denverManager, { name: 'Phone Match', phone });
+    const res = await ingest({
+      phone: `+1 (${phone.slice(0, 3)}) ${phone.slice(3, 6)}-${phone.slice(6)}`,
+      body: 'Inbound call',
+      source: 'donna_pa',
+      sourceRef: `phone-${Date.now()}`,
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().data.matched).toBe(true);
+    expect(res.json().data.customerId).toBe(custId);
+  });
+
   it('ingest: dedupes on (source, source_ref)', async () => {
     const email = `dedup-${Date.now()}@example.test`;
     await createCustomer(cookies.denverManager, { name: 'Dedup Co', email });
@@ -381,9 +395,20 @@ describe('CRM-02 / customer notes', () => {
       `INSERT INTO quotes (branch_id, customer_id, supplier_id, status, total_cents) VALUES ($1,$2,$3,'accepted',250000)`,
       [branchId, custId, sup[0]!.id],
     );
-    await pool.query(
-      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total) VALUES ($1,$2,$3,'paid','2500.00')`,
+    const { rows: inv } = await pool.query<{ id: string }>(
+      `INSERT INTO invoices (branch_id, job_id, customer_id, status, total) VALUES ($1,$2,$3,'paid','2500.00') RETURNING id`,
       [branchId, jj[0]!.id, custId],
+    );
+    // TD-CRM-02: a payment + a refund should surface as 'payment' events.
+    await pool.query(
+      `INSERT INTO payments (branch_id, invoice_id, stripe_payment_intent_id, stripe_charge_id, amount, status)
+       VALUES ($1,$2,$3,$4,'2500.00','succeeded')`,
+      [branchId, inv[0]!.id, `pi_${Date.now()}`, `ch_${Date.now()}`],
+    );
+    await pool.query(
+      `INSERT INTO refunds (branch_id, invoice_id, stripe_refund_id, amount, status)
+       VALUES ($1,$2,$3,'100.00','succeeded')`,
+      [branchId, inv[0]!.id, `re_${Date.now()}`],
     );
     await pool.query(
       `INSERT INTO customer_notes (branch_id, customer_id, note_type, body, source) VALUES ($1,$2,'call','rang','manual')`,
@@ -397,8 +422,8 @@ describe('CRM-02 / customer notes', () => {
     });
     expect(res.statusCode).toBe(200);
     const kindsSeen = new Set((res.json().data.rows as Array<{ kind: string }>).map((r) => r.kind));
-    expect(kindsSeen).toEqual(new Set(['note', 'job', 'quote', 'invoice']));
-    expect(res.json().data.total).toBe(4);
+    expect(kindsSeen).toEqual(new Set(['note', 'job', 'quote', 'invoice', 'payment']));
+    expect(res.json().data.total).toBe(6); // note + job + quote + invoice + payment + refund
 
     const onlyQuotes = await app.inject({
       method: 'GET',

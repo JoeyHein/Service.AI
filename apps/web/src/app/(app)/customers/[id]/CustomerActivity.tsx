@@ -5,7 +5,7 @@ import { apiClientFetch } from '../../../../lib/api.js';
 
 export interface TimelineRow {
   id: string;
-  kind: 'note' | 'job' | 'quote' | 'invoice';
+  kind: 'note' | 'job' | 'quote' | 'invoice' | 'payment';
   ts: string;
   subtype: string | null;
   title: string | null;
@@ -15,7 +15,7 @@ export interface TimelineRow {
   ref: string | null;
 }
 
-type Filter = 'all' | 'note' | 'job' | 'quote' | 'invoice';
+type Filter = 'all' | 'note' | 'job' | 'quote' | 'invoice' | 'payment';
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -23,6 +23,7 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'job', label: 'Jobs' },
   { key: 'quote', label: 'Quotes' },
   { key: 'invoice', label: 'Invoices' },
+  { key: 'payment', label: 'Payments' },
 ];
 
 const NOTE_TYPES = ['call', 'email', 'meeting', 'sms', 'manual'] as const;
@@ -32,6 +33,7 @@ const KIND_BADGE: Record<TimelineRow['kind'], string> = {
   job: 'bg-blue-100 text-blue-800',
   quote: 'bg-amber-100 text-amber-800',
   invoice: 'bg-emerald-100 text-emerald-800',
+  payment: 'bg-teal-100 text-teal-800',
 };
 
 function money(cents: number | string | null): string | null {

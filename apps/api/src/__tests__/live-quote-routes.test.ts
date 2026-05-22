@@ -1733,6 +1733,8 @@ describe('in-app door-designer config attach (WI-02)', () => {
     );
     expect(rows[0]!.notes).toContain('Designed door');
     expect(rows[0]!.notes).toContain('Panorama');
+    // TD-WI-02: the in-app door image is stored and its key stamped on notes.
+    expect(rows[0]!.notes).toContain(`Image: quote-designs/${id}.png`);
   });
 });
 
@@ -1806,7 +1808,15 @@ describe('public widget quote-request (WI-01)', () => {
       `SELECT count(*)::text AS n FROM customers WHERE email = $1 AND branch_id = $2`,
       [email, BRANCH_ID],
     );
-    expect(Number(rows[0]!.n)).toBe(1); // one customer, two lead quotes
+    expect(Number(rows[0]!.n)).toBe(1); // one customer
+    // TD-WI-03: a same-config double-submit de-dupes to one open draft.
+    expect(second.json().data.quoteId).toBe(first.json().data.quoteId);
+    expect(second.json().data.deduped).toBe(true);
+    const { rows: qn } = await pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM quotes WHERE customer_id = (SELECT id FROM customers WHERE email = $1 AND branch_id = $2)`,
+      [email, BRANCH_ID],
+    );
+    expect(Number(qn[0]!.n)).toBe(1); // one draft, not two
   });
 });
 

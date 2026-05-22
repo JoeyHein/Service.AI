@@ -69,10 +69,8 @@ Format:
   - Closed 2026-05-20. Renamed the per-file `scopedFranchiseeId` helper → `scopedBranchId` and `inScopeByFranchisee` → `inScopeByBranch` across assignment/collections/invoice/job-photos/jobs/suggestion routes. Fixed the named misleading comments (assignment, jobs, customers, owner-dashboard, app.ts). `franchiseeName` was already fixed in CHR-B03.
   - Deliberately left open (one item): the Drizzle index string `ai_metrics_franchisee_date_unique` in `schema.ts:986` still matches the actual DB index created by migration `0011`. Renaming it would require a DDL rename migration for zero functional benefit (it's only an accessor-name string; the column is already `branchId`). Defer to the next ai_metrics-touching migration.
 
-- [LOW] TD-CHR-07 · phase_corporate_hub_redesign · `applicationFeeAmount` column on `invoices` + `payments` still in schema
-  - What: CHR-08 was code-only; the `application_fee_amount` columns on `invoices` and `payments` remain in the DB schema (per intentional comments in `packages/db/src/schema.ts`). The column always stays at zero in the corporate-hub model. Leaving it is correct for now (a column drop is destructive); flagged so a future cleanup migration can take care of it.
-  - Where: `packages/db/src/schema.ts:613`, `packages/db/src/schema.ts:704`
-  - Resolution: Optional migration after one prod cycle confirms no reads depend on the column.
+- [WONTFIX-v1] TD-CHR-07 · phase_corporate_hub_redesign · `applicationFeeAmount` columns still in schema
+  - Decision 2026-05-22: deliberately deferred to post-go-live. The column drop is destructive and the TD's own bar ("after one prod cycle confirms no reads depend on the column") isn't met — Service.AI hasn't gone live, and the column is still read in `invoice-payment-routes.ts` + asserted (=== 0) in 4 live tests. Dropping it now means rewriting those for zero functional gain and reintroducing a destructive migration before the first prod cycle. The column is harmless (always 0, defaulted). Revisit as a cleanup migration after the 30-day pilot.
 
 - [CLOSED] TD-CHR-08 · phase_corporate_hub_redesign · dispatch-ui test name fixed
   - Closed 2026-05-20. Renamed the `it()` to "page gates to branch-scoped callers via notFound()". Assertion was already correct.
@@ -84,10 +82,8 @@ Format:
 
 Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up phases. Each is LOW priority and was visible to the gate author at planning time, not introduced by audit findings.
 
-- [LOW] TD-SQB-P1 · phase_supplier_quote_bridge · Multi-supplier per branch (UI)
-  - What: The `suppliers` table is many-rows-per-corporate by design, but the v1 UI assumes one default supplier per corporate. `/quotes/new` does not render a supplier picker; `BcAiAgentProvider` is implicitly the only resolved provider. Works as long as Elevated Doors stays single-supplier.
-  - Where: `apps/web/src/app/(app)/quotes/new/`, `apps/api/src/quote-routes.ts` (supplier resolution)
-  - Resolution: Add `?supplierId=` URL param + a picker in the line item header when a second supplier is provisioned. Update the AI CSR tools to take an optional `supplierId` arg. Wait until a second supplier is real — premature picker UX would just clutter the live-quote surface.
+- [WONTFIX-v1] TD-SQB-P1 · phase_supplier_quote_bridge · Multi-supplier per branch (UI)
+  - Decision 2026-05-22: deliberately NOT built. Elevated Doors is single-supplier (one BC account); the TD itself flags that a picker now "would just clutter the live-quote surface" and to "wait until a second supplier is real." The plumbing is ready — `GET /api/v1/suppliers` lists all rows, `quotes/new` resolves the default (first), and `bindProvider` is keyed by `supplierId` — so adding a `<select>` is a ~1h change when a 2nd supplier is provisioned. Tracked here; reopen at that point.
 
 - [CLOSED] TD-SQB-P2 · phase_supplier_quote_bridge · Quote PDF rendering → shipped in CQA-04
   - Closed 2026-05-20. `apps/api/src/quote-pdf.ts` (`@react-pdf/renderer`, modeled on `receipt-pdf.ts`) serves a branded quote PDF at `GET /api/v1/quotes/:id/quote.pdf` (operator) and `GET /api/v1/public/quotes/:token/pdf` (customer, token-gated, field-leak-safe). See `phase_customer_quote_acceptance`.
@@ -97,10 +93,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-SQB-P4 · phase_supplier_quote_bridge · Customer-facing accept link → shipped as phase_customer_quote_acceptance (CQA)
   - Closed 2026-05-20. `POST /quotes/:id/share` mints a signed token; public `app/quotes/[token]/accept` + `public-quote-routes.ts` let a homeowner accept (and pay a deposit via Stripe Elements) with no login. CSRF is Origin-allowlist + JSON-only (not cookie double-submit — there is no session cookie; the original "proven invoice CSRF pattern" never existed). See `docs/api/customer-acceptance.md`.
 
-- [LOW] TD-SQB-P5 · phase_supplier_quote_bridge · Configurator UX inside Service.AI
-  - What: Service.AI consumes resolved SKUs (e.g. `AL976-9X7-…`) — it does not host the door configurator. The configurator stays on the OPENDC portal / widget; if a Service.AI user wants to build an aluminium door from scratch, they leave the app, configure, copy the SKU back. Friction is acceptable while a single product line is in scope.
-  - Where: would live alongside `apps/web/src/app/(app)/quotes/new/` — likely a `/quotes/new/configure` route loading the widget IIFE.
-  - Resolution: Embed the OPENDC widget in an iframe / dynamic import once a configurator-driven product sells from Service.AI more than ~once a week.
+- [CLOSED] TD-SQB-P5 · phase_supplier_quote_bridge · Configurator UX inside Service.AI
+  - Closed 2026-05-22 — superseded by WI-02 (phase 22). The quote builder already embeds the OPENDC door designer IIFE in-app via the "Design a door" modal (`DesignDoorModal.tsx`), which posts the config to `/quotes/:id/design-config`. A Service.AI user can configure a door without leaving the app; the deferred friction this TD described no longer exists.
 
 ### Audit-1 follow-ups (deferred from MAJOR fixes — see phase_supplier_quote_bridge_AUDIT_1.md)
 
@@ -178,10 +172,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: bc-ai-agent's `external_quotes.py`, `external_pricing.py`, new `external_quotes/convert-to-order` (all three lack the call log).
   - Resolution: Add an `external_call_log` table + a small wrapper that records every external call. One follow-up phase that covers all three endpoints. Useful for billing / rate limiting / debug.
 
-- [LOW] TD-QOC-A9 · phase_quote_order_conversion · Migration 0018 not transactional-DDL-safe under CONCURRENTLY
-  - What: `0018_quote_order_conversion.sql` uses plain `ALTER TABLE` + `CREATE UNIQUE INDEX`. Postgres holds an ACCESS EXCLUSIVE lock on `quotes` for the duration of the ALTER. On a hot table at scale this would briefly block all writes. v1 tables are small so this is a non-issue; flagged for awareness.
-  - Where: `packages/db/migrations/0018_quote_order_conversion.sql`
-  - Resolution: For large-table cases, switch to `ALTER TABLE ... ADD COLUMN <name> <type> NULL` (cheap) + `CREATE UNIQUE INDEX CONCURRENTLY` (no exclusive lock). Not yet needed.
+- [WONTFIX-v1] TD-QOC-A9 · phase_quote_order_conversion · Migration 0018 not CONCURRENTLY-safe
+  - Decision 2026-05-22: accepted for v1. 0018 is already applied; rewriting an applied migration achieves nothing, and `CREATE INDEX CONCURRENTLY` can't run inside a transaction (our migration runner wraps each file in BEGIN/COMMIT). The brief ACCESS EXCLUSIVE lock only matters on a hot, large `quotes` table — Elevated Doors' single-branch pilot is nowhere near that. Documented as the pattern to use for any FUTURE index on a large table; no change to the existing migration.
 
 - [CLOSED] TD-QOC-A10 · phase_quote_order_conversion · Live happy-path test now queries the `quotes` row directly
   - Closed 2026-05-20. Added a `pool.query` after the response assertion reading `supplier_order_ref`, `supplier_order_id`, `ordered_at` straight from the `quotes` row, so a regression that keeps the response shape but drops the write would be caught.
@@ -193,15 +185,11 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: `apps/api/src/public-widget-routes.ts` (lead intake), `apps/api/src/quote-routes.ts::/design-config` (in-app). Resolution lives behind a NEW BC AI Agent external endpoint wrapping `part_number_service`.
   - Resolution: Add `POST /api/external/door-config/resolve-parts` to BC AI Agent that maps a `doorConfig` → `[{ sku, quantity }]` (it already does this internally for `get_parts_for_door_config`). Add a `resolveDoorConfig` op to `SupplierProvider` + `BcAiAgentProvider`; on widget intake, resolve → seed priced quote lines instead of (or in addition to) the notes block. Then the lead arrives priced.
 
-- [LOW] TD-WI-02 · phase_widget_integration · In-app design image not stored
-  - What: The in-app "Design a door" path (`/quotes/:id/design-config`) captures the config to notes but does not store the door image. Only the public lead path stores the image. Rationale: the in-app manager just saw the design on screen.
-  - Where: `apps/api/src/quote-routes.ts::/design-config`.
-  - Resolution: If managers later want the rendered image attached to the in-app quote, thread `objectStore` into `QuoteRoutesDeps` and reuse `storeDoorImage` keyed by quote id (same as the public path).
+- [CLOSED] TD-WI-02 · phase_widget_integration · In-app design image now stored
+  - Closed 2026-05-22. Threaded `objectStore` into `QuoteRoutesDeps`; `/quotes/:id/design-config` now best-effort stores the door image under `quote-designs/<quoteId>.png` (reusing `storeDoorImage`) and stamps the key on the notes — same as the public widget path. Test asserts the `Image: quote-designs/...` line.
 
-- [LOW] TD-WI-03 · phase_widget_integration · Widget lead dedupe is per-email, not per-config
-  - What: A homeowner who submits the designer twice for the same email gets one customer but two draft lead quotes. The gate allowed either behavior for v1; we create a fresh draft each time.
-  - Where: `apps/api/src/public-widget-routes.ts`.
-  - Resolution: If lead spam becomes a problem, de-dupe to one open draft per (email, config-hash) within a short window, or collapse onto the most recent open draft for that customer.
+- [CLOSED] TD-WI-03 · phase_widget_integration · Widget lead dedupe by (email, config)
+  - Closed 2026-05-22. The public widget intake now de-dupes a double-submit: if the matched customer already has an open `draft` lead with the same `Config: <json>` from the last 10 minutes, it returns that quote (`deduped: true`) instead of spawning a second draft. Test posts the same email+config twice and asserts one draft + same quoteId.
 
 ### CRM follow-ups (CRM) — phase 23
 
@@ -210,20 +198,16 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: `apps/api/src/crm-routes.ts` (metrics), `bc_metrics_service.get_customer_metrics` in bc-ai-agent.
   - Resolution: Add a `customerMetrics` op to `SupplierProvider` + a BC AI Agent `GET /api/external/customers/:account/metrics` endpoint, and render a "Business Central" overlay section on the 360 when the customer is BC-linked. Needs the supplier_account_code ↔ customer mapping.
 
-- [LOW] TD-CRM-02 · phase_crm · Payments not a distinct timeline stream
-  - What: The unified timeline UNIONs notes + jobs + quotes + invoices. Individual payments/refunds are reflected via the invoice's status (paid/void) rather than as their own events.
-  - Where: `apps/api/src/crm-routes.ts::/timeline`.
-  - Resolution: Add a `payments` (and `refunds`) arm to the UNION (amount + created_at + invoice ref) if a payment-level history is wanted on the 360.
+- [CLOSED] TD-CRM-02 · phase_crm · Payments are a distinct timeline stream
+  - Closed 2026-05-22. The 360 timeline UNION gained `payments` (positive) + `refunds` (negative) arms (joined to invoices by customer), surfaced as `kind='payment'` with subtype payment/refund. Web `CustomerActivity` got a "Payments" filter + teal badge. Test seeds a payment + refund and asserts the `payment` kind + count.
 
 - [LOW] TD-CRM-03 · phase_crm · Ingest key is a single shared secret
   - What: `POST /api/v1/crm/notes` authenticates with one `CRM_INGEST_KEY` shared by all callers (Donna PA, AI CSR). No per-caller key, rotation, or rate limit; when the env is unset (dev) the endpoint is open.
   - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
   - Resolution: Mint per-caller ingest keys (mirror the SQB `external-keys` bcrypt-hashed pattern) and add a rate limit. Until then, keep `CRM_INGEST_KEY` set in every non-dev environment.
 
-- [LOW] TD-CRM-04 · phase_crm · Phone/email match is exact, single-customer
-  - What: Ingest matches a customer by exact `email` (ilike) or exact `phone` string, picking the most-recently-created on a tie. Phone-format variance (e.g. `+1` prefix, dashes) and shared household contacts can mis-match or fall through to unmatched.
-  - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
-  - Resolution: Normalize phone to E.164 before matching (store a normalized column), and surface near-matches in the triage UI rather than only exact hits.
+- [CLOSED] TD-CRM-04 · phase_crm · Phone match normalized (last-10-digit)
+  - Closed 2026-05-22. Ingest phone matching now compares the last 10 digits of both sides via `right(regexp_replace(phone,'\D','','g'),10)`, so `+1`, dashes, parens and spaces no longer cause a miss (NANP). No new column needed — normalized in SQL. Test ingests a `+1 (xxx) xxx-xxxx` number and matches a customer stored as plain digits. (Near-match triage UI remains a future nicety, not required.)
 
 ### Inventory follow-ups (INV) — phase 24
 

@@ -395,6 +395,7 @@ export function buildApp(opts: AppOptions = {}) {
       drizzle: opts.drizzle,
       providerRegistry,
       stripe,
+      objectStore,
     });
     // Hook job-cancellation reflow: expires pending AI suggestions
     // for any job that transitions to 'canceled'. Needs to run AFTER

@@ -226,7 +226,7 @@ export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
       const scope = req.scope;
       const id = req.params.id;
       const q = req.query as Record<string, string | undefined>;
-      const kinds = ['note', 'job', 'quote', 'invoice'] as const;
+      const kinds = ['note', 'job', 'quote', 'invoice', 'payment'] as const;
       const kindFilter = kinds.includes(q['type'] as never) ? q['type']! : null;
       const limit = Math.min(Math.max(parseInt(q['limit'] ?? '50', 10) || 50, 1), 200);
       const offset = Math.max(parseInt(q['offset'] ?? '0', 10) || 0, 0);
@@ -259,6 +259,16 @@ export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
           SELECT id::text, 'invoice', COALESCE(paid_at, finalized_at, created_at), status::text,
                  'Invoice', notes, status::text, round(total * 100)::bigint, NULL::text
             FROM invoices WHERE customer_id = ${id} AND deleted_at IS NULL
+          UNION ALL
+          SELECT p.id::text, 'payment', p.created_at, 'payment',
+                 'Payment', NULL, 'paid', round(p.amount * 100)::bigint, NULL::text
+            FROM payments p JOIN invoices i ON p.invoice_id = i.id
+            WHERE i.customer_id = ${id} AND i.deleted_at IS NULL
+          UNION ALL
+          SELECT r.id::text, 'payment', r.created_at, 'refund',
+                 'Refund', NULL, 'refunded', (-round(r.amount * 100))::bigint, NULL::text
+            FROM refunds r JOIN invoices i ON r.invoice_id = i.id
+            WHERE i.customer_id = ${id} AND i.deleted_at IS NULL
         `;
         const filtered = kindFilter
           ? sql`SELECT * FROM (${union}) t WHERE kind = ${kindFilter}`
@@ -445,7 +455,17 @@ export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
     const matched = await withScope(db, INGEST_CORP_SCOPE, async (tx) => {
       const ors: unknown[] = [];
       if (d.email) ors.push(ilike(customers.email, d.email));
-      if (d.phone) ors.push(eq(customers.phone, d.phone));
+      if (d.phone) {
+        // TD-CRM-04: match on the last 10 digits so +1 / dashes / spaces
+        // don't cause a miss (NANP). Both sides are digit-normalized in SQL.
+        const digits = d.phone.replace(/\D/g, '');
+        if (digits.length >= 7) {
+          const last10 = digits.slice(-10);
+          ors.push(
+            sql`right(regexp_replace(${customers.phone}, '\\D', '', 'g'), 10) = ${last10}`,
+          );
+        }
+      }
       if (ors.length === 0) return null;
       const rows = await tx
         .select({ id: customers.id, branchId: customers.branchId })

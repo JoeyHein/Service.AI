@@ -65,6 +65,7 @@ import {
 } from './commission-engine.js';
 import { renderQuotePdf } from './quote-pdf.js';
 import type { StripeClient } from './stripe.js';
+import { storeDoorImage, type ObjectStore } from './object-store.js';
 
 type Drizzle = NodePgDatabase<typeof schema>;
 
@@ -666,6 +667,8 @@ export interface QuoteRoutesDeps {
   providerRegistry: ProviderRegistry;
   /** Used by /void to refund a paid deposit (VU). */
   stripe: StripeClient;
+  /** Used by /design-config to store the in-app door image (TD-WI-02). */
+  objectStore: ObjectStore;
 }
 
 /**
@@ -683,7 +686,7 @@ export function registerQuoteRoutes(
   app: FastifyInstance,
   deps: QuoteRoutesDeps,
 ): void {
-  const { drizzle: db, providerRegistry: registry, stripe } = deps;
+  const { drizzle: db, providerRegistry: registry, stripe, objectStore } = deps;
 
   // -------------------------------------------------------------------------
   // POST /api/v1/quotes — create draft
@@ -795,6 +798,14 @@ export function registerQuoteRoutes(
       }
       const scope = req.scope;
 
+      // TD-WI-02: best-effort store the rendered door image (same as the public
+      // widget path). Done before the tx; the key is appended to the notes.
+      const imageKey = await storeDoorImage(
+        objectStore,
+        `quote-designs/${req.params.id}.png`,
+        parsed.data.doorImage,
+      );
+
       const outcome = await withScope(db, scope, async (tx) => {
         const qRows = await tx
           .select({ id: quotes.id, branchId: quotes.branchId, notes: quotes.notes })
@@ -810,7 +821,8 @@ export function registerQuoteRoutes(
           .filter((v) => typeof v === 'string' && v)
           .join(' · ');
         const block =
-          `Designed door — ${summary}\nConfig: ${JSON.stringify(cfg)}`;
+          `Designed door — ${summary}\nConfig: ${JSON.stringify(cfg)}` +
+          (imageKey ? `\nImage: ${imageKey}` : '');
         const nextNotes = q.notes ? `${q.notes}\n${block}` : block;
         await tx.update(quotes).set({ notes: nextNotes }).where(eq(quotes.id, q.id));
         return { kind: 'ok' as const };

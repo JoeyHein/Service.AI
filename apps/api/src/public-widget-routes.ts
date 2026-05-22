@@ -15,7 +15,7 @@
  * Auto-resolution (config → SKUs → priced lines) is a TD follow-up.
  */
 import type { FastifyInstance } from 'fastify';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import {
@@ -142,10 +142,29 @@ export function registerPublicWidgetRoutes(
         customerId = ins[0]!.id;
       }
 
+      const configJson = JSON.stringify(doorConfig);
       const quoteNotes =
         `Door designer lead — ${configSummary}\n` +
         (contact.notes ? `Customer note: ${contact.notes}\n` : '') +
-        `Config: ${JSON.stringify(doorConfig)}`;
+        `Config: ${configJson}`;
+
+      // TD-WI-03: de-dupe a double-submit. If this customer already has an open
+      // draft lead with the same config from the last 10 minutes, return it
+      // instead of spawning a duplicate draft.
+      const recent = await tx
+        .select({ id: quotes.id })
+        .from(quotes)
+        .where(
+          and(
+            eq(quotes.customerId, customerId),
+            eq(quotes.status, 'draft'),
+            sql`${quotes.notes} LIKE ${'%Config: ' + configJson + '%'}`,
+            sql`${quotes.createdAt} > now() - interval '10 minutes'`,
+          ),
+        )
+        .limit(1);
+      if (recent[0]) return { quoteId: recent[0].id, customerId, deduped: true };
+
       const q = await tx
         .insert(quotes)
         .values({
