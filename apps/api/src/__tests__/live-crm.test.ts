@@ -278,6 +278,20 @@ describe('CRM-02 / customer notes', () => {
     expect(res.statusCode).toBe(401);
   });
 
+  it('ingest: accepts a per-caller key from CRM_INGEST_KEYS (TD-CRM-03)', async () => {
+    const prev = process.env['CRM_INGEST_KEYS'];
+    process.env['CRM_INGEST_KEYS'] = 'donna:donna-key-123,ai_csr:csr-key-456';
+    try {
+      const ok = await ingest({ email: `pc-${Date.now()}@x.test`, body: 'via donna', sourceRef: `pc-${Date.now()}` }, 'donna-key-123');
+      expect(ok.statusCode).toBe(201);
+      const bad = await ingest({ email: 'y@x.test', body: 'nope' }, 'not-a-key');
+      expect(bad.statusCode).toBe(401);
+    } finally {
+      if (prev === undefined) delete process.env['CRM_INGEST_KEYS'];
+      else process.env['CRM_INGEST_KEYS'] = prev;
+    }
+  });
+
   it('feed: matched filter returns only matched notes for the branch', async () => {
     const feed = await app.inject({
       method: 'GET',

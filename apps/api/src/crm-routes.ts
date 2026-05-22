@@ -43,6 +43,31 @@ function branchIdFromScope(scope: RequestScope): string | null {
   return scope.branchId;
 }
 
+/**
+ * TD-CRM-03. Resolve the ingest key header to a caller name.
+ *   - '' (empty)  → no keys configured (dev); allow anonymously
+ *   - '<name>'    → matched a per-caller key (CRM_INGEST_KEYS) or the single key
+ *   - null        → keys are configured but the header is missing/wrong → reject
+ */
+function resolveIngestCaller(headerVal: string | string[] | undefined): string | null {
+  const provided = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+  const multi = process.env['CRM_INGEST_KEYS'];
+  const single = process.env['CRM_INGEST_KEY'];
+  if (!multi && !single) return '';
+  if (!provided) return null;
+  if (multi) {
+    for (const pair of multi.split(',')) {
+      const idx = pair.indexOf(':');
+      if (idx <= 0) continue;
+      const name = pair.slice(0, idx).trim();
+      const key = pair.slice(idx + 1).trim();
+      if (key && key === provided) return name || 'caller';
+    }
+  }
+  if (single && provided === single) return 'default';
+  return null;
+}
+
 const CreateNoteSchema = z
   .object({
     noteType: z.enum(NOTE_TYPES).default('manual'),
@@ -430,18 +455,24 @@ export function registerCrmRoutes(app: FastifyInstance, db: Drizzle): void {
 
   // ---------------------------------------------------------------------------
   // POST /api/v1/crm/notes — AI/Donna ingest (header-key auth, outside scope)
+  //
+  // TD-CRM-03: supports per-caller keys via CRM_INGEST_KEYS ("donna:k1,ai_csr:k2")
+  // for attribution + rotation; falls back to the single CRM_INGEST_KEY
+  // ("default" caller). The resolved caller is logged + used as the note source
+  // when the body omits one. Rate-limited per its own bucket.
   // ---------------------------------------------------------------------------
-  app.post('/api/v1/crm/notes', async (req, reply) => {
-    const expectedKey = process.env['CRM_INGEST_KEY'];
-    if (expectedKey) {
-      const provided = req.headers['x-service-ai-ingest-key'];
-      if (provided !== expectedKey) {
-        return reply.code(401).send({
-          ok: false,
-          error: { code: 'UNAUTHENTICATED', message: 'Invalid ingest key' },
-        });
-      }
+  app.post(
+    '/api/v1/crm/notes',
+    { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+    const caller = resolveIngestCaller(req.headers['x-service-ai-ingest-key']);
+    if (caller === null) {
+      return reply.code(401).send({
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', message: 'Invalid ingest key' },
+      });
     }
+    if (caller) req.log.info({ ingestCaller: caller }, 'crm ingest');
     const parsed = IngestSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({

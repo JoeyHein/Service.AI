@@ -340,6 +340,52 @@ describe('PO-03 / receiving replenishes inventory', () => {
     expect(await onHand(sku)).toBe(5);
   });
 
+  it('allowOver lets receipt exceed the ordered quantity (TD-PO-03)', async () => {
+    const sku = `OVR-${Date.now()}`;
+    const id = await draftAndSubmit([{ sku, quantity: 5, unitCostCents: 100 }]);
+    const { lines } = await getPO(id);
+    const blocked = await app.inject({
+      method: 'POST',
+      url: `/api/v1/purchase-orders/${id}/receive`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ lines: [{ lineId: lines[0]!.id, receiveQty: 7 }] }),
+    });
+    expect(blocked.statusCode).toBe(422);
+    const ok = await app.inject({
+      method: 'POST',
+      url: `/api/v1/purchase-orders/${id}/receive`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ lines: [{ lineId: lines[0]!.id, receiveQty: 7 }], allowOver: true }),
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().data.status).toBe('received');
+    expect(await onHand(sku)).toBe(7);
+  });
+
+  it('draft PO lines can be replaced; not after submit (TD-PO-03)', async () => {
+    const created = await createPO(cookies.denverManager, { supplierId, lines: [{ sku: 'OLD', quantity: 1, unitCostCents: 100 }] });
+    const id = created.json().data.po.id as string;
+    const edit = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/purchase-orders/${id}/lines`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ lines: [{ sku: 'NEW', quantity: 3, unitCostCents: 200 }] }),
+    });
+    expect(edit.statusCode).toBe(200);
+    expect(edit.json().data.po.subtotalCents).toBe(600);
+    expect(edit.json().data.lines.length).toBe(1);
+    expect(edit.json().data.lines[0].sku).toBe('NEW');
+
+    await app.inject({ method: 'POST', url: `/api/v1/purchase-orders/${id}/submit`, headers: { cookie: cookies.denverManager } });
+    const late = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/purchase-orders/${id}/lines`,
+      headers: { cookie: cookies.denverManager, 'content-type': 'application/json' },
+      payload: JSON.stringify({ lines: [{ sku: 'X', quantity: 1, unitCostCents: 1 }] }),
+    });
+    expect(late.statusCode).toBe(409);
+  });
+
   it('receiving into an existing stocked SKU increments its on-hand', async () => {
     const sku = `EXIST-${Date.now()}`;
     await app.inject({

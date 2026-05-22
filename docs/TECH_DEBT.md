@@ -201,10 +201,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-CRM-02 · phase_crm · Payments are a distinct timeline stream
   - Closed 2026-05-22. The 360 timeline UNION gained `payments` (positive) + `refunds` (negative) arms (joined to invoices by customer), surfaced as `kind='payment'` with subtype payment/refund. Web `CustomerActivity` got a "Payments" filter + teal badge. Test seeds a payment + refund and asserts the `payment` kind + count.
 
-- [LOW] TD-CRM-03 · phase_crm · Ingest key is a single shared secret
-  - What: `POST /api/v1/crm/notes` authenticates with one `CRM_INGEST_KEY` shared by all callers (Donna PA, AI CSR). No per-caller key, rotation, or rate limit; when the env is unset (dev) the endpoint is open.
-  - Where: `apps/api/src/crm-routes.ts::POST /api/v1/crm/notes`.
-  - Resolution: Mint per-caller ingest keys (mirror the SQB `external-keys` bcrypt-hashed pattern) and add a rate limit. Until then, keep `CRM_INGEST_KEY` set in every non-dev environment.
+- [CLOSED] TD-CRM-03 · phase_crm · Per-caller ingest keys + rate limit
+  - Closed 2026-05-22. `CRM_INGEST_KEYS` ("donna:k1,ai_csr:k2") gives each caller its own key (for attribution + independent rotation); `resolveIngestCaller` matches it (or the single `CRM_INGEST_KEY` as the "default" caller), logs the resolved caller, and rejects unknown keys 401. The ingest route now has its own rate-limit bucket (120/min). Tests cover single-key, wrong-key, and per-caller-key paths. (A full bcrypt-hashed mint UI like SQB external-keys is heavier than warranted for two internal callers.)
 
 - [CLOSED] TD-CRM-04 · phase_crm · Phone match normalized (last-10-digit)
   - Closed 2026-05-22. Ingest phone matching now compares the last 10 digits of both sides via `right(regexp_replace(phone,'\D','','g'),10)`, so `+1`, dashes, parens and spaces no longer cause a miss (NANP). No new column needed — normalized in SQL. Test ingests a `+1 (xxx) xxx-xxxx` number and matches a customer stored as plain digits. (Near-match triage UI remains a future nicety, not required.)
@@ -244,7 +242,5 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
   - Where: `inventory-routes.ts` (low-stock), `purchase-order-routes.ts` (from-low-stock).
   - Resolution: If managers want to review/snooze reorder suggestions before ordering, add a lightweight reorder-suggestion table + an acknowledge step. Not needed while the live report suffices.
 
-- [LOW] TD-PO-03 · phase_purchase_orders · No vendor invoice / over-receipt / line edits
-  - What: Receiving caps at the ordered quantity (no over-receipt). There's no vendor-invoice / 3-way match, and PO lines can't be edited after creation (recreate the PO instead).
-  - Where: `purchase-order-routes.ts`.
-  - Resolution: Allow over-receipt with a flag if real-world receiving needs it; add a draft-line PATCH; add an invoices arm if AP reconciliation is wanted.
+- [CLOSED] TD-PO-03 · phase_purchase_orders · Over-receipt flag + draft-line edits
+  - Closed 2026-05-22. Receiving accepts an `allowOver: true` flag to receive beyond the ordered quantity (real over-shipments); without it the 422 guard stands. `PATCH /api/v1/purchase-orders/:id/lines` replaces lines on a DRAFT PO (recomputes subtotal); 409 once submitted. 2 tests. (Vendor-invoice / 3-way AP match is a separate finance feature, intentionally out of scope for v1.)

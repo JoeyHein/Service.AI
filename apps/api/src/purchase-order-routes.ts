@@ -89,6 +89,14 @@ const ReceiveSchema = z
     lines: z
       .array(z.object({ lineId: z.string().uuid(), receiveQty: z.number().positive() }).strict())
       .min(1),
+    /** TD-PO-03: allow receiving more than ordered (real-world over-shipment). */
+    allowOver: z.boolean().optional(),
+  })
+  .strict();
+
+const EditLinesSchema = z
+  .object({
+    lines: z.array(LineSchema).min(1),
   })
   .strict();
 
@@ -363,6 +371,63 @@ export function registerPurchaseOrderRoutes(
       return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Purchase order not found' } });
     }
     return reply.code(200).send({ ok: true, data });
+  });
+
+  // PATCH /api/v1/purchase-orders/:id/lines — replace lines on a DRAFT PO (TD-PO-03)
+  app.patch<{ Params: { id: string } }>('/api/v1/purchase-orders/:id/lines', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    if (!canWrite(req.scope)) {
+      return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Manager role required' } });
+    }
+    if (!UUID_RE.test(req.params.id)) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' } });
+    }
+    const parsed = EditLinesSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: parsed.error.message } });
+    }
+    const scope = req.scope;
+    const outcome = await withScope(db, scope, async (tx) => {
+      const rows = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, req.params.id)).limit(1);
+      const po = rows[0];
+      if (!po) return { kind: 'not_found' as const };
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && po.branchId !== scopeBranch) return { kind: 'not_found' as const };
+      if (po.status !== 'draft') return { kind: 'invalid' as const, from: po.status };
+
+      await tx.delete(purchaseOrderLines).where(eq(purchaseOrderLines.poId, po.id));
+      const subtotal = parsed.data.lines.reduce((s, l) => s + Math.round(l.quantity * l.unitCostCents), 0);
+      const lineRows = await tx
+        .insert(purchaseOrderLines)
+        .values(
+          parsed.data.lines.map((l, i) => ({
+            poId: po.id,
+            branchId: po.branchId,
+            position: i + 1,
+            sku: l.sku,
+            description: l.description ?? null,
+            quantity: String(l.quantity),
+            unitCostCents: l.unitCostCents,
+            itemId: l.itemId ?? null,
+          })),
+        )
+        .returning();
+      const upd = await tx
+        .update(purchaseOrders)
+        .set({ subtotalCents: subtotal, updatedAt: new Date() })
+        .where(eq(purchaseOrders.id, po.id))
+        .returning();
+      return { kind: 'ok' as const, po: upd[0]!, lines: lineRows };
+    });
+    if (outcome.kind === 'not_found') {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Purchase order not found' } });
+    }
+    if (outcome.kind === 'invalid') {
+      return reply.code(409).send({ ok: false, error: { code: 'INVALID_TRANSITION', message: `lines are editable only on a draft (is ${outcome.from})` } });
+    }
+    return reply.code(200).send({ ok: true, data: { po: outcome.po, lines: outcome.lines } });
   });
 
   // POST /api/v1/purchase-orders/:id/submit — flip to submitted + best-effort
@@ -650,7 +715,7 @@ export function registerPurchaseOrderRoutes(
         const line = byId.get(recv.lineId);
         if (!line) return { kind: 'line_missing' as const };
         const newReceived = Number(line.receivedQty) + recv.receiveQty;
-        if (newReceived > Number(line.quantity)) {
+        if (newReceived > Number(line.quantity) && !parsed.data.allowOver) {
           return { kind: 'over' as const, sku: line.sku };
         }
         // Upsert the branch inventory item by (branch, sku).
