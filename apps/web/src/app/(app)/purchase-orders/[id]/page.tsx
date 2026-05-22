@@ -71,7 +71,7 @@ export default async function PurchaseOrderDetailPage({
         </Link>
       </div>
 
-      <PurchaseOrderActions poId={po.id} status={po.status} lines={lines} />
+      <PurchaseOrderActions poId={po.id} status={po.status} lines={lines} synced={!!po.supplierPoRef} />
     </section>
   );
 }

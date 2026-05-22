@@ -159,6 +159,40 @@ describe('BCB-03 / submit pushes a BC PO and stamps the ref', () => {
   });
 });
 
+describe('TD-BCB-02 / sync-bc retries a failed BC push', () => {
+  it('stamps the ref on a PO whose submit push failed', async () => {
+    const created = await createPO(cookies.denverManager, {
+      supplierId,
+      lines: [{ sku: 'PN10', quantity: 2, unitCostCents: 100 }],
+    });
+    const id = created.json().data.po.id as string;
+    // Make the submit-time BC push fail (single-use injection).
+    mock.injectFailure('createPurchaseOrder', { code: 'UPSTREAM_ERROR', message: 'BC down', retryable: true });
+    const submit = await app.inject({ method: 'POST', url: `/api/v1/purchase-orders/${id}/submit`, headers: { cookie: cookies.denverManager } });
+    expect(submit.json().data.supplierPoRef).toBeNull();
+
+    // Now sync — the injected failure is cleared, so it succeeds.
+    const sync = await app.inject({ method: 'POST', url: `/api/v1/purchase-orders/${id}/sync-bc`, headers: { cookie: cookies.denverManager } });
+    expect(sync.statusCode).toBe(200);
+    expect(sync.json().data.supplierPoRef).toMatch(/^BCPO-\d{6}$/);
+
+    // Re-sync is an idempotent no-op (already synced).
+    const again = await app.inject({ method: 'POST', url: `/api/v1/purchase-orders/${id}/sync-bc`, headers: { cookie: cookies.denverManager } });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().data.supplierPoRef).toBe(sync.json().data.supplierPoRef);
+  });
+
+  it('409 when the PO is still a draft', async () => {
+    const created = await createPO(cookies.denverManager, {
+      supplierId,
+      lines: [{ sku: 'PN10', quantity: 1, unitCostCents: 100 }],
+    });
+    const id = created.json().data.po.id as string;
+    const sync = await app.inject({ method: 'POST', url: `/api/v1/purchase-orders/${id}/sync-bc`, headers: { cookie: cookies.denverManager } });
+    expect(sync.statusCode).toBe(409);
+  });
+});
+
 describe('BCB-03 / check-availability', () => {
   it('returns the supplier availability envelope', async () => {
     const res = await app.inject({

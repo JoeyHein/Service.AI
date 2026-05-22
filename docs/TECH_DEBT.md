@@ -255,10 +255,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-BCB-01 · phase_bc_purchasing_bridge · Quote-builder availability badge
   - Closed 2026-05-21. `quotes/new/page.tsx` now resolves the corporate's default supplier via `GET /api/v1/suppliers` (first row) and passes `supplierId` into the builder — which also un-stubs the previously-deferred draft-quote creation. QuoteBuilder gained a "Check supplier stock" button + a supplier-stock panel showing per-SKU available/partial/unavailable from `/api/v1/inventory/check-availability`.
 
-- [LOW] TD-BCB-02 · phase_bc_purchasing_bridge · No PO BC-resync endpoint
-  - What: If `submit`'s best-effort BC push fails, the PO stays submitted with a null `supplier_po_ref` and there's no way to retry the BC sync short of a manual DB poke (re-submit is blocked — it's no longer a draft).
-  - Where: `apps/api/src/purchase-order-routes.ts`.
-  - Resolution: Add `POST /api/v1/purchase-orders/:id/sync-bc` (manager+) that re-calls `createPurchaseOrder` (idempotent on the PO id) and stamps the ref. Surface a "Sync to BC" button when submitted + unsynced.
+- [CLOSED] TD-BCB-02 · phase_bc_purchasing_bridge · No PO BC-resync endpoint
+  - Closed 2026-05-21. `POST /api/v1/purchase-orders/:id/sync-bc` (manager+) re-calls `createPurchaseOrder` (idempotent on the PO id), stamps the ref; 409 on draft/canceled, idempotent no-op when already synced. A "Sync to BC" button shows on the PO detail when post-draft + unsynced. 2 tests.
 
 - [LOW] TD-BCB-03 · phase_bc_purchasing_bridge · bc-ai-agent alembic has 3 heads
   - What: bc-ai-agent's alembic history is branched (3 heads pre-existing). The new `b1c2d3e4f5a6` migration is based on the external-tables lineage head (`c5d6e7f8g9h0`); `alembic upgrade head` would need `--heads` or a merge revision.

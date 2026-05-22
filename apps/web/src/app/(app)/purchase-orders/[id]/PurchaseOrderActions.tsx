@@ -21,10 +21,12 @@ export function PurchaseOrderActions({
   poId,
   status,
   lines,
+  synced,
 }: {
   poId: string;
   status: string;
   lines: POLine[];
+  synced: boolean;
 }) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +77,11 @@ export function PurchaseOrderActions({
         {status !== 'received' && status !== 'canceled' && (
           <button type="button" onClick={() => act('cancel')} disabled={pending} className="rounded-md border border-rose-300 px-3 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50" data-testid="po-cancel">
             Cancel
+          </button>
+        )}
+        {status !== 'draft' && status !== 'canceled' && !synced && (
+          <button type="button" onClick={() => act('sync-bc')} disabled={pending} className="rounded-md border border-blue-300 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50" data-testid="po-sync-bc">
+            Sync to BC
           </button>
         )}
       </div>

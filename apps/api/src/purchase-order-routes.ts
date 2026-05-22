@@ -448,6 +448,87 @@ export function registerPurchaseOrderRoutes(
     return reply.code(200).send({ ok: true, data: po });
   });
 
+  // POST /api/v1/purchase-orders/:id/sync-bc — retry the BC push for a
+  // submitted PO whose best-effort sync failed (TD-BCB-02). Idempotent on the
+  // PO id at BC, and a no-op if already synced.
+  app.post<{ Params: { id: string } }>('/api/v1/purchase-orders/:id/sync-bc', async (req, reply) => {
+    if (req.scope === null) {
+      return reply.code(401).send({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } });
+    }
+    if (!canWrite(req.scope)) {
+      return reply.code(403).send({ ok: false, error: { code: 'FORBIDDEN', message: 'Manager role required' } });
+    }
+    if (!UUID_RE.test(req.params.id)) {
+      return reply.code(400).send({ ok: false, error: { code: 'VALIDATION_ERROR', message: 'id must be a UUID' } });
+    }
+    const scope = req.scope;
+
+    const loaded = await withScope(db, scope, async (tx) => {
+      const rows = await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, req.params.id)).limit(1);
+      const po = rows[0];
+      if (!po) return { kind: 'not_found' as const };
+      const scopeBranch = branchIdFromScope(scope);
+      if (scopeBranch && po.branchId !== scopeBranch) return { kind: 'not_found' as const };
+      if (po.status === 'draft' || po.status === 'canceled') {
+        return { kind: 'invalid' as const, from: po.status };
+      }
+      if (po.supplierPoRef) return { kind: 'already' as const, po };
+      const lines = await tx
+        .select()
+        .from(purchaseOrderLines)
+        .where(eq(purchaseOrderLines.poId, po.id))
+        .orderBy(purchaseOrderLines.position);
+      return { kind: 'ok' as const, po, lines };
+    });
+
+    if (loaded.kind === 'not_found') {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Purchase order not found' } });
+    }
+    if (loaded.kind === 'invalid') {
+      return reply.code(409).send({ ok: false, error: { code: 'INVALID_TRANSITION', message: `cannot sync a ${loaded.from} PO` } });
+    }
+    if (loaded.kind === 'already') {
+      return reply.code(200).send({ ok: true, data: loaded.po });
+    }
+
+    const supplier = await loadSupplierConfig(db, loaded.po.supplierId);
+    if (!supplier) {
+      return reply.code(404).send({ ok: false, error: { code: 'NOT_FOUND', message: 'Supplier not found' } });
+    }
+    const provider = bindProvider(registry, supplier);
+    if (!provider.createPurchaseOrder) {
+      return reply.code(501).send({ ok: false, error: { code: 'NOT_SUPPORTED', message: 'Supplier cannot receive purchase orders' } });
+    }
+    const res = await provider.createPurchaseOrder({
+      supplierAccountCode: supplier.supplierAccountCode,
+      externalPoId: loaded.po.id,
+      poNumber: loaded.po.poNumber ?? undefined,
+      lines: loaded.lines.map((l) => ({
+        sku: l.sku,
+        quantity: Number(l.quantity),
+        unitCostCents: l.unitCostCents,
+        description: l.description ?? undefined,
+      })),
+      requestId: req.id,
+    });
+    if (!res.ok) {
+      return reply.code(502).send({ ok: false, error: { code: res.error.code, message: res.error.message } });
+    }
+    const stamped = await withScope(db, scope, async (tx) =>
+      tx
+        .update(purchaseOrders)
+        .set({
+          supplierPoRef: res.data.supplierPoRef,
+          supplierPoId: res.data.supplierPoId,
+          bcSyncedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(purchaseOrders.id, loaded.po.id))
+        .returning(),
+    );
+    return reply.code(200).send({ ok: true, data: stamped[0] ?? loaded.po });
+  });
+
   // POST /api/v1/inventory/check-availability — supplier stock for a basket.
   app.post('/api/v1/inventory/check-availability', async (req, reply) => {
     if (req.scope === null) {
