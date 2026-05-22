@@ -143,6 +143,9 @@ export function QuoteBuilder({
   const [committedQuoteId, setCommittedQuoteId] = useState<string | null>(null);
   const [designOpen, setDesignOpen] = useState(false);
   const [designCaptured, setDesignCaptured] = useState(false);
+  const [availability, setAvailability] = useState<Record<string, { status: string; available: number }>>({});
+  const [availPending, setAvailPending] = useState(false);
+  const [availError, setAvailError] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
   const [acceptedOrderRef, setAcceptedOrderRef] = useState<string | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
@@ -379,6 +382,28 @@ export function QuoteBuilder({
     setAcceptedOrderRef(res.body.data.quote.supplierOrderRef ?? null);
   }
 
+  async function checkStock(): Promise<void> {
+    if (!supplierId) return;
+    const items = lines
+      .filter((l) => l.sku.trim() !== '' && l.quantity > 0)
+      .map((l) => ({ sku: l.sku.trim(), quantity: l.quantity }));
+    if (items.length === 0) return;
+    setAvailError(null);
+    setAvailPending(true);
+    const res = await apiClientFetch<{ items: { sku: string; status: string; available: number }[] }>(
+      '/api/v1/inventory/check-availability',
+      { method: 'POST', body: JSON.stringify({ supplierId, items }) },
+    );
+    setAvailPending(false);
+    if (res.status !== 200 || !res.body.ok || !res.body.data) {
+      setAvailError(res.body.error?.message ?? 'Availability check failed.');
+      return;
+    }
+    const map: Record<string, { status: string; available: number }> = {};
+    for (const it of res.body.data.items) map[it.sku] = { status: it.status, available: it.available };
+    setAvailability(map);
+  }
+
   function retry(): void {
     setPricingError(null);
     void doPrice(lines.filter((l) => l.sku.trim() !== ''));
@@ -435,12 +460,55 @@ export function QuoteBuilder({
               Design a door
             </button>
           )}
+          {supplierId && (
+            <button
+              type="button"
+              onClick={() => void checkStock()}
+              disabled={availPending}
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              data-testid="check-supplier-stock"
+            >
+              {availPending ? 'Checking…' : 'Check supplier stock'}
+            </button>
+          )}
           {designCaptured && (
             <span className="text-xs text-emerald-700" data-testid="design-captured">
               Design captured to this quote&apos;s notes.
             </span>
           )}
         </div>
+        {(Object.keys(availability).length > 0 || availError) && (
+          <div
+            className="rounded-md border border-slate-200 bg-white p-3 text-sm"
+            data-testid="availability-panel"
+          >
+            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+              Supplier stock
+            </p>
+            {availError ? (
+              <p className="text-xs text-rose-600">{availError}</p>
+            ) : (
+              <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                {Object.entries(availability).map(([sku, a]) => (
+                  <li key={sku} className="text-xs">
+                    <span className="font-mono text-slate-700">{sku}</span>{' '}
+                    <span
+                      className={
+                        a.status === 'available'
+                          ? 'text-emerald-700'
+                          : a.status === 'partial'
+                            ? 'text-amber-700'
+                            : 'text-rose-700'
+                      }
+                    >
+                      {a.status} ({a.available})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
       <div className="space-y-4">
         <TotalsCard

@@ -84,11 +84,15 @@ export default async function NewQuotePage({
     }
   }
 
-  // No supplier list endpoint exists yet — let the builder POST without
-  // a supplierId and surface the API validation error if BC isn't wired
-  // for this branch. The real /api/v1/corporate/suppliers list comes
-  // with the supplier registry UI (out of scope for SQB-08).
-  const supplierId: string | null = null;
+  // Resolve the corporate's default supplier (first row) so the builder can
+  // create the draft + check supplier stock. Falls back to null when none is
+  // configured (the builder surfaces the "wire a supplier" warning).
+  const supRes = await apiServerFetch<{ rows: Array<{ id: string }> }>(
+    '/api/v1/suppliers',
+  );
+  const supplierId: string | null = supRes.body.ok
+    ? (supRes.body.data?.rows[0]?.id ?? null)
+    : null;
 
   const role = session.scope?.role ?? 'tech';
 

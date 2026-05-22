@@ -252,10 +252,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 
 ### BC purchasing bridge follow-ups (BCB) — phase 26
 
-- [LOW] TD-BCB-01 · phase_bc_purchasing_bridge · Quote-builder availability badge
-  - What: The availability check is wired on the PO form (supplier + SKUs present). The quote builder has no wired supplier (the `/quotes/new` page punts supplierId to null), so per-line "can BC fulfill this?" badges aren't there.
-  - Where: `apps/web/.../quotes/new/QuoteBuilder.tsx` + the supplier resolution on `quotes/new/page.tsx`.
-  - Resolution: Resolve the branch's default supplier server-side (the registry/suppliers list endpoint already exists), pass `supplierId` into the builder, and call `/inventory/check-availability` for the current lines.
+- [CLOSED] TD-BCB-01 · phase_bc_purchasing_bridge · Quote-builder availability badge
+  - Closed 2026-05-21. `quotes/new/page.tsx` now resolves the corporate's default supplier via `GET /api/v1/suppliers` (first row) and passes `supplierId` into the builder — which also un-stubs the previously-deferred draft-quote creation. QuoteBuilder gained a "Check supplier stock" button + a supplier-stock panel showing per-SKU available/partial/unavailable from `/api/v1/inventory/check-availability`.
 
 - [LOW] TD-BCB-02 · phase_bc_purchasing_bridge · No PO BC-resync endpoint
   - What: If `submit`'s best-effort BC push fails, the PO stays submitted with a null `supplier_po_ref` and there's no way to retry the BC sync short of a manual DB poke (re-submit is blocked — it's no longer a draft).
