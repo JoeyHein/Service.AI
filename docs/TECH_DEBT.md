@@ -258,10 +258,8 @@ Items deferred (explicit out-of-scope per the SQB gate) — parked for follow-up
 - [CLOSED] TD-BCB-02 · phase_bc_purchasing_bridge · No PO BC-resync endpoint
   - Closed 2026-05-21. `POST /api/v1/purchase-orders/:id/sync-bc` (manager+) re-calls `createPurchaseOrder` (idempotent on the PO id), stamps the ref; 409 on draft/canceled, idempotent no-op when already synced. A "Sync to BC" button shows on the PO detail when post-draft + unsynced. 2 tests.
 
-- [LOW] TD-BCB-03 · phase_bc_purchasing_bridge · bc-ai-agent alembic has 3 heads
-  - What: bc-ai-agent's alembic history is branched (3 heads pre-existing). The new `b1c2d3e4f5a6` migration is based on the external-tables lineage head (`c5d6e7f8g9h0`); `alembic upgrade head` would need `--heads` or a merge revision.
-  - Where: `bc-ai-agent/backend/alembic/versions`.
-  - Resolution: Add an alembic merge revision unifying the heads (separate from this phase; pre-existing condition).
+- [CLOSED] TD-BCB-03 · phase_bc_purchasing_bridge · bc-ai-agent alembic has 3 heads
+  - Closed 2026-05-21. Added no-op merge revision `d4e5f6a7b8c9` (down_revision = the 3 heads: `b1c2d3e4f5a6`, `c7d8e9f0a1b2`, `m7n8o9p0q1r2`) so `alembic upgrade head` resolves to a single head. No schema change. (bc-ai-agent local commit.)
 
 - [LOW] TD-PO-02 · phase_purchase_orders · No demand-signal acknowledge workflow
   - What: `from-low-stock` reads the live low-stock report directly. BC AI Agent had a `demand_signals` table with severity + acknowledge gating before PO generation; Service.AI has no equivalent persistence/triage.
