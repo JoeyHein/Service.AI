@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { apiServerFetch } from '../../../../../lib/api.js';
 import { BranchStatusControls } from './BranchStatusControls';
+import { AssignManager } from './AssignManager';
 
 interface BranchDetail {
   branch: {
@@ -96,6 +97,17 @@ export default async function BranchDetailPage({
       </header>
 
       <Section title="Manager history">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="text-sm text-slate-600">
+            {detail.currentManager
+              ? `Current: ${detail.currentManager.name ?? detail.currentManager.email}`
+              : 'No current manager.'}
+          </div>
+          <AssignManager
+            branchId={detail.branch.id}
+            hasManager={detail.currentManager !== null}
+          />
+        </div>
         {detail.managerHistory.length === 0 ? (
           <Empty>No manager has been assigned yet.</Empty>
         ) : (
