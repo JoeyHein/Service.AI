@@ -163,3 +163,10 @@ BC-live**. W3/W4 are deferrable to Wave 2.
 _Status log_
 - 2026-05-26 — Plan created. Scope locked to single-branch 30-day pilot, phased
   Wave 1/Wave 2, ASAP. W0 + W1 starting in parallel.
+- 2026-05-26 — W3 **code complete** (pulled forward while W0/W1 await Joey):
+  real Resend email + Twilio SMS senders in `apps/api/src/notify.ts` (native
+  fetch, env-gated, stub fallback unchanged), 11 unit tests, `EMAIL_FROM` +
+  `TWILIO_FROM_NUMBER` added to `app.yaml`. Remaining for W3: live delivery
+  validation (needs `RESEND_API_KEY`/`EMAIL_FROM` + Twilio creds — Joey).
+  Note: the invoice-console "Send" action is still a state-flip + copy-link
+  (no email dispatch yet) — minor follow-up if auto invoice email is wanted.

@@ -74,18 +74,133 @@ export const loggingSmsSender: SmsSender = {
   },
 };
 
-export function resolveEmailSender(): EmailSender {
-  // Resend integration lands with the first real send path
-  // (phase_ai_collections). Until then the stub is the only path.
-  if (!process.env['RESEND_API_KEY']) return loggingEmailSender;
-  return loggingEmailSender;
+const SEND_TIMEOUT_MS = 10_000;
+
+/**
+ * Real email via Resend's REST API (native fetch, no SDK — same convention
+ * as BcAiAgentProvider). Throws on a non-2xx so the caller can surface a
+ * failed send; the API key is never logged.
+ *
+ * @param apiKey RESEND_API_KEY
+ * @param from verified sender, e.g. "Elevated Doors <noreply@…>"
+ */
+export function resendEmailSender(apiKey: string, from: string): EmailSender {
+  return {
+    async send(payload) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), SEND_TIMEOUT_MS);
+      try {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            from,
+            to: [payload.to],
+            subject: payload.subject,
+            text: payload.text,
+            ...(payload.tag
+              ? { tags: [{ name: 'tag', value: payload.tag }] }
+              : {}),
+          }),
+          signal: ctrl.signal,
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '');
+          throw new Error(`resend send failed: ${res.status} ${previewOf(detail, 300)}`);
+        }
+        const json = (await res.json().catch(() => ({}))) as { id?: string };
+        return { id: json.id ?? 'resend_unknown' };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
 
+/**
+ * Real SMS via Twilio's Messages REST API (native fetch, HTTP Basic auth).
+ * Prefers a Messaging Service SID; falls back to a from-number. Throws on a
+ * non-2xx; the auth token is never logged.
+ */
+export function twilioSmsSender(opts: {
+  accountSid: string;
+  authToken: string;
+  messagingServiceSid?: string;
+  fromNumber?: string;
+}): SmsSender {
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(
+    opts.accountSid,
+  )}/Messages.json`;
+  const auth = Buffer.from(`${opts.accountSid}:${opts.authToken}`).toString('base64');
+  return {
+    async send(payload) {
+      const form = new URLSearchParams();
+      form.set('To', payload.to);
+      form.set('Body', payload.body);
+      if (opts.messagingServiceSid) {
+        form.set('MessagingServiceSid', opts.messagingServiceSid);
+      } else if (opts.fromNumber) {
+        form.set('From', opts.fromNumber);
+      }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), SEND_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            authorization: `Basic ${auth}`,
+            'content-type': 'application/x-www-form-urlencoded',
+          },
+          body: form.toString(),
+          signal: ctrl.signal,
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '');
+          throw new Error(`twilio send failed: ${res.status} ${previewOf(detail, 300)}`);
+        }
+        const json = (await res.json().catch(() => ({}))) as { sid?: string };
+        return { id: json.sid ?? 'twilio_unknown' };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+/**
+ * Real Resend sender when RESEND_API_KEY is set, else the logging stub.
+ * EMAIL_FROM must be a Resend-verified sender; defaults are dev-only.
+ */
+export function resolveEmailSender(): EmailSender {
+  const apiKey = process.env['RESEND_API_KEY'];
+  if (!apiKey) return loggingEmailSender;
+  const from = process.env['EMAIL_FROM'];
+  if (!from) {
+    logger.warn('RESEND_API_KEY set but EMAIL_FROM missing — email send disabled (stub)');
+    return loggingEmailSender;
+  }
+  return resendEmailSender(apiKey, from);
+}
+
+/**
+ * Real Twilio sender when account creds + a route (Messaging Service SID or
+ * from-number) are set, else the logging stub.
+ */
 export function resolveSmsSender(): SmsSender {
-  // Twilio is already in play for voice (phase_ai_csr_voice) but the
-  // SMS trigger is separate and wires in at phase_invoicing_stripe+1.
-  if (!process.env['TWILIO_ACCOUNT_SID']) return loggingSmsSender;
-  return loggingSmsSender;
+  const accountSid = process.env['TWILIO_ACCOUNT_SID'];
+  const authToken = process.env['TWILIO_AUTH_TOKEN'];
+  const messagingServiceSid = process.env['TWILIO_MESSAGING_SERVICE_SID'];
+  const fromNumber = process.env['TWILIO_FROM_NUMBER'];
+  if (!accountSid || !authToken || (!messagingServiceSid && !fromNumber)) {
+    if (accountSid && authToken) {
+      logger.warn('Twilio creds set but no MessagingServiceSid/from-number — SMS send disabled (stub)');
+    }
+    return loggingSmsSender;
+  }
+  return twilioSmsSender({ accountSid, authToken, messagingServiceSid, fromNumber });
 }
 
 type Drizzle = NodePgDatabase<typeof schema>;

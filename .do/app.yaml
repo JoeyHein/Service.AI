@@ -109,10 +109,16 @@ services:
         value: ${TWILIO_AUTH_TOKEN}
       - key: TWILIO_MESSAGING_SERVICE_SID
         value: ${TWILIO_MESSAGING_SERVICE_SID}
+      # Fallback SMS origin when no Messaging Service SID is configured.
+      - key: TWILIO_FROM_NUMBER
+        value: ${TWILIO_FROM_NUMBER}
       # --- Email ---
       - key: RESEND_API_KEY
         scope: RUN_AND_BUILD_TIME
         value: ${RESEND_API_KEY}
+      # Resend-verified sender, e.g. "Elevated Doors <no-reply@elevateddoors.com>".
+      - key: EMAIL_FROM
+        value: ${EMAIL_FROM}
       # --- Web push (VAPID) ---
       - key: VAPID_PUBLIC_KEY
         scope: RUN_AND_BUILD_TIME
