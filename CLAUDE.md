@@ -320,6 +320,27 @@ See `docs/LESSONS.md` — updated by the evolver after each phase. **Read it bef
 
 If any agent genuinely cannot proceed (tests can't be made to pass after 3 attempts, environment is broken, criteria are impossible, an architectural decision needs human judgment) — write to the appropriate `phases/*_BLOCKED.md` file and stop. Do not fake progress. Do not silently drop scope.
 
+## Autonomy & execution mode (pilot go-live)
+
+Joey has granted full autonomous execution for this project. This is also
+encoded in `.claude/settings.json` (`bypassPermissions: true`,
+`autoApprove: true`, `Bash/Write/Edit/Task(*)` allowed) and the user-level
+`~/CLAUDE.md`. Operate accordingly:
+
+- **Coding & commits:** edit, build, test, commit, and push to `main`
+  without asking. Use concise Conventional-Commit messages (see above) and
+  push as soon as work is complete and green.
+- **Continue to the next phase automatically.** The pilot go-live plan lives
+  in `docs/PILOT_GO_LIVE_PLAN.md` (workstreams W0–W5). When a workstream's
+  acceptance criteria are met and committed, proceed to the next workstream
+  without waiting to be asked. Keep that doc current as the living plan.
+- **Only pause for these (they genuinely need Joey):** destructive git ops
+  (force-push, `reset --hard`, `branch -D`); real-money transactions;
+  setting production secrets in the DO dashboard; minting the BC
+  `X-Service-AI-Key`; and the business-process answers in
+  `docs/PILOT_WORKFLOW_FIT.md`. When blocked on one of these, surface exactly
+  what's needed and keep moving on everything else.
+
 ## First-customer specifics (Elevated Doors)
 
 - Elevated Doors is a **corporate-operated brand** (not a franchisee). Its branches are corporate-owned and run by W2 local managers on the standard base + commission comp plan.
