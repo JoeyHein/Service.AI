@@ -39,7 +39,9 @@ not on a deadline.
   a fresh DB; prod builds pass; `.do/app.yaml` references every required var.
 - **Genuine code gap:** email/SMS senders return logging stubs even when keys
   are set ("lands with the first real send path") — see W3.
-- **No E2E specs run in CI** (Playwright/k6 scaffolded only) — see W5.
+- ~~**No E2E specs run in CI** (Playwright/k6 scaffolded only)~~ — golden-path
+  E2E now runs in CI as a live integration test (W5.1 done); browser/k6 still
+  scaffolded only.
 
 ---
 
@@ -119,9 +121,15 @@ The "AI quality" focus area.
   low-confidence call escalates to a human without dropping the customer.
 
 ### W5 — Dress rehearsal & 30-day pilot operations  · owner C+J
-1. **E2E specs (C):** populate the scaffolded Playwright golden path
-   (book → quote → accept → pay → complete → invoice) so "it all works
-   together" is machine-verified.
+1. **E2E specs (C): ✅ done.** The golden path (book → quote → accept →
+   complete → invoice → pay) is machine-verified by
+   `apps/api/src/__tests__/live-golden-path.test.ts`. It drives the real
+   Fastify routes + Postgres with only the external adapters stubbed
+   (supplier = `MockSupplierProvider`; Stripe/email/SMS = the env-gated
+   stubs), so it runs green in the existing `pnpm -r test` CI job with no
+   browser infra or third-party keys. Chosen over a browser-driven
+   Playwright spec (the scaffolded `tests/e2e/` files) for CI stability;
+   a UI E2E remains a deferred follow-up if we want click-through coverage.
 2. **Dress rehearsal (C+J):** one full real job lifecycle, internal, on live
    services with a small real transaction — before any customer.
 3. **Monitoring (C):** confirm Axiom + Sentry actually receive prod logs/errors.
