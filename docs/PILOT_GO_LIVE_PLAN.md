@@ -91,7 +91,12 @@ Order matters; this is the gating risk for go-live.
    → real `SO-XXXXXX`, idempotency (concurrent commits collapse to one BC doc).
    Lower risk than usual because Joey owns both sides (OPENDC's BC AI Agent).
 - **Acceptance:** GL-05 smoke #1–7 pass with real money + real BC.
-- **Rollback:** unset Stripe keys → stub; point supplier row at MockProvider.
+- **Rollback:** unset Stripe keys → stub. **BC rollback correction:** "point
+  supplier row at MockProvider" is *not* possible today (the
+  `supplier_provider_kind` enum has only `bc_ai_agent` and prod registers only
+  that factory) — the real BC rollback is operational (repoint `endpoint_url`
+  to a sandbox, or disable the supplier row). Full table + the follow-up to
+  make BC rollback symmetric: `docs/deploy/PILOT_OPERATIONS.md` §3.
 
 ### W3 — Communications (real send path — code work, not just config)  · owner C
 Email/SMS auto-send is **not wired** — senders return stubs even with keys.
@@ -133,8 +138,9 @@ The "AI quality" focus area.
 2. **Dress rehearsal (C+J):** one full real job lifecycle, internal, on live
    services with a small real transaction — before any customer.
 3. **Monitoring (C):** confirm Axiom + Sentry actually receive prod logs/errors.
-4. **Pilot run (C+J):** define 30-day success metrics, daily check-in, and a
-   one-page per-integration rollback plan.
+4. **Pilot run (C+J):** ✅ **ops plan drafted** — 30-day success metrics, daily
+   check-in cadence, and the per-integration rollback one-pager live in
+   `docs/deploy/PILOT_OPERATIONS.md`. Running the 30 days is C+J once live.
 - **Acceptance:** golden-path E2E green in CI; dress rehearsal completes with a
   real transaction; monitoring confirmed live.
 
@@ -171,6 +177,11 @@ BC-live**. W3/W4 are deferrable to Wave 2.
 _Status log_
 - 2026-05-26 — Plan created. Scope locked to single-branch 30-day pilot, phased
   Wave 1/Wave 2, ASAP. W0 + W1 starting in parallel.
+- 2026-05-27 — W5.1 **done**: golden-path E2E (`live-golden-path.test.ts`) green
+  in CI (commit `4d1c05a`). W5.4 **ops plan drafted**: metrics + daily cadence +
+  rollback one-pager (`docs/deploy/PILOT_OPERATIONS.md`); surfaced the BC
+  "MockProvider" rollback gap (enum + registry don't support it — follow-up
+  logged to add `'mock'` to the enum + register the factory for symmetric rollback).
 - 2026-05-26 — W3 **code complete** (pulled forward while W0/W1 await Joey):
   real Resend email + Twilio SMS senders in `apps/api/src/notify.ts` (native
   fetch, env-gated, stub fallback unchanged), 11 unit tests, `EMAIL_FROM` +
