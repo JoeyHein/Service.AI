@@ -85,13 +85,14 @@ on for the coming week.
 
 ## 3. Per-integration rollback one-pager
 
-**Golden rule:** every external integration except Better Auth degrades to a
-deterministic in-process **stub** when its keys are removed. So the fastest
-rollback for most things is *unset the env var(s) in the DO dashboard and
-redeploy* — the code already falls back, dev/CI behaviour is the proven-good
-path, and no customer-visible crash occurs (the action just stops having a
-real-world effect). **Exception: the BC AI Agent bridge has no in-prod stub —
-see below.**
+**Golden rule:** every external integration degrades to a deterministic
+in-process **stub** when you back it out. For the key-gated ones (Stripe,
+email, SMS, Maps, Spaces) the fastest rollback is *unset the env var(s) in the
+DO dashboard and redeploy* — the code already falls back, dev/CI behaviour is
+the proven-good path, and no customer-visible crash occurs (the action just
+stops having a real-world effect). The BC AI Agent bridge isn't key-gated, so
+its rollback is a one-row `suppliers.provider_kind` flip to `'mock'` instead —
+symmetric, same idea.
 
 | Integration | Live when these are set | Rollback to stub | Stub behaviour (what "off" looks like) |
 |---|---|---|---|
@@ -102,18 +103,18 @@ see below.**
 | **DO Spaces (photos)** | all five `DO_SPACES_ENDPOINT` / `REGION` / `BUCKET` / `KEY` / `SECRET` | Unset **any** → `stubObjectStore` | Uploads accepted in-memory, **not persisted** — photos lost on restart. Tolerable short-term; don't rely on photo evidence while stubbed. |
 | **Voice AI (Wave 2)** | Twilio voice number + `DEEPGRAM_API_KEY` + `ELEVENLABS_API_KEY` | Detach Media Streams / unset keys → calls human-answered (Wave-1 mode) | CSR answers and types into Service.AI; every call still lands in CRM. This *is* the Wave-1 baseline. |
 | **Better Auth** | `BETTER_AUTH_SECRET` (≥32 chars) | **No rollback — required.** Unsetting it is fatal in prod (dev-only placeholder otherwise). | Rotating the secret invalidates live sessions (everyone re-logs-in); never unset in prod. |
-| **BC AI Agent bridge** | `suppliers` row: `provider_kind='bc_ai_agent'`, real `endpoint_url`, `X-Service-AI-Key` | **No in-prod stub fallback (see note).** Operational rollback: repoint `suppliers.endpoint_url` at a sandbox BC AI Agent, or remove/disable the supplier row to halt new quote commits (existing quotes/orders unaffected), forcing manual quoting. | With BC unreachable, `priceItems`/`commit` fail with provider errors (loud, not silent). There is no automatic mock. |
+| **BC AI Agent bridge** | `suppliers` row: `provider_kind='bc_ai_agent'`, real `endpoint_url`, `X-Service-AI-Key` | One-row flip: `UPDATE suppliers SET provider_kind='mock' WHERE id=…` → degrades that supplier to `MockSupplierProvider` (migration 0026 + `defaultProviderRegistry`). Restart/redeploy to clear the per-supplierId provider cache. | Degraded, not crashed: unknown SKUs price at zero ("(unknown sku)"), commits return deterministic mock refs — the lifecycle keeps moving while BC is offline. Flip back to `bc_ai_agent` to restore. |
 
-> **BC rollback note (correction to PILOT_GO_LIVE_PLAN.md W2).** The plan says
-> the BC rollback is "point supplier row at MockProvider." That is **not
-> currently possible in production**: the `supplier_provider_kind` DB enum
-> contains only `'bc_ai_agent'` (no `'mock'`), and `defaultProviderRegistry()`
-> registers only the `bc_ai_agent` factory — so `provider_kind` cannot be set
-> to `mock` and no mock factory would resolve. Until that changes, the real BC
-> rollback is the operational one in the table above. **Follow-up if we want a
-> symmetric stub fallback:** add `'mock'` to the enum (new migration) and
-> `registerFactory('mock', …)` in `defaultProviderRegistry()`, then rollback
-> becomes a one-row `provider_kind` flip like everything else.
+> **BC rollback note.** This was originally a gap: the plan's "point supplier
+> row at MockProvider" wasn't possible because the `supplier_provider_kind`
+> enum had only `'bc_ai_agent'` and `defaultProviderRegistry()` registered only
+> that factory. **Closed 2026-05-28:** migration `0026_supplier_mock_kind` adds
+> `'mock'` to the enum and `defaultProviderRegistry()` now registers
+> `mockFactory`, so the rollback is the one-row flip in the table above.
+> Caveat: providers are cached per `supplierId` at first bind, so a flip takes
+> effect on the next process start (restart/redeploy), not mid-process. To roll
+> _back_ migration 0026, first repoint any `mock` rows to `bc_ai_agent` — the
+> down migration intentionally fails while a `mock` row exists.
 
 **After any rollback:** redeploy (env changes take effect on deploy), then
 re-run the relevant `GO_LIVE_RUNBOOK.md` smoke check to confirm the stub path

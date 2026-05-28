@@ -1553,7 +1553,13 @@ export const pricebookSuggestions = pgTable(
 // corporate.default_margin_pct.
 // ---------------------------------------------------------------------------
 
-export const supplierProviderKind = pgEnum('supplier_provider_kind', ['bc_ai_agent']);
+// 'mock' is an operational rollback target: flipping a suppliers row to it
+// degrades that supplier to the in-memory MockSupplierProvider when the real
+// BC AI Agent is unreachable. See docs/deploy/PILOT_OPERATIONS.md §3.
+export const supplierProviderKind = pgEnum('supplier_provider_kind', [
+  'bc_ai_agent',
+  'mock',
+]);
 
 export const suppliers = pgTable(
   'suppliers',

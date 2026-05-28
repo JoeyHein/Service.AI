@@ -37,6 +37,7 @@ import type {
   VoidQuoteRequest,
   VoidQuoteResponse,
 } from './types.js';
+import type { SupplierProviderFactory } from './registry.js';
 
 export interface MockCatalogEntry extends SupplierCatalogEntry {
   unitPriceCents: number;
@@ -364,3 +365,14 @@ export class MockSupplierProvider implements SupplierProvider {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * Factory for the ProviderRegistry, registered under provider_kind 'mock'.
+ * Mirrors `bcAiAgentFactory`. Builds a catalog-less MockSupplierProvider keyed
+ * to the supplier row's id, so flipping `suppliers.provider_kind` to 'mock' is
+ * a safe operational rollback when the real BC AI Agent is unreachable: prices
+ * for unknown SKUs come back zero (degraded, not crashed) and commits return
+ * deterministic mock refs. See docs/deploy/PILOT_OPERATIONS.md §3.
+ */
+export const mockFactory: SupplierProviderFactory = (config) =>
+  new MockSupplierProvider({ supplierId: config.supplierId });

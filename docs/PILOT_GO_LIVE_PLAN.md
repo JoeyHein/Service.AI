@@ -91,12 +91,9 @@ Order matters; this is the gating risk for go-live.
    → real `SO-XXXXXX`, idempotency (concurrent commits collapse to one BC doc).
    Lower risk than usual because Joey owns both sides (OPENDC's BC AI Agent).
 - **Acceptance:** GL-05 smoke #1–7 pass with real money + real BC.
-- **Rollback:** unset Stripe keys → stub. **BC rollback correction:** "point
-  supplier row at MockProvider" is *not* possible today (the
-  `supplier_provider_kind` enum has only `bc_ai_agent` and prod registers only
-  that factory) — the real BC rollback is operational (repoint `endpoint_url`
-  to a sandbox, or disable the supplier row). Full table + the follow-up to
-  make BC rollback symmetric: `docs/deploy/PILOT_OPERATIONS.md` §3.
+- **Rollback:** unset Stripe keys → stub; flip `suppliers.provider_kind` to
+  `'mock'` → BC degrades to MockSupplierProvider (migration 0026, takes effect
+  on redeploy). Full per-integration table: `docs/deploy/PILOT_OPERATIONS.md` §3.
 
 ### W3 — Communications (real send path — code work, not just config)  · owner C
 Email/SMS auto-send is **not wired** — senders return stubs even with keys.
@@ -177,6 +174,11 @@ BC-live**. W3/W4 are deferrable to Wave 2.
 _Status log_
 - 2026-05-26 — Plan created. Scope locked to single-branch 30-day pilot, phased
   Wave 1/Wave 2, ASAP. W0 + W1 starting in parallel.
+- 2026-05-28 — BC rollback symmetry **done**: migration `0026_supplier_mock_kind`
+  adds `'mock'` to the `supplier_provider_kind` enum + `defaultProviderRegistry()`
+  registers `mockFactory`, so a BC outage rollback is a one-row `provider_kind`
+  flip (validated up/down on a live DB; down fails safely while a `mock` row
+  exists). Closes the gap found during W5.4.
 - 2026-05-27 — W5.1 **done**: golden-path E2E (`live-golden-path.test.ts`) green
   in CI (commit `4d1c05a`). W5.4 **ops plan drafted**: metrics + daily cadence +
   rollback one-pager (`docs/deploy/PILOT_OPERATIONS.md`); surfaced the BC

@@ -43,6 +43,7 @@ import * as schema from '@service-ai/db';
 import {
   ProviderRegistry,
   bcAiAgentFactory,
+  mockFactory,
   type SupplierProvider,
   type SupplierLineRequest,
   type SupplierLinePrice,
@@ -679,13 +680,15 @@ export interface QuoteRoutesDeps {
 }
 
 /**
- * Default factory: build a registry with the canonical bc_ai_agent
- * factory registered. Tests pass their own pre-seeded registry that
- * additionally registers the mock factory.
+ * Default factory: build a registry with the canonical bc_ai_agent factory
+ * plus the 'mock' factory. Registering 'mock' here (not just in tests) makes a
+ * BC outage rollback a one-row `suppliers.provider_kind` flip — symmetric with
+ * every other integration's stub fallback. See docs/deploy/PILOT_OPERATIONS.md §3.
  */
 export function defaultProviderRegistry(): ProviderRegistry {
   const r = new ProviderRegistry();
   r.registerFactory('bc_ai_agent', bcAiAgentFactory);
+  r.registerFactory('mock', mockFactory);
   return r;
 }
 
